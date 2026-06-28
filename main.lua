@@ -7,6 +7,7 @@ local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
 local logger = require("logger")
 local Menu = require("ui/widget/menu")
+local PathChooser = require("ui/widget/pathchooser")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local T = require("ffi/util").template
@@ -322,6 +323,15 @@ function WeReadPlugin:getSettingsMenuItems()
             end),
         },
         {
+            text_func = function()
+                return T(_("Download directory: %1"), BD.dirpath(self.settings:get_download_dir()))
+            end,
+            keep_menu_open = true,
+            callback = self:safeCallback(_("Download directory"), function(touchmenu_instance)
+                self:showDownloadDirPicker(touchmenu_instance)
+            end),
+        },
+        {
             text = _("Reload config.lua"),
             keep_menu_open = true,
             callback = self:safeCallback(_("Reload config.lua"), function()
@@ -452,6 +462,51 @@ function WeReadPlugin:setMPImageDownload(enabled)
         "target=mp",
         "enabled=", tostring(cache.download_mp_images)
     )
+end
+
+-- Returns true if the directory is usable (creatable and writable), else false + message.
+function WeReadPlugin:validateDownloadDir(path)
+    local lfs = require("libs/libkoreader-lfs")
+    if type(path) ~= "string" or path == "" then
+        return false, _("Invalid path.")
+    end
+    if not lfs.attributes(path, "mode") then
+        os.execute("mkdir -p " .. string.format("%q", path))
+        if not lfs.attributes(path, "mode") then
+            return false, _("Directory does not exist and could not be created.")
+        end
+    end
+    local test_file = path .. "/.weread_write_test"
+    local f = io.open(test_file, "w")
+    if not f then
+        return false, _("Directory is not writable.")
+    end
+    f:close()
+    os.remove(test_file)
+    return true
+end
+
+function WeReadPlugin:showDownloadDirPicker(touchmenu_instance)
+    local current = self.settings:get_download_dir()
+    local path_chooser = PathChooser:new{
+        select_directory = true,
+        select_file = false,
+        path = current,
+        onConfirm = function(path)
+            local ok, err = self:validateDownloadDir(path)
+            if not ok then
+                self:showInfo(T(_("Cannot use this directory: %1"), err))
+                return
+            end
+            self.settings:set_download_dir(path)
+            logger.info(LOG_MODULE, "download directory changed:", path)
+            if touchmenu_instance then
+                touchmenu_instance:updateItems()
+            end
+            self:showInfo(T(_("Download directory set to:\n%1"), path))
+        end,
+    }
+    UIManager:show(path_chooser)
 end
 
 function WeReadPlugin:getShelfSortMenuItems()
