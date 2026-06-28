@@ -743,9 +743,45 @@ function WeReadPlugin:showInputDialog(dialog)
     end
 end
 
+function WeReadPlugin:isNetworkOnline()
+    local ok, NetworkMgr = pcall(require, "ui/network/manager")
+    if not ok or not NetworkMgr or not NetworkMgr.isOnline then
+        return true
+    end
+    local ok_online, online = pcall(function()
+        return NetworkMgr:isOnline()
+    end)
+    if not ok_online then
+        logger.warn(LOG_MODULE, "network status check failed:", log_error(online))
+        return true
+    end
+    return online == true
+end
+
+function WeReadPlugin:showOffline(label)
+    self:closeBusy()
+    logger.warn(LOG_MODULE, "network unavailable:", label)
+    self:showInfo(T(_("%1 failed:\n%2"), label, _("No network connection. Please connect Wi-Fi and try again.")))
+end
+
+function WeReadPlugin:runOnlineTask(label, callback, delay)
+    if not self:isNetworkOnline() then
+        self:showOffline(label)
+        return false
+    end
+    UIManager:scheduleIn(delay or 0.1, function()
+        local ok, err = xpcall(callback, debug.traceback)
+        if not ok then
+            self:closeBusy()
+            logger.err(LOG_MODULE, "network task failed:", label, log_error(err))
+            self:showInfo(T(_("%1 failed:\n%2"), label, display_error(err)))
+        end
+    end)
+    return true
+end
+
 function WeReadPlugin:runNetworkAction(label, action)
-    local NetworkMgr = require("ui/network/manager")
-    NetworkMgr:runWhenOnline(function()
+    self:runOnlineTask(label, function()
         local ok, result = pcall(action)
         if ok then
             self:showInfo(result or label)
@@ -996,8 +1032,7 @@ function WeReadPlugin:showReadReportBookPicker()
         return
     end
     self:showBusy(_("Loading bookshelf..."))
-    local NetworkMgr = require("ui/network/manager")
-    NetworkMgr:runWhenOnline(function()
+    self:runOnlineTask(_("Bookshelf"), function()
         local ok, result = pcall(function()
             return self.client:gateway("/shelf/sync", {})
         end)
@@ -1051,8 +1086,7 @@ function WeReadPlugin:showBookshelf()
         return
     end
     self:showBusy(_("Loading bookshelf..."))
-    local NetworkMgr = require("ui/network/manager")
-    NetworkMgr:runWhenOnline(function()
+    self:runOnlineTask(_("Bookshelf"), function()
         local ok, result = pcall(function()
             return self.client:gateway("/shelf/sync", {})
         end)
@@ -1154,8 +1188,7 @@ function WeReadPlugin:showBookRecord(book)
     end
     local saved = books[book_id] or book
     self:showBusy(_("Loading book info..."))
-    local NetworkMgr = require("ui/network/manager")
-    NetworkMgr:runWhenOnline(function()
+    self:runOnlineTask(_("Book info"), function()
         local ok, err = pcall(function()
             local info = self.client:get_book_info(book_id)
             if info then
@@ -1335,8 +1368,7 @@ function WeReadPlugin:rememberMPAccount(book)
 end
 
 function WeReadPlugin:fetchMPArticles(book, wr_ticket)
-    local NetworkMgr = require("ui/network/manager")
-    NetworkMgr:runWhenOnline(function()
+    self:runOnlineTask(_("Loading articles..."), function()
         self:showBusy(_("Loading articles..."))
         local book_id = book.book_id or book.bookId
         local ticket = wr_ticket or self.settings:get("wr_ticket", "")
@@ -1481,8 +1513,7 @@ function WeReadPlugin:downloadMPArticleAndRead(book, article)
         self:showInfo(_("Import cookie/cURL before downloading articles."))
         return
     end
-    local NetworkMgr = require("ui/network/manager")
-    NetworkMgr:runWhenOnline(function()
+    self:runOnlineTask(_("Download article and read"), function()
         self:showBusy(T(_("Downloading article: %1"), article.title or ""))
         local progress_dialog
         local ok, path_or_err = pcall(function()
@@ -1529,8 +1560,7 @@ function WeReadPlugin:loadChapters(book, callback)
         self:showInfo(_("Import cookie/cURL before loading chapters."))
         return
     end
-    local NetworkMgr = require("ui/network/manager")
-    NetworkMgr:runWhenOnline(function()
+    self:runOnlineTask(_("Loading chapter list..."), function()
         self:showBusy(_("Loading chapter list..."))
         local ok, chapters_or_err = pcall(function()
             Content.ensure_reader_state(self.client, book)
@@ -1595,8 +1625,7 @@ function WeReadPlugin:downloadFirstChapterAndRead(book)
         self:showInfo(_("Import cookie/cURL before downloading book content."))
         return
     end
-    local NetworkMgr = require("ui/network/manager")
-    NetworkMgr:runWhenOnline(function()
+    self:runOnlineTask(_("Downloading first chapter..."), function()
         self:showBusy(_("Downloading first chapter, please wait..."))
         local ok, path_or_err, chapter = pcall(function()
             return Content.fetch_first_chapter(self.client, self.settings, book)
@@ -1624,8 +1653,7 @@ function WeReadPlugin:downloadChapterAndRead(book, chapter)
         self:showInfo(_("Import cookie/cURL before downloading book content."))
         return
     end
-    local NetworkMgr = require("ui/network/manager")
-    NetworkMgr:runWhenOnline(function()
+    self:runOnlineTask(_("Download chapter and read"), function()
         self:showBusy(T(_("Downloading chapter: %1"), chapter.title or tostring(chapter.chapterUid)))
         local ok, path_or_err = pcall(function()
             return Content.fetch_chapter_epub(self.client, self.settings, book, chapter)
@@ -1684,8 +1712,7 @@ function WeReadPlugin:downloadChaptersAsBook(book, chapters, suffix)
         self:showInfo(_("Import cookie/cURL before downloading book content."))
         return
     end
-    local NetworkMgr = require("ui/network/manager")
-    NetworkMgr:runWhenOnline(function()
+    self:runOnlineTask(_("Download full book"), function()
         local ok_init, err_init = pcall(function()
             Content.ensure_reader_state(self.client, book)
         end)
@@ -1880,8 +1907,7 @@ function WeReadPlugin:searchWithUI(keyword)
     if not keyword or keyword == "" then
         return
     end
-    local NetworkMgr = require("ui/network/manager")
-    NetworkMgr:runWhenOnline(function()
+    self:runOnlineTask(_("Search"), function()
         local ok, result = pcall(function()
             return self.client:gateway("/store/search", {
                 keyword = keyword,

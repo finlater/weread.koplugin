@@ -29,6 +29,7 @@ local zh = {
     ["Account status"] = "账号状态",
     ["Clear account data"] = "清除账号数据",
     ["%1 failed:\n%2"] = "%1 失败：\n%2",
+    ["No network connection. Please connect Wi-Fi and try again."] = "当前没有网络连接，请连接 Wi-Fi 后重试。",
     ["No items."] = "没有条目。",
     ["Import WeRead cookie or cURL"] = "导入微信读书 Cookie 或 cURL",
     ["Paste a raw Cookie header or a full cURL copied from /web/book/read."] = "粘贴原始 Cookie header，或从 /web/book/read 复制的完整 cURL。",

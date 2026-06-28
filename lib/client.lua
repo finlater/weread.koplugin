@@ -10,6 +10,9 @@ if not ok_json then
     ok_json, json = pcall(require, "rapidjson")
 end
 
+local DEFAULT_TIMEOUT_SECONDS = 15
+local unpack_args = unpack or table.unpack
+
 local Client = {}
 Client.__index = Client
 
@@ -85,6 +88,19 @@ local function absolute_url(base_url, location)
     return prefix .. location
 end
 
+local function transport_request(transport, request, timeout)
+    timeout = timeout or DEFAULT_TIMEOUT_SECONDS
+    local previous_timeout = transport.TIMEOUT
+    transport.TIMEOUT = timeout
+    local results = { pcall(transport.request, request) }
+    transport.TIMEOUT = previous_timeout
+    if not results[1] then
+        error(results[2])
+    end
+    table.remove(results, 1)
+    return unpack_args(results)
+end
+
 function Client:new(settings)
     return setmetatable({
         settings = settings,
@@ -129,13 +145,13 @@ function Client:request(opts)
         error("socket.http is not available")
     end
 
-    local _, code, resp_headers, status = transport.request({
+    local _, code, resp_headers, status = transport_request(transport, {
         url = opts.url,
         method = opts.method or (body and "POST" or "GET"),
         headers = headers,
         source = body and ltn12.source.string(body) or nil,
         sink = ltn12.sink.table(response),
-    })
+    }, opts.timeout)
 
     return table.concat(response), tonumber(code), resp_headers or {}, status
 end
