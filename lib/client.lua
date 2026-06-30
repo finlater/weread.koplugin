@@ -28,7 +28,10 @@ end
 
 local function scalar_header_value(headers, name)
     local value = header_value(headers, name)
-    if type(value) == "table" then return tostring(value[1] or "") end
+    if type(value) == "table" then
+        if value[1] == nil then return nil end
+        return tostring(value[1])
+    end
     return value
 end
 
@@ -62,6 +65,42 @@ local function http_error(client, code, text, headers)
     return table.concat(parts, ", ")
 end
 
+local function deepcopy(value)
+    if type(value) ~= "table" then
+        return value
+    end
+    local out = {}
+    for key, item in pairs(value) do
+        out[key] = deepcopy(item)
+    end
+    return out
+end
+
+local function merge_req_opts(default_opts, user_opts)
+    default_opts = default_opts or {}
+    if not user_opts then 
+        return deepcopy(default_opts) 
+    end
+    local result = deepcopy(default_opts)
+    for k, v in pairs(user_opts) do
+        if k == "headers" and type(v) == "table" then
+            result.headers = result.headers or {}
+            for hk, hv in pairs(v) do
+                local target = hk:lower()
+                for existing_k, _ in pairs(result.headers) do
+                    if type(existing_k) == "string" and existing_k:lower() == target then
+                        result.headers[existing_k] = nil
+                    end
+                end
+                result.headers[hk] = deepcopy(hv)
+            end
+        else
+            result[k] = deepcopy(v) 
+        end
+    end 
+    return result
+end
+
 function Client:new(settings)
     return setmetatable({
         settings = settings,
@@ -89,17 +128,14 @@ function Client:json_decode(text)
 end
 
 function Client:request(opts)
+    opts = opts or {}
     local body = opts.body
     local response
     local headers = {
         ["User-Agent"] = WeRead.USER_AGENT,
         ["Accept"] = "application/json, text/plain, */*"
     }
-    if opts.headers then
-        for k, v in pairs(opts.headers) do 
-            headers[k] = v 
-        end
-    end
+
     if not opts.skip_cookie then
         local cookies = self.settings:get("cookies", {})
         local cookie_header = Cookie.to_header(cookies)
@@ -117,57 +153,48 @@ function Client:request(opts)
         sink_to_use = socketutil.table_sink(response)
     end
 
+    local req_opts = merge_req_opts({
+        method = body and "POST" or "GET",
+        source = body and ltn12.source.string(body) or nil,
+        sink = sink_to_use,
+        headers = headers
+    }, opts)
+
     if type(opts.timeout) == "table" and opts.timeout[1] then
         local t1 = opts.timeout[1]
         local t2 = opts.timeout[2] or t1
         socketutil:set_timeout(t1, t2)
     end
-
-    local _, code, resp_headers, status = http.request({
-        url = opts.url,
-        method = opts.method or (body and "POST" or "GET"),
-        headers = headers,
-        source = body and ltn12.source.string(body) or nil,
-        sink = sink_to_use,
-        maxredirects = opts.maxredirects or nil
-    })
-
-    if opts.timeout then 
-        socketutil:reset_timeout() 
-    end
-
-    local set_cookie = header_value(resp_headers, "set-cookie")
-    if set_cookie then
-        local cookies = self.settings:get("cookies", {})
-        self.settings:set("cookies", Cookie.merge_set_cookie(cookies, set_cookie))
-        self.settings:flush()
-    end
-    if not opts.sink then 
-        response = table.concat(response) 
-    end
     
+    local _, code, resp_headers, status = http.request(req_opts)
+    if opts.timeout then socketutil:reset_timeout() end
+
+    if not opts.sink then response = table.concat(response) end
+    if not opts.skip_cookie then
+        local set_cookie = header_value(resp_headers, "set-cookie")
+        if set_cookie then
+            local cookies = self.settings:get("cookies", {})
+            self.settings:set("cookies", Cookie.merge_set_cookie(cookies, set_cookie))
+            self.settings:flush()
+        end
+    end
+
     return response, tonumber(code), resp_headers or {}, status
 end
 
 function Client:post_json(url, data, opts)
     opts = opts or {}
-    local custom_headers = {
-        ["Content-Type"] = "application/json;charset=UTF-8",
-        ["Origin"] = "https://weread.qq.com",
-        ["Referer"] = opts.referer or "https://weread.qq.com/",
-    }
-    for k, v in pairs(opts.headers or {}) do
-        custom_headers[k] = v
-    end
-    local text, code, resp_headers = self:request({
+    local referer = header_value(opts.headers, "Referer") or opts.referer
+    local req_opts = merge_req_opts(opts, {
         url = url,
         method = "POST",
-        headers = custom_headers,
         body = self:json_encode(data),
-        timeout = opts.timeout,
-        skip_cookie = opts.skip_cookie,
-    })
-
+        headers = {
+            ["Content-Type"] = "application/json;charset=UTF-8",
+            ["Origin"] = "https://weread.qq.com",
+            ["Referer"] = referer or "https://weread.qq.com/",
+        }})
+    local text, code, resp_headers = self:request(req_opts)
     if code and code >= 200 and code < 300 then
         return self:json_decode(text), code, resp_headers
     end
@@ -176,71 +203,50 @@ end
 
 function Client:get_text(url, opts)
     opts = opts or {}
-    local custom_headers = {
-        ["Accept"] = opts.accept or "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        ["Referer"] = opts.referer or "https://weread.qq.com/",
-    }
-    for k, v in pairs(opts.headers or {}) do
-        custom_headers[k] = v
-    end
-    local text, code, resp_headers = self:request({
+    local accept = header_value(opts.headers, "Accept") or opts.accept
+    local referer = header_value(opts.headers, "Referer") or opts.referer
+    local req_opts = merge_req_opts(opts, {
         url = url,
         method = "GET",
-        headers = custom_headers,
-        timeout = opts.timeout,
-        skip_cookie = opts.skip_cookie,
-    })
-    
-    if code and code >= 200 and code < 300 then return text end
+        headers = {
+            ["Accept"] = accept or "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            ["Referer"] = referer or "https://weread.qq.com/",
+        }})
+    local text, code, resp_headers = self:request(req_opts)
+    if code and code >= 200 and code < 300 then
+        return text, code, resp_headers
+    end
     error(http_error(self, code, text, resp_headers))
 end
 
 function Client:get_public_text(url, opts)
     opts = opts or {}
-    local text, code, resp_headers = self:request({
-        url = url,
-        method = "GET",
-        headers = {
-            ["Accept"] = opts.accept or "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            ["Referer"] = opts.referer or "https://mp.weixin.qq.com/",
-        },
-        timeout = opts.timeout,
+    local req_opts = merge_req_opts(opts, {
         maxredirects = 5,
-    })
-    if code and code >= 200 and code < 300 then
-        return text, {
-            code = code,
-            content_type = header_value(resp_headers, "content-type"),
-            length = #(text or ""),
-            url = url,
+        headers = {
+            ["Accept"] = header_value(opts.headers, "Accept") or opts.accept or "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            ["Referer"] = header_value(opts.headers, "Referer") or opts.referer or "https://mp.weixin.qq.com/",
         }
-    end
-    error(http_error(self, code, text, resp_headers))
+    })
+    local text, code, resp_headers = self:get_text(url, req_opts)
+    return text, {
+        code = code,
+        content_type = header_value(resp_headers, "content-type"),
+        length = #(text or ""),
+        url = url,
+    }
 end
 
 function Client:get_binary(url, opts)
     opts = opts or {}
-    local custom_headers = {
-        ["Accept"] = opts.accept or "*/*",
-        ["Referer"] = opts.referer or "https://weread.qq.com/",
-    }
-    for k, v in pairs(opts.headers or {}) do
-        custom_headers[k] = v
-    end
-
-    local text, code, resp_headers = self:request({
-        url = url,
-        method = "GET",
-        headers = custom_headers,
-        timeout = opts.timeout,
-        skip_cookie = opts.skip_cookie,
+    local req_opts = merge_req_opts(opts, {
         maxredirects = 5,
+        headers = {
+            ["Accept"] = header_value(opts.headers, "Accept") or opts.accept or "*/*",
+            ["Referer"] = header_value(opts.headers, "Referer") or opts.referer or "https://weread.qq.com/",
+        }
     })
-    
-    if code and code >= 200 and code < 300 then
-        return text, code, resp_headers
-    end
-    error(http_error(self, code, text, resp_headers))
+    return self:get_text(url, req_opts)
 end
 
 function Client:renew_cookie()
