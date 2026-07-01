@@ -498,15 +498,116 @@ function WeReadPlugin:showDownloadDirPicker(touchmenu_instance)
                 self:showInfo(T(_("Cannot use this directory: %1"), err))
                 return
             end
+            local old_dir = self.settings:get_download_dir()
             self.settings:set_download_dir(path)
             logger.info(LOG_MODULE, "download directory changed:", path)
             if touchmenu_instance then
                 touchmenu_instance:updateItems()
             end
-            self:showInfo(T(_("Download directory set to:\n%1"), path))
+            self:offerMoveBooksToNewDir(old_dir, path)
         end,
     }
     UIManager:show(path_chooser)
+end
+
+-- After the download directory changes, offer to move already-cached books from
+-- their old locations into the new directory. Without this, old files stay behind
+-- as orphans (still reachable via the stored paths, but not under the new root).
+function WeReadPlugin:offerMoveBooksToNewDir(old_dir, new_dir)
+    if old_dir == new_dir then
+        self:showInfo(T(_("Download directory set to:\n%1"), new_dir))
+        return
+    end
+    local lfs = require("libs/libkoreader-lfs")
+    local books = self.settings:get("books", {})
+    local movable = {}
+    for book_id, book in pairs(books) do
+        local src = Content.book_resolved_dir(self.settings, book_id, book)
+        local dst = Content.book_cache_dir(self.settings, book_id)
+        if src ~= dst then
+            local attr = lfs.attributes(src)
+            if attr and attr.mode == "directory" then
+                table.insert(movable, { book_id = book_id, src = src, dst = dst })
+            end
+        end
+    end
+    if #movable == 0 then
+        self:showInfo(T(_("Download directory set to:\n%1"), new_dir))
+        return
+    end
+    UIManager:show(ConfirmBox:new{
+        text = T(_("Download directory changed. Move %1 cached book(s) to the new location?"), tostring(#movable)),
+        ok_text = _("Move"),
+        ok_callback = function()
+            self:moveBooksToNewDir(movable, new_dir)
+        end,
+        cancel_text = _("Keep"),
+        cancel_callback = function()
+            self:showInfo(T(_("Download directory set to:\n%1\nExisting downloads stay in the old location."), new_dir))
+        end,
+    })
+end
+
+function WeReadPlugin:moveBooksToNewDir(movable, new_dir)
+    self:showBusy(_("Moving cached books..."))
+    UIManager:scheduleIn(0.1, function()
+        local books = self.settings:get("books", {})
+        local moved, failed = 0, 0
+        for _i, m in ipairs(movable) do
+            if self:moveBookDir(m.src, m.dst) then
+                local book = books[m.book_id]
+                if book then
+                    book.cached_file = self:remapCachedPath(book.cached_file, m.dst)
+                    if type(book.cached_chapters) == "table" then
+                        for uid, path in pairs(book.cached_chapters) do
+                            book.cached_chapters[uid] = self:remapCachedPath(path, m.dst)
+                        end
+                    end
+                end
+                moved = moved + 1
+            else
+                failed = failed + 1
+                logger.err(LOG_MODULE, "move book cache failed:", m.src, "->", m.dst)
+            end
+        end
+        self.settings:set("books", books)
+        self.settings:flush()
+        self:closeBusy()
+        if failed == 0 then
+            self:showInfo(T(_("Moved %1 book(s) to:\n%2"), tostring(moved), new_dir))
+        else
+            self:showInfo(T(_("Moved %1 book(s), %2 failed. Failed items stay in the old location."), tostring(moved), tostring(failed)))
+        end
+    end)
+end
+
+-- Move one book directory to dst. Uses `mv`, which (unlike os.rename) handles
+-- moves across filesystems, e.g. internal storage to an SD card.
+function WeReadPlugin:moveBookDir(src, dst)
+    if src == dst then
+        return true
+    end
+    local parent = dst:match("^(.*)/[^/]+$")
+    if parent then
+        os.execute("mkdir -p " .. string.format("%q", parent))
+    end
+    -- Remove any pre-existing target so `mv` renames instead of nesting into it.
+    os.execute("rm -rf " .. string.format("%q", dst))
+    local status = os.execute("mv -f " .. string.format("%q", src) .. " " .. string.format("%q", dst))
+    return status == true or status == 0
+end
+
+-- Rewrite a stored absolute file path to sit under the new book directory,
+-- keeping the original filename.
+function WeReadPlugin:remapCachedPath(path, dst)
+    if type(path) ~= "string" then
+        return path
+    end
+    local name = path:match("[^/]+$")
+    if not name then
+        return path
+    end
+    return dst .. "/" .. name
 end
 
 function WeReadPlugin:getShelfSortMenuItems()
