@@ -552,11 +552,13 @@ function WeReadPlugin:moveBooksToNewDir(movable, new_dir)
     self:showBusy(_("Moving cached books..."))
     UIManager:scheduleIn(0.1, function()
         local books = self.settings:get("books", {})
-        local moved, failed = 0, 0
+        local moved, skipped, failed = 0, 0, 0
         for _i, m in ipairs(movable) do
-            if self:moveBookDir(m.src, m.dst) then
+            local ok, reason = self:moveBookDir(m.src, m.dst)
+            if ok then
                 local book = books[m.book_id]
                 if book then
+                    book.cache_dir = m.dst
                     book.cached_file = self:remapCachedPath(book.cached_file, m.dst)
                     if type(book.cached_chapters) == "table" then
                         for uid, path in pairs(book.cached_chapters) do
@@ -565,6 +567,9 @@ function WeReadPlugin:moveBooksToNewDir(movable, new_dir)
                     end
                 end
                 moved = moved + 1
+            elseif reason == "target_exists" then
+                skipped = skipped + 1
+                logger.warn(LOG_MODULE, "skip move, target exists:", m.dst)
             else
                 failed = failed + 1
                 logger.err(LOG_MODULE, "move book cache failed:", m.src, "->", m.dst)
@@ -573,28 +578,37 @@ function WeReadPlugin:moveBooksToNewDir(movable, new_dir)
         self.settings:set("books", books)
         self.settings:flush()
         self:closeBusy()
-        if failed == 0 then
+        if skipped == 0 and failed == 0 then
             self:showInfo(T(_("Moved %1 book(s) to:\n%2"), tostring(moved), new_dir))
         else
-            self:showInfo(T(_("Moved %1 book(s), %2 failed. Failed items stay in the old location."), tostring(moved), tostring(failed)))
+            self:showInfo(T(_("Moved %1 book(s). %2 skipped (target already exists), %3 failed. These stay in the old location."), tostring(moved), tostring(skipped), tostring(failed)))
         end
     end)
 end
 
 -- Move one book directory to dst. Uses `mv`, which (unlike os.rename) handles
--- moves across filesystems, e.g. internal storage to an SD card.
+-- moves across filesystems, e.g. internal storage to an SD card. Returns
+-- true on success, or false plus a reason ("target_exists" / "move_failed").
 function WeReadPlugin:moveBookDir(src, dst)
     if src == dst then
         return true
+    end
+    local lfs = require("libs/libkoreader-lfs")
+    if lfs.attributes(dst) then
+        -- The target already exists. Since the new directory is user-selected, it
+        -- may be unrelated user data that only happens to share the sanitized name.
+        -- Never delete it; leave the book in its old location instead.
+        return false, "target_exists"
     end
     local parent = dst:match("^(.*)/[^/]+$")
     if parent then
         os.execute("mkdir -p " .. string.format("%q", parent))
     end
-    -- Remove any pre-existing target so `mv` renames instead of nesting into it.
-    os.execute("rm -rf " .. string.format("%q", dst))
     local status = os.execute("mv -f " .. string.format("%q", src) .. " " .. string.format("%q", dst))
-    return status == true or status == 0
+    if status == true or status == 0 then
+        return true
+    end
+    return false, "move_failed"
 end
 
 -- Rewrite a stored absolute file path to sit under the new book directory,
@@ -786,6 +800,7 @@ function WeReadPlugin:clearBookCache(book_id)
     if books[book_id] then
         books[book_id].cached_file = nil
         books[book_id].cached_chapters = nil
+        books[book_id].cache_dir = nil
         if WeRead.is_mp_book(book_id) then
             books[book_id].mp_articles = nil
             books[book_id].mp_articles_time = nil
@@ -796,21 +811,16 @@ function WeReadPlugin:clearBookCache(book_id)
 end
 
 function WeReadPlugin:clearAllMPCache()
-    local lfs = require("libs/libkoreader-lfs")
-    local cache_dir = self.settings.cache_dir
-    local ok, iter, dir_obj = pcall(lfs.dir, cache_dir)
-    if ok then
-        for entry in iter, dir_obj do
-            if entry ~= "." and entry ~= ".." and WeRead.is_mp_book(entry) then
-                os.execute("rm -rf " .. string.format("%q", cache_dir .. "/" .. entry))
-            end
-        end
-    end
+    -- Delete each MP book's real directory (which may sit under an old download
+    -- root) rather than scanning only the current cache_dir, and only touch
+    -- plugin-owned entries tracked in the books table.
     local books = self.settings:get("books", {})
     for book_id, book in pairs(books) do
         if WeRead.is_mp_book(book_id) then
+            os.execute("rm -rf " .. string.format("%q", Content.book_resolved_dir(self.settings, book_id, book)))
             book.cached_file = nil
             book.cached_chapters = nil
+            book.cache_dir = nil
             book.mp_articles = nil
             book.mp_articles_time = nil
         end
@@ -825,6 +835,7 @@ function WeReadPlugin:clearAllCache()
         os.execute("rm -rf " .. string.format("%q", Content.book_resolved_dir(self.settings, book_id, book)))
         book.cached_file = nil
         book.cached_chapters = nil
+        book.cache_dir = nil
         book.mp_articles = nil
         book.mp_articles_time = nil
     end
@@ -1506,6 +1517,10 @@ function WeReadPlugin:rememberMPAccount(book)
     record.title = book.title or record.title
     record.author = book.author or record.author
     record.updated_at = os.time()
+    -- Keep the resolved cache directory in sync both ways so the transient book
+    -- object used for cached-path lookups knows where its articles actually live.
+    record.cache_dir = book.cache_dir or record.cache_dir
+    book.cache_dir = record.cache_dir
     books[book_id] = record
     self.settings:set("books", books)
     self.settings:flush()
@@ -1691,6 +1706,17 @@ function WeReadPlugin:downloadMPArticleAndRead(book, article)
             "MP article downloaded:",
             "images=", self.settings:get("cache").download_mp_images and "embedded" or "removed"
         )
+        -- Persist the resolved cache directory (set by save_mp_article_html) so the
+        -- article files can still be located after the download directory changes.
+        local book_id = book.book_id or book.bookId
+        if book_id and book.cache_dir then
+            local books = self.settings:get("books", {})
+            local record = books[book_id] or {}
+            record.cache_dir = book.cache_dir
+            books[book_id] = record
+            self.settings:set("books", books)
+            self.settings:flush()
+        end
         self:openFile(path_or_err)
     end)
 end
