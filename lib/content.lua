@@ -815,6 +815,18 @@ function Content.ensure_reader_state(client, book)
     return state
 end
 
+--- Refresh psvts before downloading a chapter (matches per-chapter reader page fetch).
+function Content.refresh_reader_state(client, book, chapter)
+    book.psvts = nil
+    local book_id = book.book_id or book.bookId
+    if chapter and chapter.chapterUid then
+        book.reader_url = WeRead.reader_url(book_id, chapter.chapterUid)
+    else
+        book.reader_url = book.reader_url or WeRead.reader_url(book_id)
+    end
+    Content.ensure_reader_state(client, book)
+end
+
 function Content.fetch_catalog(client, book)
     local book_id = book.book_id or book.bookId
     local reader_url = book.reader_url or WeRead.reader_url(book_id)
@@ -836,7 +848,11 @@ function Content.fetch_chapter_shard(client, settings, book, chapter, endpoint)
     end
 
     local chapter_url = WeRead.reader_url(book_id, chapter.chapterUid)
-    local params = WeRead.make_content_params(book_id, chapter.chapterUid, book.psvts, { sc = 1 })
+    local is_style_shard = endpoint:find("/e_2", 1, true) ~= nil
+    local params = WeRead.make_content_params(book_id, chapter.chapterUid, book.psvts, {
+        sc = 1,
+        style = is_style_shard,
+    })
     local text = client:request({
         url = "https://weread.qq.com" .. endpoint,
         method = "POST",
@@ -877,6 +893,8 @@ function Content.fetch_txt_as_xhtml(client, settings, book, chapter)
 end
 
 function Content.fetch_chapter_xhtml(client, settings, book, chapter)
+    Content.refresh_reader_state(client, book, chapter)
+
     if book._content_format == "txt" then
         return Content.fetch_txt_as_xhtml(client, settings, book, chapter)
     end
@@ -916,7 +934,6 @@ function Content.fetch_chapter_css(client, settings, book, chapter)
 end
 
 function Content.fetch_chapter_epub(client, settings, book, chapter)
-    Content.ensure_reader_state(client, book)
     local book_id = book.book_id or book.bookId
     local xhtml = Content.fetch_chapter_xhtml(client, settings, book, chapter)
     local css = Content.fetch_chapter_css(client, settings, book, chapter)
@@ -969,7 +986,6 @@ end
 
 function Content.fetch_chapters_epub(client, settings, book, chapters, options)
     options = options or {}
-    Content.ensure_reader_state(client, book)
     local selected = {}
     local bodies = {}
     local assets = {}
