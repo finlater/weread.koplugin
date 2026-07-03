@@ -75,8 +75,16 @@ end
 --- Fetch underlines/reviews and inject markup into raw chapter HTML.
 -- Must run before image rewriting (range indices are based on original HTML).
 -- @return processed_html, annotation_css
+function Thoughts.is_download_enabled(settings)
+    local cache = settings:get("cache", {})
+    return cache.download_underlines_and_thoughts == true
+end
+
 function Thoughts.apply(client, settings, book_id, chapter_uid, xhtml)
     if type(xhtml) ~= "string" or xhtml == "" then
+        return xhtml, ""
+    end
+    if not Thoughts.is_download_enabled(settings) then
         return xhtml, ""
     end
     if not settings:is_cookie_configured() then

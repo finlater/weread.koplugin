@@ -412,6 +412,24 @@ function WeReadPlugin:getSettingsMenuItems()
                             })
                         end),
                     },
+                    {
+                        text = _("Underlines and thoughts"),
+                        keep_menu_open = true,
+                        checked_func = function()
+                            return self.settings:get("cache").download_underlines_and_thoughts
+                        end,
+                        callback = self:safeCallback(_("Underlines and thoughts"), function()
+                            local cache = self.settings:get("cache")
+                            cache.download_underlines_and_thoughts = not cache.download_underlines_and_thoughts
+                            self.settings:set("cache", cache)
+                            self.settings:flush()
+                            logger.info(
+                                LOG_MODULE,
+                                "underlines/thoughts download setting changed:",
+                                "enabled=", tostring(cache.download_underlines_and_thoughts)
+                            )
+                        end),
+                    },
                 }
             end,
         },

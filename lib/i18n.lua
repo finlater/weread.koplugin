@@ -23,6 +23,7 @@ local zh = {
     ["Download images"] = "下载图片",
     ["Book images"] = "书籍图片",
     ["Public account article images"] = "公众号文章图片",
+    ["Underlines and thoughts"] = "划线与想法",
     ["Downloading public account article images may significantly increase download time. Continue?"] = "下载公众号文章图片可能会显著延长下载时间，是否继续？",
     ["Confirm"] = "确认",
     ["Account management"] = "账号管理",

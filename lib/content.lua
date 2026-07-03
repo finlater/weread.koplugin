@@ -936,6 +936,10 @@ end
 
 
 local function apply_chapter_annotations(client, settings, book, chapter, xhtml, css)
+    local cache = settings:get("cache", {})
+    if cache.download_underlines_and_thoughts ~= true then
+        return xhtml, css
+    end
     local book_id = book.book_id or book.bookId
     local chapter_uid = chapter and chapter.chapterUid
     local processed, annotation_css = Thoughts.apply(client, settings, book_id, chapter_uid, xhtml)
