@@ -138,6 +138,13 @@ function FontPreloader:init()
     logger.info("weread: font preloader initialized, emoji font:", self.emoji_path or "not found")
 end
 
+local function plugin_root_dir()
+    local source = debug.getinfo(1, "S").source or ""
+    local path = source:match("^@(.+)$") or source
+    local dir = path:match("^(.*)/[^/]+$") or "."
+    return dir:match("^(.*)/lib$") or dir
+end
+
 function FontPreloader:findEmojiFont()
     if self.emoji_path then return self.emoji_path end
 
@@ -155,13 +162,17 @@ function FontPreloader:findEmojiFont()
         return path
     end
 
+    local emoji_rel = "fonts/NotoEmoji-Regular.ttf"
     local candidates = {
-        "plugins/weread.koplugin/fonts/NotoEmoji-Regular.ttf",
+        plugin_root_dir() .. "/" .. emoji_rel,
+        "weread.koplugin/" .. emoji_rel,
+        "plugins/weread.koplugin/" .. emoji_rel,
     }
     local ok_ds, DataStorage = pcall(require, "datastorage")
     if ok_ds then
-        candidates[#candidates + 1] = DataStorage:getDataDir()
-            .. "/plugins/weread.koplugin/fonts/NotoEmoji-Regular.ttf"
+        local data_dir = DataStorage:getDataDir()
+        candidates[#candidates + 1] = data_dir .. "/weread.koplugin/" .. emoji_rel
+        candidates[#candidates + 1] = data_dir .. "/plugins/weread.koplugin/" .. emoji_rel
     end
     for _, path in ipairs(candidates) do
         local abs = resolveEmojiPath(path)
