@@ -426,27 +426,19 @@ function Client:get_chapter_underlines(book_id, chapter_uid)
         return false, nil, "empty chapter_uid"
     end
 
-    local url = string.format(
-        "https://weread.qq.com/web/book/underlines?bookId=%s&chapterUid=%d",
-        tostring(book_id),
-        tonumber(chapter_uid)
-    )
-
-    local ok, text = pcall(function()
-        return self:get_text(url, {
-            accept = "application/json, text/plain, */*",
-            referer = "https://weread.qq.com/web/shelf",
+    local ok, result = pcall(function()
+        return self:gateway("/book/underlines", {
+            bookId = tostring(book_id),
+            chapterUid = chapter_uid,
         })
     end)
     if not ok then
-        return false, nil, tostring(text)
+        return false, nil, tostring(result)
     end
-
-    local pok, parsed = pcall(self.json_decode, self, text)
-    if not pok or type(parsed) ~= "table" then
-        return false, nil, "underlines: invalid JSON"
+    if type(result) ~= "table" then
+        return false, nil, "underlines: gateway returned non-table"
     end
-    return true, parsed
+    return true, result
 end
 
 function Client:get_chapter_reviews(book_id, chapter_uid, ranges)
@@ -476,12 +468,10 @@ function Client:get_chapter_reviews(book_id, chapter_uid, ranges)
         end
 
         local ok, result = pcall(function()
-            return self:post_json("https://weread.qq.com/web/book/readReviews", {
+            return self:gateway("/book/readreviews", {
                 bookId = tostring(book_id),
                 chapterUid = chapter_uid,
                 reviews = batch,
-            }, {
-                referer = "https://weread.qq.com/web/shelf",
             })
         end)
 
