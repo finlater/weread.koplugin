@@ -595,7 +595,7 @@ end
 -- as orphans (still reachable via the stored paths, but not under the new root).
 function WeReadPlugin:offerMoveBooksToNewDir(old_dir, new_dir)
     if old_dir == new_dir then
-        self:showInfo(T(_("Download directory set to:\n%1"), new_dir))
+        self:offerScanNewDir(new_dir, T(_("Download directory set to:\n%1"), new_dir))
         return
     end
     local lfs = require("libs/libkoreader-lfs")
@@ -612,7 +612,7 @@ function WeReadPlugin:offerMoveBooksToNewDir(old_dir, new_dir)
         end
     end
     if #movable == 0 then
-        self:showInfo(T(_("Download directory set to:\n%1"), new_dir))
+        self:offerScanNewDir(new_dir, T(_("Download directory set to:\n%1"), new_dir))
         return
     end
     UIManager:show(ConfirmBox:new{
@@ -623,7 +623,7 @@ function WeReadPlugin:offerMoveBooksToNewDir(old_dir, new_dir)
         end,
         cancel_text = _("Keep"),
         cancel_callback = function()
-            self:showInfo(T(_("Download directory set to:\n%1\nExisting downloads stay in the old location."), new_dir))
+            self:offerScanNewDir(new_dir, T(_("Download directory set to:\n%1\nExisting downloads stay in the old location."), new_dir))
         end,
     })
 end
@@ -658,11 +658,13 @@ function WeReadPlugin:moveBooksToNewDir(movable, new_dir)
         self.settings:set("books", books)
         self.settings:flush()
         self:closeBusy()
+        local message
         if skipped == 0 and failed == 0 then
-            self:showInfo(T(_("Moved %1 book(s) to:\n%2"), tostring(moved), new_dir))
+            message = T(_("Moved %1 book(s) to:\n%2"), tostring(moved), new_dir)
         else
-            self:showInfo(T(_("Moved %1 book(s). %2 skipped (target already exists), %3 failed. These stay in the old location."), tostring(moved), tostring(skipped), tostring(failed)))
+            message = T(_("Moved %1 book(s). %2 skipped (target already exists), %3 failed. These stay in the old location."), tostring(moved), tostring(skipped), tostring(failed))
         end
+        self:offerScanNewDir(new_dir, message)
     end)
 end
 
@@ -989,6 +991,14 @@ function WeReadPlugin:showCacheManagement()
         end),
     })
 
+    table.insert(items, 1, {
+        text = _("[Scan] Scan local cache"),
+        separator = true,
+        callback = self:safeCallback(_("Scan local cache"), function()
+            self:confirmScanLocalCache()
+        end),
+    })
+
     for entry_index, entry in ipairs(entries) do
         local size_str = entry.size < 1024 * 1024
             and string.format("%.0f KB", entry.size / 1024)
@@ -1015,6 +1025,127 @@ function WeReadPlugin:refreshCacheManagement(message)
     if message then
         self:showTransientInfo(message)
     end
+end
+
+-- Register manually copied content under a download root into the books table.
+function WeReadPlugin:scanLocalCache(root, dry_run)
+    local lfs = require("libs/libkoreader-lfs")
+    local books = self.settings:get("books", {})
+    local added, updated = 0, 0
+    local ok, iter, dir_obj = pcall(lfs.dir, root)
+    if not ok then
+        return 0, 0
+    end
+    for entry in iter, dir_obj do
+        if entry ~= "." and entry ~= ".." then
+            local dir = root .. "/" .. entry
+            local attr = lfs.attributes(dir)
+            if attr and attr.mode == "directory" then
+                local book_id = entry
+                local is_mp = WeRead.is_mp_book(book_id)
+                -- MP dirs hold .html articles; regular books hold .epub, and we
+                -- track the largest one as the book file to open.
+                local main_epub, main_size, has_content = nil, -1, false
+                local ok2, fiter, fobj = pcall(lfs.dir, dir)
+                if ok2 then
+                    for f in fiter, fobj do
+                        if f ~= "." and f ~= ".." then
+                            local fattr = lfs.attributes(dir .. "/" .. f)
+                            if fattr and fattr.mode == "file" then
+                                local ext = f:match("%.([^.]+)$")
+                                ext = ext and ext:lower()
+                                if is_mp then
+                                    if ext == "html" then
+                                        has_content = true
+                                    end
+                                elseif ext == "epub" then
+                                    has_content = true
+                                    if (fattr.size or 0) > main_size then
+                                        main_size = fattr.size or 0
+                                        main_epub = dir .. "/" .. f
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+                if has_content then
+                    local record = books[book_id]
+                    local is_new = record == nil
+                    if dry_run then
+                        if is_new then
+                            added = added + 1
+                        end
+                    else
+                        record = record or { book_id = book_id }
+                        local changed = is_new
+                        if record.cache_dir ~= dir then
+                            record.cache_dir = dir
+                            changed = true
+                        end
+                        -- MP articles are opened per-article, not via a single file.
+                        if not is_mp and not record.cached_file and main_epub then
+                            record.cached_file = main_epub
+                            changed = true
+                        end
+                        if not record.title or record.title == "" then
+                            -- MP account names are not on disk, so fall back to the id.
+                            record.title = (main_epub and main_epub:match("([^/]+)%.epub$")) or book_id
+                            changed = true
+                        end
+                        if is_new then
+                            record.updated_at = os.time()
+                        end
+                        if changed then
+                            books[book_id] = record
+                            if is_new then
+                                added = added + 1
+                            else
+                                updated = updated + 1
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if not dry_run then
+        self.settings:set("books", books)
+        self.settings:flush()
+    end
+    return added, updated
+end
+
+function WeReadPlugin:confirmScanLocalCache()
+    self:showBusy(_("Scanning local cache..."))
+    UIManager:scheduleIn(0.1, function()
+        local added, updated = self:scanLocalCache(self.settings.cache_dir)
+        self:closeBusy()
+        self:refreshCacheManagement(T(_("Scan complete. %1 added, %2 updated."), tostring(added), tostring(updated)))
+    end)
+end
+
+-- After the download directory changes, offer to register any untracked items
+-- already sitting in the new directory (e.g. manually copied in). base_message is
+-- shown when there is nothing to add or the user skips.
+function WeReadPlugin:offerScanNewDir(new_dir, base_message)
+    local pending = self:scanLocalCache(new_dir, true)
+    if pending == 0 then
+        self:showInfo(base_message)
+        return
+    end
+    UIManager:show(ConfirmBox:new{
+        text = T(_("Found %1 untracked item(s) in the new directory. Add them to the library?"), tostring(pending)),
+        ok_text = _("Add"),
+        ok_callback = function()
+            local added = self:scanLocalCache(new_dir)
+            self:showInfo(T(_("Added %1 item(s) to the library."), tostring(added)))
+        end,
+        cancel_text = _("Skip"),
+        cancel_callback = function()
+            self:showInfo(base_message)
+        end,
+    })
 end
 
 function WeReadPlugin:confirmClearBookCache(book_id, title, on_cleared)
