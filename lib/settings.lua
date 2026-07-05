@@ -25,6 +25,7 @@ local defaults = {
         download_book_images = true,
         download_mp_images = false,
         download_underlines_and_thoughts = false,
+        show_annotations = true,
         max_size_mb = 1024,
     },
     read_report = {
@@ -87,6 +88,10 @@ function Settings:new()
     end
     if cache.download_underlines_and_thoughts == nil then
         cache.download_underlines_and_thoughts = false
+        cache_changed = true
+    end
+    if cache.show_annotations == nil then
+        cache.show_annotations = true
         cache_changed = true
     end
     if cache.download_images ~= nil then

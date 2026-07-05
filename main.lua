@@ -2,6 +2,7 @@ local BD = require("ui/bidi")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Dispatcher = require("dispatcher")
 local DownloadDialog = require("lib.download_dialog")
+local Event = require("ui/event")
 local ProgressbarDialog = require("ui/widget/progressbardialog")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
@@ -309,8 +310,29 @@ function WeReadPlugin:getMainMenuItems()
             enabled_func = function() return false end,
         })
         table.insert(items, 3, {
-            text = _("Notes") .. "  (" .. _("WIP") .. ")",
-            enabled_func = function() return false end,
+            text = _("Show underlines and thoughts"),
+            checked_func = function()
+                return self.settings:get("cache").show_annotations ~= false
+            end,
+            keep_menu_open = true,
+            callback = self:safeCallback(_("Show underlines and thoughts"), function()
+                local cache = self.settings:get("cache")
+                cache.show_annotations = not (cache.show_annotations ~= false)
+                self.settings:set("cache", cache)
+                self.settings:flush()
+                logger.info(
+                    LOG_MODULE,
+                    "annotation visibility changed:",
+                    "show=", tostring(cache.show_annotations)
+                )
+                -- Keep the tap interception registered in both states; hiding is
+                -- handled by _onThoughtTap. Just close any popup already showing.
+                if not cache.show_annotations then
+                    ThoughtPopup.closeVisible()
+                    self._thought_popup_open = nil
+                end
+                self:applyAnnotationVisibility()
+            end),
         })
     end
 
@@ -321,18 +343,25 @@ function WeReadPlugin:getSettingsMenuItems()
     return {
         {
             text = _("Cache management"),
-            callback = self:safeCallback(_("Cache management"), function()
-                self:showCacheManagement()
-            end),
-        },
-        {
-            text_func = function()
-                return T(_("Download directory: %1"), BD.dirpath(self.settings:get_download_dir()))
+            sub_item_table_func = function()
+                return {
+                    {
+                        text = _("Cache cleanup"),
+                        callback = self:safeCallback(_("Cache cleanup"), function()
+                            self:showCacheManagement()
+                        end),
+                    },
+                    {
+                        text_func = function()
+                            return T(_("Cache directory: %1"), BD.dirpath(self.settings:get_download_dir()))
+                        end,
+                        keep_menu_open = true,
+                        callback = self:safeCallback(_("Cache directory"), function(touchmenu_instance)
+                            self:showDownloadDirPicker(touchmenu_instance)
+                        end),
+                    },
+                }
             end,
-            keep_menu_open = true,
-            callback = self:safeCallback(_("Download directory"), function(touchmenu_instance)
-                self:showDownloadDirPicker(touchmenu_instance)
-            end),
         },
         {
             text = _("Reload config.lua"),
@@ -375,7 +404,7 @@ function WeReadPlugin:getSettingsMenuItems()
             end,
         },
         {
-            text = _("Download images"),
+            text = _("Download content"),
             sub_item_table_func = function()
                 return {
                     {
@@ -2194,10 +2223,6 @@ function WeReadPlugin:showCurrentBookDetails()
     self:showInfo(_("Current-book WeRead metadata is not linked yet. Open a parsed WeRead book from the plugin cache first."))
 end
 
-function WeReadPlugin:showNotes()
-    self:showInfo(_("Underlines and thoughts are embedded in cached EPUBs. Tap the star marker while reading to open a thought popup."))
-end
-
 function WeReadPlugin:onShowWeRead()
     self:showAccountStatus()
 end
@@ -2241,9 +2266,53 @@ function WeReadPlugin:onWeReadSyncProgress()
 end
 
 
+-- Runtime CSS that hides underlines and thought stars baked into cached EPUBs.
+-- Applied as an appended stylesheet (not persisted to the book sidecar) so it
+-- acts as a global display preference without mutating downloaded files.
+-- NOTE: only tweak visual/metric properties (border, padding, font-size). Never
+-- use display/white-space here — changing those marks the built DOM stale and
+-- makes ReaderRolling repeatedly prompt for a full document reload.
+local ANNOTATION_HIDE_CSS =
+    ".wr-underline{border-bottom:0 !important;padding-bottom:0 !important;} .wr-star{font-size:0 !important;}"
+
+-- Reapply the current annotation visibility preference to the open WeRead book.
+-- Show=true reapplies the base stylesheet + user tweaks (revealing baked-in
+-- underlines); show=false appends ANNOTATION_HIDE_CSS on top. Triggers a reflow.
+function WeReadPlugin:applyAnnotationVisibility()
+    if not self.ui or not self.ui.document then
+        return
+    end
+    if not self:detectWeReadBook() then
+        return
+    end
+    local typeset = self.ui.typeset
+    if not typeset or not typeset.css then
+        logger.warn(LOG_MODULE, "applyAnnotationVisibility: typeset stylesheet unavailable")
+        return
+    end
+    local show = self.settings:get("cache").show_annotations ~= false
+    local tweaks = ""
+    local styletweak = self.ui.styletweak
+    if styletweak and type(styletweak.getCssText) == "function" then
+        tweaks = styletweak:getCssText() or ""
+    end
+    if not show then
+        tweaks = tweaks .. "\n" .. ANNOTATION_HIDE_CSS
+    end
+    local ok, err = pcall(function()
+        self.ui.document:setStyleSheet(typeset.css, tweaks)
+        self.ui:handleEvent(Event:new("UpdatePos"))
+    end)
+    if not ok then
+        logger.warn(LOG_MODULE, "applyAnnotationVisibility failed:", err)
+    end
+end
+
 function WeReadPlugin:_teardownThoughtInterception()
     if self._thought_interception_setup and self.ui then
-        self.ui:clearTouchZones({ "weread_thought_tap" })
+        self.ui:unRegisterTouchZones({
+            { id = "weread_thought_tap", overrides = { "tap_link" } },
+        })
         self._thought_interception_setup = nil
     end
     ThoughtPopup.closeVisible()
@@ -2427,6 +2496,13 @@ function WeReadPlugin:_onThoughtTap(ges)
         self._thought_html_cache[link.xpointer] = html
     end
 
+    -- When annotations are hidden, still consume the tap so KOReader's built-in
+    -- footnote popup (triggered by the epub:type="noteref" link) does not fire,
+    -- but do not show our own thought popup either.
+    if self.settings:get("cache").show_annotations == false then
+        return true
+    end
+
     if self._thought_popup_open then
         return true
     end
@@ -2452,9 +2528,17 @@ function WeReadPlugin:onReaderReady()
 
     local weread_book_id = self:detectWeReadBook()
     if weread_book_id then
+        -- Always register the tap interception: even when annotations are hidden
+        -- we must intercept taps on thought links to suppress the native footnote
+        -- popup. Visibility is decided inside _onThoughtTap / applyAnnotationVisibility.
         self:_setupThoughtInterception()
+        local show_annotations = self.settings:get("cache").show_annotations ~= false
         UIManager:nextTick(function()
             if not self.ui or not self.ui.document then
+                return
+            end
+            self:applyAnnotationVisibility()
+            if not show_annotations then
                 return
             end
             local params = self:_getThoughtPopupLayoutParams()
