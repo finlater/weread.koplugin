@@ -301,8 +301,7 @@ local function body_fragment(xhtml)
         remaining = remaining:sub(body_close + 7)
     end
     if #bodies > 0 then
-        return table.concat(bodies, "
-")
+        return table.concat(bodies, "\n")
     end
     xhtml = xhtml:gsub("<%?xml.-%?>", "")
     xhtml = xhtml:gsub("<!DOCTYPE.-%>", "")
