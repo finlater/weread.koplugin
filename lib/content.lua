@@ -277,12 +277,32 @@ local function xml_escape(value)
     return value
 end
 
+-- WeRead EPUB chapters may decode to multiple concatenated XHTML documents.
+-- The first <body> is often a title shell; main content lives in later bodies.
 local function body_fragment(xhtml)
     xhtml = tostring(xhtml or "")
-    local body = xhtml:match("<body[^>]*>(.-)</body>")
-        or xhtml:match("<body[^>]*>(.*)")
-    if body then
-        return body
+    local bodies = {}
+    local remaining = xhtml
+    while remaining ~= "" do
+        local body_start = remaining:find("<body", 1, true)
+        if not body_start then
+            break
+        end
+        local body_open_end = remaining:find(">", body_start, true)
+        if not body_open_end then
+            break
+        end
+        local body_close = remaining:find("</body>", body_open_end, true)
+        if not body_close then
+            bodies[#bodies + 1] = remaining:sub(body_open_end + 1)
+            break
+        end
+        bodies[#bodies + 1] = remaining:sub(body_open_end + 1, body_close - 1)
+        remaining = remaining:sub(body_close + 7)
+    end
+    if #bodies > 0 then
+        return table.concat(bodies, "
+")
     end
     xhtml = xhtml:gsub("<%?xml.-%?>", "")
     xhtml = xhtml:gsub("<!DOCTYPE.-%>", "")
