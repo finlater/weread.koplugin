@@ -1,7 +1,7 @@
 # WeRead KOReader Plugin - 修改版 Fork
 
 > 本仓库是基于原 WeRead KOReader 插件制作的非官方修改版 Fork。  
-> 原项目地址：<(https://github.com/QiuYukang/weread.koplugin)>  
+> 原项目地址：<((https://github.com/QiuYukang/weread.koplugin))>  
 > 原作者：<((https://github.com/QiuYukang#--github))>
 
 本项目不是原插件的官方版本。  
