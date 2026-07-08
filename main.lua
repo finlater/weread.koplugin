@@ -1,4 +1,5 @@
 local BD = require("ui/bidi")
+local ButtonDialog = require("ui/widget/buttondialog")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Dispatcher = require("dispatcher")
 local DownloadDialog = require("lib.download_dialog")
@@ -700,6 +701,72 @@ function WeReadPlugin:getShelfSortMenuItems()
     return items
 end
 
+local SHELF_SORT_OPTIONS = {
+    { key = "time_desc", label = _("Last read time (newest first)") },
+    { key = "time_asc",  label = _("Last read time (oldest first)") },
+    { key = "default",   label = _("Default order") },
+    { key = "name_asc",  label = _("Title A-Z") },
+    { key = "name_desc", label = _("Title Z-A") },
+}
+
+local function shelfSortLabel(sort_key)
+    for _i, opt in ipairs(SHELF_SORT_OPTIONS) do
+        if opt.key == sort_key then
+            return opt.label
+        end
+    end
+    return SHELF_SORT_OPTIONS[1].label
+end
+
+function WeReadPlugin:showShelfSortOptions(on_sorted)
+    local dialog
+    local current_sort = self.settings:get("shelf").sort_order or "default"
+    local buttons = {}
+    for _i, opt in ipairs(SHELF_SORT_OPTIONS) do
+        table.insert(buttons, {
+            {
+                text = opt.label,
+                checked_func = function()
+                    return opt.key == current_sort
+                end,
+                -- Defer close+refresh so Button's post-tap checkmark repaint runs
+                -- against the still-shown dialog (avoids a ghost label on close).
+                callback = function()
+                    UIManager:nextTick(function()
+                        UIManager:close(dialog)
+                        local shelf = self.settings:get("shelf")
+                        shelf.sort_order = opt.key
+                        self.settings:set("shelf", shelf)
+                        self.settings:flush()
+                        on_sorted()
+                    end)
+                end,
+            },
+        })
+    end
+    dialog = ButtonDialog:new{
+        title = _("Sort by"),
+        title_align = "center",
+        buttons = buttons,
+    }
+    UIManager:show(dialog)
+end
+
+function WeReadPlugin:shelfToolbarItems(refresh)
+    local sort_order = self.settings:get("shelf").sort_order
+    local items = {
+        {
+            text = _("Sort"),
+            mandatory = T(_("%1 \u{25BE}"), shelfSortLabel(sort_order)),
+            callback = self:safeCallback(_("Sort"), function()
+                self:showShelfSortOptions(refresh)
+            end),
+        },
+    }
+    items[#items].separator = true -- divide the toolbar rows from the book list
+    return items
+end
+
 function WeReadPlugin:showCacheManagement()
     local lfs = require("libs/libkoreader-lfs")
     local books = self.settings:get("books", {})
@@ -1351,27 +1418,35 @@ end
 
 function WeReadPlugin:showShelfPage()
     local books = self.shelf_books or {}
-    local sort_order = self.settings:get("shelf").sort_order
-    books = sortBooks(books, sort_order)
-    local items = {}
-    for _i, book in ipairs(books) do
-        local right_text
-        if book.finishReading == 1 then
-            right_text = _("Done")
-        elseif book.readUpdateTime and book.readUpdateTime > 0 then
-            right_text = os.date("%Y-%m-%d", book.readUpdateTime)
-        else
-            right_text = ""
-        end
-        table.insert(items, {
-            text = book.title or book.bookId or _("Untitled"),
-            mandatory = right_text,
-            callback = self:safeCallback(book.title or book.bookId or _("Untitled"), function()
-                self:showBookRecord(book)
-            end),
-        })
+    if #books == 0 then
+        self:showInfo(_("Your WeRead shelf is empty."))
+        return
     end
-    self:showList(_("WeRead Bookshelf"), items, _("Your WeRead shelf is empty."))
+    local menu, buildItems
+    local function refresh() menu:switchItemTable(nil, buildItems()) end
+    buildItems = function()
+        local items = self:shelfToolbarItems(refresh)
+        local sorted = sortBooks(books, self.settings:get("shelf").sort_order)
+        for _i, book in ipairs(sorted) do
+            local right_text
+            if book.finishReading == 1 then
+                right_text = _("Done")
+            elseif book.readUpdateTime and book.readUpdateTime > 0 then
+                right_text = os.date("%Y-%m-%d", book.readUpdateTime)
+            else
+                right_text = ""
+            end
+            table.insert(items, {
+                text = book.title or book.bookId or _("Untitled"),
+                mandatory = right_text,
+                callback = self:safeCallback(book.title or book.bookId or _("Untitled"), function()
+                    self:showBookRecord(book)
+                end),
+            })
+        end
+        return items
+    end
+    menu = self:showList(_("WeRead Bookshelf"), buildItems(), _("Your WeRead shelf is empty."))
 end
 
 function WeReadPlugin:showBookRecord(book)
@@ -1526,19 +1601,27 @@ end
 
 function WeReadPlugin:showMPShelfPage()
     local books = self.shelf_mp or {}
-    local sort_order = self.settings:get("shelf").sort_order
-    books = sortBooks(books, sort_order)
-    local items = {}
-    for _i, book in ipairs(books) do
-        table.insert(items, {
-            text = book.title or book.bookId or _("Untitled"),
-            post_text = book.author or "",
-            callback = self:safeCallback(book.title or book.bookId or _("Untitled"), function()
-                self:showMPAccount(book)
-            end),
-        })
+    if #books == 0 then
+        self:showInfo(_("No items."))
+        return
     end
-    self:showList(_("Public Accounts"), items, _("No items."))
+    local menu, buildItems
+    local function refresh() menu:switchItemTable(nil, buildItems()) end
+    buildItems = function()
+        local items = self:shelfToolbarItems(refresh)
+        local sorted = sortBooks(books, self.settings:get("shelf").sort_order)
+        for _i, book in ipairs(sorted) do
+            table.insert(items, {
+                text = book.title or book.bookId or _("Untitled"),
+                post_text = book.author or "",
+                callback = self:safeCallback(book.title or book.bookId or _("Untitled"), function()
+                    self:showMPAccount(book)
+                end),
+            })
+        end
+        return items
+    end
+    menu = self:showList(_("Public Accounts"), buildItems(), _("No items."))
 end
 
 function WeReadPlugin:showMPAccount(book)
