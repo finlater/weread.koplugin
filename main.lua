@@ -16,12 +16,10 @@ local T = require("ffi/util").template
 local Cookie = require("lib.cookie")
 local Client = require("lib.client")
 local Content = require("lib.content")
-local Thoughts = require("lib.thoughts")
 local Crypto = require("lib.crypto")
 local I18n = require("lib.i18n")
 local Settings = require("lib.settings")
 local WeRead = require("lib.weread")
-local ThoughtPopup = require("lib.thought_popup")
 
 -- `_` is the translation function; never reuse it as a loop placeholder in this file.
 local function _(text)
@@ -115,7 +113,6 @@ function WeReadPlugin:init()
     if rr.enabled and rr.mode == "manual" and rr.book_id ~= "" and not rr.report_on_open then
         self:startReadReport(true)
     end
-    ThoughtPopup.init()
     self._reader_session_gen = 0
     logger.info(LOG_MODULE, "initialized:", "version=", self.version)
 end
@@ -302,13 +299,21 @@ function WeReadPlugin:getMainMenuItems()
     }
 
     if self.ui.document then
+        table.insert(items, 1, {
+            text = _("Sync progress now") .. "  (" .. _("WIP") .. ")",
+            enabled_func = function() return false end,
+        })
+        table.insert(items, 2, {
+            text = _("Book details") .. "  (" .. _("WIP") .. ")",
+            enabled_func = function() return false end,
+        })
         table.insert(items, 3, {
-            text = _("Show underlines and thoughts"),
+            text = _("显示/隐藏划线和想法"),
             checked_func = function()
                 return self.settings:get("cache").show_annotations ~= false
             end,
             keep_menu_open = true,
-            callback = self:safeCallback(_("Show underlines and thoughts"), function()
+            callback = self:safeCallback(_("显示/隐藏划线和想法"), function()
                 local cache = self.settings:get("cache")
                 cache.show_annotations = not (cache.show_annotations ~= false)
                 self.settings:set("cache", cache)
@@ -318,32 +323,29 @@ function WeReadPlugin:getMainMenuItems()
                     "annotation visibility changed:",
                     "show=", tostring(cache.show_annotations)
                 )
-                -- Keep the tap interception registered in both states; hiding is
-                -- handled by _onThoughtTap. Just close any popup already showing.
-                if not cache.show_annotations then
-                    ThoughtPopup.closeVisible()
-                    self._thought_popup_open = nil
+                if cache.show_annotations and not self:currentBookHasAnnotations() then
+                    self:showInfo(_("当前缓存书不包含划线和想法。请先使用“重新下载当前书（带划线和想法）”生成新版本。\n\n如果想法/评论的显示方式不符合预期，可以检查 KOReader 的“页内 EPUB 脚注”设置。"))
                 end
                 self:applyAnnotationVisibility()
-
-                if cache.show_annotations == true and self.ui and self.ui.document and self.ui.document.file then
-                    local ok_inspect, info = pcall(function()
-                        return Content.inspect_epub_annotations(self.ui.document.file)
-                    end)
-                    if ok_inspect and type(info) == "table" and info.is_clean then
-                        self:showInfo(_("当前打开的书像是 clean 版本：EPUB 里没有划线/评论锚点。\n\n打开“显示划线和想法”不会让它自动出现划线或评论。\n\n请使用“重新下载当前书（带划线/评论）”。"))
-                    end
-                end
             end),
         })
         table.insert(items, 4, {
-            text = _("重新下载当前书（带划线/评论）"),
-            keep_menu_open = true,
+            text = _("重新下载当前书（带划线和想法）"),
             enabled_func = function()
                 return self:detectWeReadBook() ~= nil
             end,
-            callback = self:safeCallback(_("重新下载当前书（带划线/评论）"), function()
-                self:redownloadCurrentBookWithComments()
+            callback = self:safeCallback(_("重新下载当前书（带划线和想法）"), function()
+                local book_id = self:detectWeReadBook()
+                local books = self.settings:get("books", {})
+                local book = book_id and books[book_id]
+                if not book then
+                    self:showInfo(_("当前书没有关联微信读书元数据。请先从 WeRead 插件缓存中打开这本书。"))
+                    return
+                end
+                self:confirmDownloadAllChapters(book, {
+                    annotations = true,
+                    suffix = "with-thoughts",
+                })
             end),
         })
     end
@@ -461,24 +463,6 @@ function WeReadPlugin:getSettingsMenuItems()
                                 end),
                                 cancel_text = _("Cancel"),
                             })
-                        end),
-                    },
-                    {
-                        text = _("Underlines and thoughts"),
-                        keep_menu_open = true,
-                        checked_func = function()
-                            return self.settings:get("cache").download_underlines_and_thoughts
-                        end,
-                        callback = self:safeCallback(_("Underlines and thoughts"), function()
-                            local cache = self.settings:get("cache")
-                            cache.download_underlines_and_thoughts = not cache.download_underlines_and_thoughts
-                            self.settings:set("cache", cache)
-                            self.settings:flush()
-                            logger.info(
-                                LOG_MODULE,
-                                "underlines/thoughts download setting changed:",
-                                "enabled=", tostring(cache.download_underlines_and_thoughts)
-                            )
                         end),
                     },
                 }
@@ -1243,6 +1227,32 @@ function WeReadPlugin:detectWeReadBook()
     return nil
 end
 
+function WeReadPlugin:cachedBookFileContainsAnnotations(book)
+    if not book or type(book.cached_file) ~= "string" or book.cached_file == "" then
+        return false
+    end
+    local file = io.open(book.cached_file, "rb")
+    if not file then
+        return false
+    end
+    local data = file:read("*a") or ""
+    file:close()
+    return data:find("wr%-underline") ~= nil or data:find("weread%-thought") ~= nil
+end
+
+function WeReadPlugin:currentBookHasAnnotations()
+    local book_id = self:detectWeReadBook()
+    if not book_id then
+        return false
+    end
+    local books = self.settings:get("books", {})
+    local book = books[book_id]
+    if not book then
+        return false
+    end
+    return book.annotations_cached == true or self:cachedBookFileContainsAnnotations(book)
+end
+
 function WeReadPlugin:showReadReportBookPicker()
     if not self.settings:is_api_configured() then
         self:showInfo(_("Set the official API key to browse your WeRead shelf. You can still open a book by pasting a reader URL."))
@@ -1505,10 +1515,23 @@ function WeReadPlugin:showBookMenu(book)
         end),
     })
     table.insert(items, {
-        text = _("Download full book"),
+        text = _("下载完整书籍"),
+        post_text = _("干净 EPUB"),
+        callback = self:safeCallback(_("下载完整书籍"), function()
+            self:confirmDownloadAllChapters(book, {
+                annotations = false,
+                suffix = "full",
+            })
+        end),
+    })
+    table.insert(items, {
+        text = _("下载完整书籍（带划线和想法）"),
         post_text = _("EPUB"),
-        callback = self:safeCallback(_("Download full book"), function()
-            self:confirmDownloadAllChapters(book)
+        callback = self:safeCallback(_("下载完整书籍（带划线和想法）"), function()
+            self:confirmDownloadAllChapters(book, {
+                annotations = true,
+                suffix = "with-thoughts",
+            })
         end),
     })
 
@@ -1760,7 +1783,7 @@ function WeReadPlugin:downloadMPArticleAndRead(book, article)
         end
         if not ok then
             logger.err(LOG_MODULE, "download MP article failed:", log_error(path_or_err))
-            self:showInfo(T(_("Download failed:\n%1"), display_error(path_or_err)))
+            self:showInfo(T(_("下载失败：\n%1"), display_error(path_or_err)))
             return
         end
         logger.info(
@@ -1854,7 +1877,7 @@ end
 
 function WeReadPlugin:downloadFirstChapterAndRead(book)
     if not self.settings:is_cookie_configured() then
-        self:showInfo(_("Import cookie/cURL before downloading book content."))
+        self:showInfo(_("下载书籍内容前，请先导入 cookie/cURL。"))
         return
     end
     self:runOnlineTask(_("Downloading first chapter..."), function()
@@ -1865,7 +1888,7 @@ function WeReadPlugin:downloadFirstChapterAndRead(book)
         if not ok then
             self:closeBusy()
             logger.err(LOG_MODULE, "download first chapter failed:", log_error(path_or_err))
-            self:showInfo(T(_("Download failed:\n%1"), display_error(path_or_err)))
+            self:showInfo(T(_("下载失败：\n%1"), display_error(path_or_err)))
             return
         end
         local books = self.settings:get("books", {})
@@ -1882,7 +1905,7 @@ end
 
 function WeReadPlugin:downloadChapterAndRead(book, chapter)
     if not self.settings:is_cookie_configured() then
-        self:showInfo(_("Import cookie/cURL before downloading book content."))
+        self:showInfo(_("下载书籍内容前，请先导入 cookie/cURL。"))
         return
     end
     self:runOnlineTask(_("Download chapter and read"), function()
@@ -1893,7 +1916,7 @@ function WeReadPlugin:downloadChapterAndRead(book, chapter)
         if not ok then
             self:closeBusy()
             logger.err(LOG_MODULE, "download chapter failed:", log_error(path_or_err))
-            self:showInfo(T(_("Download failed:\n%1"), display_error(path_or_err)))
+            self:showInfo(T(_("下载失败：\n%1"), display_error(path_or_err)))
             return
         end
         local books = self.settings:get("books", {})
@@ -1910,7 +1933,7 @@ end
 
 function WeReadPlugin:downloadFirstNChapters(book, count)
     if not self.settings:is_cookie_configured() then
-        self:showInfo(_("Import cookie/cURL before downloading book content."))
+        self:showInfo(_("下载书籍内容前，请先导入 cookie/cURL。"))
         return
     end
     self:loadChapters(book, function(chapters)
@@ -1923,35 +1946,43 @@ function WeReadPlugin:downloadFirstNChapters(book, count)
     end)
 end
 
-function WeReadPlugin:confirmDownloadAllChapters(book)
+function WeReadPlugin:confirmDownloadAllChapters(book, options)
+    options = options or {}
     self:loadChapters(book, function(chapters)
         local confirm
+        local message = T(_("将全部 %1 个章节下载为一个 EPUB？"), tostring(#chapters))
+        if options.annotations then
+            message = message .. "\n\n" .. _("本次下载会包含划线和想法。\n\n如果想法/评论的显示方式不符合预期，可以检查 KOReader 的“页内 EPUB 脚注”设置。")
+        else
+            message = message .. "\n\n" .. _("本次下载将生成干净 EPUB，不包含划线和想法。")
+        end
+        local label = options.annotations and _("下载完整书籍（带划线和想法）") or _("下载完整书籍")
         confirm = ConfirmBox:new{
-            text = T(_("Download all %1 chapters as one EPUB?"), tostring(#chapters)),
-            ok_text = _("Download"),
-            ok_callback = self:safeCallback(_("Download full book"), function()
+            text = message,
+            ok_text = _("下载"),
+            ok_callback = self:safeCallback(label, function()
                 UIManager:close(confirm)
-                self:downloadChaptersAsBook(book, chapters, "full")
+                local suffix = options.suffix or (options.annotations and "with-thoughts" or "full")
+                self:downloadChaptersAsBook(book, chapters, suffix, options)
             end),
-            cancel_text = _("Close"),
+            cancel_text = _("关闭"),
         }
         UIManager:show(confirm)
     end)
 end
-
 function WeReadPlugin:downloadChaptersAsBook(book, chapters, suffix, options)
+    options = options or {}
     if not self.settings:is_cookie_configured() then
-        self:showInfo(_("Import cookie/cURL before downloading book content."))
+        self:showInfo(_("下载书籍内容前，请先导入 cookie/cURL。"))
         return
     end
-    options = options or {}
-    self:runOnlineTask(_("Download full book"), function()
+    self:runOnlineTask(_("下载完整书籍"), function()
         local ok_init, err_init = pcall(function()
             Content.ensure_reader_state(self.client, book)
         end)
         if not ok_init then
             logger.err(LOG_MODULE, "initialize book download failed:", log_error(err_init))
-            self:showInfo(T(_("Download failed:\n%1"), display_error(err_init)))
+            self:showInfo(T(_("下载失败：\n%1"), display_error(err_init)))
             return
         end
 
@@ -1965,17 +1996,18 @@ function WeReadPlugin:downloadChaptersAsBook(book, chapters, suffix, options)
             selected = {},
             bodies = {},
             assets = {},
-            state = { force_underlines_and_thoughts = options.force_underlines_and_thoughts == true },
+            state = { include_annotations = options.annotations == true, chapters = chapters },
+            annotations = options.annotations == true,
             total = total,
             failed = {},
         }
 
         local progress_dialog = DownloadDialog:new{
-            title = T(_("Downloading: %1"), book.title or ""),
+            title = T(_("正在下载：%1"), book.title or ""),
             progress_max = total,
             buttons = {{
                 {
-                    text = _("Cancel download"),
+                    text = _("取消下载"),
                     callback = function()
                         dl.cancelled = true
                         if dl.progress_dialog then
@@ -1998,7 +2030,7 @@ end
 
 function WeReadPlugin:_downloadStep(dl)
     if dl.cancelled then
-        self:showTransientInfo(_("Download cancelled"), 2)
+        self:showTransientInfo(_("下载已取消"), 2)
         return
     end
 
@@ -2026,6 +2058,7 @@ function WeReadPlugin:_downloadStep(dl)
             end
             if ok then
                 dl.book.cached_file = path
+                dl.book.annotations_cached = dl.annotations == true
             end
             dl.book.reader_url = dl.book.reader_url or WeRead.reader_url(book_id)
             books[book_id] = dl.book
@@ -2034,7 +2067,7 @@ function WeReadPlugin:_downloadStep(dl)
         end
         if not ok then
             logger.err(LOG_MODULE, "save downloaded book failed:", log_error(path))
-            self:showInfo(T(_("Download failed:\n%1"), display_error(path)))
+            self:showInfo(T(_("下载失败：\n%1"), display_error(path)))
             return
         end
         if #dl.failed > 0 then
@@ -2047,13 +2080,18 @@ function WeReadPlugin:_downloadStep(dl)
         else
             logger.info(LOG_MODULE, "book download completed:", "chapters=", tostring(#dl.selected))
         end
+        local done_message = T(_("已下载 %1 个章节。\n\n书籍已保存：\n%2"), tostring(#dl.selected), path)
+        if dl.annotations then
+            done_message = done_message .. "\n\n" .. _("如果想法/评论的显示方式不符合预期，可以检查 KOReader 的“页内 EPUB 脚注”设置。")
+        end
+        done_message = done_message .. "\n\n" .. _("现在阅读？")
         UIManager:show(ConfirmBox:new{
-            text = T(_("Downloaded %1 chapters.\n\nBook saved:\n%2\n\nRead now?"), tostring(#dl.selected), path),
-            ok_text = _("Read now"),
-            ok_callback = self:safeCallback(_("Read now"), function()
+            text = done_message,
+            ok_text = _("现在阅读"),
+            ok_callback = self:safeCallback(_("现在阅读"), function()
                 self:openFile(path)
             end),
-            cancel_text = _("Close"),
+            cancel_text = _("关闭"),
         })
         return
     end
@@ -2286,7 +2324,9 @@ end
 -- use display/white-space here — changing those marks the built DOM stale and
 -- makes ReaderRolling repeatedly prompt for a full document reload.
 local ANNOTATION_HIDE_CSS =
-    ".wr-underline{border-bottom:0 !important;padding-bottom:0 !important;} .wr-star{font-size:0 !important;}"
+    ".wr-underline{border-bottom:0 !important;padding-bottom:0 !important;} "
+    .. ".wr-star{font-size:0 !important;margin-left:0 !important;} "
+    .. ".wr-thought-link{pointer-events:none !important;text-decoration:none !important;color:inherit !important;}"
 
 -- Reapply the current annotation visibility preference to the open WeRead book.
 -- Show=true reapplies the base stylesheet + user tweaks (revealing baked-in
@@ -2322,327 +2362,93 @@ function WeReadPlugin:applyAnnotationVisibility()
 end
 
 function WeReadPlugin:_teardownThoughtInterception()
-    if self._thought_interception_setup and self.ui then
-        self.ui:unRegisterTouchZones({
-            { id = "weread_thought_tap", overrides = { "tap_link" } },
-        })
-        self._thought_interception_setup = nil
+    if self._annotation_tap_suppression_setup and self.ui then
+        pcall(function()
+            self.ui:unRegisterTouchZones({
+                { id = "weread_thought_suppress", overrides = { "tap_link" } },
+            })
+        end)
+        self._annotation_tap_suppression_setup = nil
     end
-    ThoughtPopup.closeVisible()
-    ThoughtPopup.cancelPrewarm()
-    self._thought_popup_open = nil
-    self._current_thought_popup = nil
     self._thought_html_cache = nil
-    self._thought_highlight_active = nil
 end
 
-function WeReadPlugin:_setupThoughtInterception()
-    local Device = require("device")
-    if not Device:isTouchDevice() then
+function WeReadPlugin:_setupAnnotationTapSuppression()
+    local ok_device, Device = pcall(require, "device")
+    if not ok_device or not Device:isTouchDevice() then
         return
     end
-    if not self.ui or self._thought_interception_setup then
+    if not self.ui or self._annotation_tap_suppression_setup then
         return
     end
-
     self.ui:registerTouchZones({
         {
-            id = "weread_thought_tap",
+            id = "weread_thought_suppress",
             ges = "tap",
             screen_zone = { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 },
             overrides = { "tap_link" },
             handler = function(ges)
-                return self:_onThoughtTap(ges)
+                return self:_onHiddenThoughtTap(ges)
             end,
         },
     })
-    self._thought_interception_setup = true
+    self._annotation_tap_suppression_setup = true
 end
 
-function WeReadPlugin:_clearThoughtHighlight(document)
-    if not self._thought_highlight_active then
-        return
-    end
-    pcall(function()
-        document:highlightXPointer()
-    end)
-    self._thought_highlight_active = nil
-    UIManager:setDirty(self.dialog, "ui")
-end
-
-function WeReadPlugin:_getThoughtPopupLayoutParams()
-    if not self.ui or not self.ui.document then
-        return nil
-    end
-
-    local Screen = require("device").screen
-    local document = self.ui.document
-
-    local font_face = self.ui.font and self.ui.font.font_face
-    if not font_face then
-        font_face = G_reader_settings:readSetting("cre_font")
-    end
-
-    local font_size = G_reader_settings:readSetting("footnote_popup_absolute_font_size")
-    local font_size_scaled
-    if font_size then
-        font_size_scaled = Screen:scaleBySize(font_size)
-    else
-        local relative = G_reader_settings:readSetting("footnote_popup_relative_font_size") or -2
-        local doc_font_size = (document.configurable and document.configurable.font_size) or 18
-        font_size_scaled = Screen:scaleBySize(doc_font_size) + relative
-    end
-
-    return {
-        doc_font_name = font_face,
-        doc_font_size = font_size_scaled,
-        doc_margins = document:getPageMargins(),
-        height_ratio = 0.35,
-    }
-end
-
-function WeReadPlugin:_showThoughtPopup(html, link, session_gen)
-    if session_gen and session_gen ~= self._reader_session_gen then
-        self._thought_popup_open = nil
-        return
-    end
-    if type(html) ~= "string" or html == "" then
-        self._thought_popup_open = nil
-        return
-    end
-
-    local Screen = require("device").screen
-    local document = self.ui.document
-    if link.from_xpointer then
-        local ok = pcall(function()
-            document:highlightXPointer()
-            document:highlightXPointer(link.from_xpointer)
-        end)
-        if ok then
-            self._thought_highlight_active = true
-            UIManager:setDirty(self.dialog, "partial")
-        end
-    end
-
-    local params = self:_getThoughtPopupLayoutParams()
-    if not params then
-        self._thought_popup_open = nil
-        return
-    end
-
-    ThoughtPopup.preloadFonts(params.doc_font_name)
-
-    local ok, popup = pcall(function()
-        return ThoughtPopup.show({
-            html = html,
-            doc_font_name = params.doc_font_name,
-            doc_font_size = params.doc_font_size,
-            doc_margins = params.doc_margins,
-            height_ratio = params.height_ratio,
-            dialog = self.dialog,
-            close_callback = function(footnote_height)
-                self._thought_popup_open = nil
-                self._current_thought_popup = nil
-                if self._thought_highlight_active then
-                    local highlight_page = document:getCurrentPage()
-                    local clear_gen = self._reader_session_gen or 0
-                    local clear_highlight = function()
-                        if clear_gen ~= self._reader_session_gen then
-                            return
-                        end
-                        document:highlightXPointer()
-                        if document:getCurrentPage() == highlight_page then
-                            UIManager:setDirty(self.dialog, "ui")
-                        end
-                    end
-                    self._thought_highlight_active = nil
-                    local footnote_top_y = Screen:getHeight() - footnote_height
-                    if link.link_y and link.link_y > footnote_top_y then
-                        UIManager:scheduleIn(0.5, clear_highlight)
-                    else
-                        clear_highlight()
-                    end
-                end
-            end,
-        })
-    end)
-
-    if not ok then
-        logger.warn(LOG_MODULE, "thought popup failed:", popup)
-        self._thought_popup_open = nil
-        self:_clearThoughtHighlight(document)
-        return
-    end
-
-    self._current_thought_popup = popup
-end
-
-function WeReadPlugin:_extractThoughtRefFromText(value)
-    if type(value) ~= "string" then
-        return nil
-    end
-    local id = value:match("(thought_[%w_%-]+)")
-    if not id then
-        return nil
-    end
-    local chapter_uid, start_pos, end_pos = id:match("^thought_(.-)_(%d+)_(%d+)$")
-    if not chapter_uid or not start_pos or not end_pos then
-        return nil
-    end
-    return {
-        id = id,
-        chapter_uid = chapter_uid,
-        range = tostring(start_pos) .. "-" .. tostring(end_pos),
-    }
-end
-
-function WeReadPlugin:_extractThoughtRefFromLink(link)
+function WeReadPlugin:_isWeReadThoughtLink(link)
     if type(link) ~= "table" then
-        return nil
+        return false
     end
-    for _, key in ipairs({ "href", "target", "url", "link", "anchor", "id", "text", "xpointer", "from_xpointer" }) do
-        local ref = self:_extractThoughtRefFromText(link[key])
-        if ref then
-            return ref
-        end
-    end
-    for _key, value in pairs(link) do
-        if type(value) == "string" then
-            local ref = self:_extractThoughtRefFromText(value)
-            if ref then
-                return ref
-            end
-        end
-    end
-    return nil
-end
 
-function WeReadPlugin:_getThoughtHtmlFromJson(book_id, link)
-    local ref = self:_extractThoughtRefFromLink(link)
-    if not ref then
-        return nil
+    for _, key in ipairs({ "href", "url", "target" }) do
+        local value = link[key]
+        if type(value) == "string" and value:find("#thought_", 1, true) then
+            return true
+        end
     end
+
+    local xpointer = link.xpointer
+    if type(xpointer) ~= "string" or xpointer == "" then
+        return false
+    end
+
     self._thought_html_cache = self._thought_html_cache or {}
-    local cache_key = "json:" .. tostring(book_id) .. ":" .. ref.chapter_uid .. ":" .. ref.range
-    if self._thought_html_cache[cache_key] ~= nil then
-        local cached = self._thought_html_cache[cache_key]
-        return cached ~= false and cached or nil
+    if self._thought_html_cache[xpointer] ~= nil then
+        return self._thought_html_cache[xpointer] == true
     end
-    local html = Thoughts.html_for_range(self.settings, book_id, ref.chapter_uid, ref.range)
-    if type(html) == "string" and html:find("weread%-thought") then
-        self._thought_html_cache[cache_key] = html
-        return html
+
+    local is_thought = false
+    if self.ui and self.ui.document and type(self.ui.document.getHTMLFromXPointer) == "function" then
+        local ok, html = pcall(function()
+            return self.ui.document:getHTMLFromXPointer(xpointer, 0x1001, true)
+        end)
+        is_thought = ok and type(html) == "string" and html:find("weread%-thought") ~= nil
     end
-    self._thought_html_cache[cache_key] = false
-    return nil
+
+    self._thought_html_cache[xpointer] = is_thought
+    return is_thought
 end
 
-function WeReadPlugin:_onThoughtTap(ges)
-    if not self.ui or not self.ui.document or not self.ui.link then
+function WeReadPlugin:_onHiddenThoughtTap(ges)
+    if self.settings:get("cache").show_annotations ~= false then
         return false
     end
-    local book_id = self:detectWeReadBook()
-    if not book_id then
-        return false
-    end
-
-    local link = self.ui.link:getLinkFromGes(ges)
-    if not link then
+    if not self.ui or not self.ui.link or not self:detectWeReadBook() then
         return false
     end
 
-    local html = self:_getThoughtHtmlFromJson(book_id, link)
-
-    -- Backward-compatible fallback for old EPUBs that still contain full footnote aside HTML.
-    if not html and link.xpointer then
-        local cache = self._thought_html_cache
-        if cache and cache[link.xpointer] ~= nil then
-            local cached = cache[link.xpointer]
-            if cached ~= false then
-                html = cached
-            end
-        else
-            local ok, got = pcall(function()
-                return self.ui.document:getHTMLFromXPointer(link.xpointer, 0x1001, true)
-            end)
-            if ok and type(got) == "string" and got:find("weread%-thought") then
-                html = got
-                self._thought_html_cache = self._thought_html_cache or {}
-                self._thought_html_cache[link.xpointer] = html
-            else
-                self._thought_html_cache = self._thought_html_cache or {}
-                self._thought_html_cache[link.xpointer] = false
-            end
-        end
-    end
-
-    if type(html) ~= "string" or html == "" then
-        return false
-    end
-
-    -- When annotations are hidden, consume the tap so KOReader's built-in
-    -- footnote popup does not fire, but do not show our popup.
-    if self.settings:get("cache").show_annotations == false then
-        return true
-    end
-
-    if self._thought_popup_open then
-        return true
-    end
-    self._thought_popup_open = true
-    local session_gen = self._reader_session_gen or 0
-    UIManager:nextTick(function()
-        if session_gen ~= self._reader_session_gen then
-            self._thought_popup_open = nil
-            return
-        end
-        if not self.ui or not self.ui.document then
-            self._thought_popup_open = nil
-            return
-        end
-        self:_showThoughtPopup(html, link, session_gen)
+    local ok, link = pcall(function()
+        return self.ui.link:getLinkFromGes(ges)
     end)
-    return true
+    if not ok or not link then
+        return false
+    end
+
+    if self:_isWeReadThoughtLink(link) then
+        return true
+    end
+    return false
 end
-
-function WeReadPlugin:redownloadCurrentBookWithComments()
-    if not self.ui or not self.ui.document then
-        self:showInfo(_("请先打开一本微信读书缓存书。"))
-        return
-    end
-
-    local book_id = self:detectWeReadBook()
-    if not book_id then
-        self:showInfo(_("当前书不是微信读书缓存书。"))
-        return
-    end
-
-    if not self.settings:is_cookie_configured() then
-        self:showInfo(_("Import cookie/cURL before downloading book content."))
-        return
-    end
-
-    local books = self.settings:get("books", {})
-    local book = books[book_id]
-    if not book then
-        self:showInfo(_("当前微信读书书籍不在缓存记录中。请先从微信读书书架打开一次这本书，然后重试。"))
-        return
-    end
-
-    UIManager:show(ConfirmBox:new{
-        text = _("重新下载当前书，并写入微信读书划线/评论？\n\n这会重新下载正文，并强制写入划线、星号和评论弹窗缓存。图片是否下载仍然使用原来的“Book images/书籍图片”设置。\n\n原来的 full.epub 通常会被新的 full.epub 覆盖。"),
-        ok_text = _("重新下载"),
-        ok_callback = self:safeCallback(_("重新下载当前书（带划线/评论）"), function()
-            self:loadChapters(book, function(chapters)
-                self:downloadChaptersAsBook(book, chapters, "full", {
-                    force_underlines_and_thoughts = true,
-                })
-            end)
-        end),
-        cancel_text = _("取消"),
-    })
-end
-
 
 function WeReadPlugin:onReaderReady()
     self._reader_session_gen = (self._reader_session_gen or 0) + 1
@@ -2650,36 +2456,13 @@ function WeReadPlugin:onReaderReady()
 
     local weread_book_id = self:detectWeReadBook()
     if weread_book_id then
-        -- Always register the tap interception: even when annotations are hidden
-        -- we must intercept taps on thought links to suppress the native footnote
-        -- popup. Visibility is decided inside _onThoughtTap / applyAnnotationVisibility.
-        self:_setupThoughtInterception()
-        local show_annotations = self.settings:get("cache").show_annotations ~= false
-        UIManager:nextTick(function()
-            if not self.ui or not self.ui.document then
-                return
-            end
-            -- Do not auto-apply annotation visibility on open.
-            -- It resets the runtime stylesheet and may trigger CRE full rendering flicker.
-            -- Manual "Show underlines and thoughts" still calls applyAnnotationVisibility().
-            -- self:applyAnnotationVisibility()
-            if not show_annotations then
-                return
-            end
-            local params = self:_getThoughtPopupLayoutParams()
-            if not params then
-                return
-            end
-            ThoughtPopup.preloadFonts(params.doc_font_name)
-            ThoughtPopup.prewarm({
-                doc_font_name = params.doc_font_name,
-                doc_font_size = params.doc_font_size,
-                doc_margins = params.doc_margins,
-                height_ratio = params.height_ratio,
-                dialog = self.dialog,
-            })
-        end)
+        self:_setupAnnotationTapSuppression()
     end
+
+    -- Do not call applyAnnotationVisibility() automatically on reader open.
+    -- setStyleSheet() + UpdatePos can trigger visible reload/flicker on some
+    -- EPUBs. Visibility changes are applied only when the user toggles the menu
+    -- item manually.
 
     local rr = self.settings:get("read_report")
     if rr.mode == "auto" and rr.enabled then
