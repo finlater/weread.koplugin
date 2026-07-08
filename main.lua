@@ -686,6 +686,44 @@ local function shelfSortLabel(sort_key)
     return SHELF_SORT_OPTIONS[1].label
 end
 
+local SHELF_FILTER_OPTIONS = {
+    { dim = "reading",  value = "finished",       label = _("Only show finished books"),       short = _("Finished") },
+    { dim = "reading",  value = "unfinished",     label = _("Only show unfinished books"),     short = _("Unfinished") },
+    { dim = "download", value = "downloaded",     label = _("Only show downloaded books"),     short = _("Downloaded") },
+    { dim = "download", value = "not_downloaded", label = _("Only show not-downloaded books"), short = _("Not downloaded") },
+}
+
+function WeReadPlugin:shelfFilterSummary()
+    local filters = self.shelf_filters
+    local parts = {}
+    for _i, opt in ipairs(SHELF_FILTER_OPTIONS) do
+        if filters[opt.dim] == opt.value then
+            table.insert(parts, opt.short)
+        end
+    end
+    if #parts == 0 then
+        return _("All")
+    end
+    return table.concat(parts, " / ")
+end
+
+function WeReadPlugin:saveShelfFilters()
+    local shelf = self.settings:get("shelf")
+    shelf.filter_reading = self.shelf_filters.reading
+    shelf.filter_download = self.shelf_filters.download
+    self.settings:set("shelf", shelf)
+    self.settings:flush()
+end
+
+function WeReadPlugin:bookMatchesFilters(book)
+    local filters = self.shelf_filters
+    if filters.reading == "finished" and book.finishReading ~= 1 then return false end
+    if filters.reading == "unfinished" and book.finishReading == 1 then return false end
+    if filters.download == "downloaded" and not self:isBookDownloaded(book) then return false end
+    if filters.download == "not_downloaded" and self:isBookDownloaded(book) then return false end
+    return true
+end
+
 function WeReadPlugin:showShelfSortOptions(on_sorted)
     local dialog
     local current_sort = self.settings:get("shelf").sort_order or "default"
@@ -720,7 +758,62 @@ function WeReadPlugin:showShelfSortOptions(on_sorted)
     UIManager:show(dialog)
 end
 
-function WeReadPlugin:shelfToolbarItems(refresh)
+function WeReadPlugin:showShelfFilterOptions(on_changed)
+    local dialog
+    local filters = self.shelf_filters
+    local buttons = {
+        {
+            {
+                text = _("All"),
+                checked_func = function()
+                    return filters.reading == nil and filters.download == nil
+                end,
+                callback = function()
+                    UIManager:nextTick(function()
+                        UIManager:close(dialog)
+                        filters.reading = nil
+                        filters.download = nil
+                        self:saveShelfFilters()
+                        on_changed()
+                    end)
+                end,
+            },
+        },
+    }
+    for _i, opt in ipairs(SHELF_FILTER_OPTIONS) do
+        table.insert(buttons, {
+            {
+                text = opt.label,
+                checked_func = function()
+                    return filters[opt.dim] == opt.value
+                end,
+                callback = function()
+                    UIManager:nextTick(function()
+                        UIManager:close(dialog)
+                        -- Toggle within the dimension: re-tapping clears it, else select.
+                        filters[opt.dim] = (filters[opt.dim] == opt.value) and nil or opt.value
+                        self:saveShelfFilters()
+                        on_changed()
+                    end)
+                end,
+            },
+        })
+    end
+    dialog = ButtonDialog:new{
+        title = _("Filter by"),
+        title_align = "center",
+        buttons = buttons,
+    }
+    UIManager:show(dialog)
+end
+
+function WeReadPlugin:isBookDownloaded(book)
+    local book_id = book.book_id or book.bookId
+    local record = self.settings:get("books", {})[book_id]
+    return record ~= nil and record.cached_file ~= nil
+end
+
+function WeReadPlugin:shelfToolbarItems(with_filters, refresh)
     local sort_order = self.settings:get("shelf").sort_order
     local items = {
         {
@@ -731,6 +824,15 @@ function WeReadPlugin:shelfToolbarItems(refresh)
             end),
         },
     }
+    if with_filters then
+        table.insert(items, {
+            text = _("Filter"),
+            mandatory = T(_("%1 \u{25BE}"), self:shelfFilterSummary()),
+            callback = self:safeCallback(_("Filter"), function()
+                self:showShelfFilterOptions(refresh)
+            end),
+        })
+    end
     items[#items].separator = true -- divide the toolbar rows from the book list
     return items
 end
@@ -1337,6 +1439,8 @@ function WeReadPlugin:showBookshelf()
             return
         end
         local all_books = result.books or {}
+        local shelf = self.settings:get("shelf")
+        self.shelf_filters = { reading = shelf.filter_reading, download = shelf.filter_download }
         self.shelf_regular = {}
         self.shelf_mp = {}
         for _i, book in ipairs(all_books) do
@@ -1393,24 +1497,26 @@ function WeReadPlugin:showShelfPage()
     local menu, buildItems
     local function refresh() menu:switchItemTable(nil, buildItems()) end
     buildItems = function()
-        local items = self:shelfToolbarItems(refresh)
+        local items = self:shelfToolbarItems(true, refresh)
         local sorted = sortBooks(books, self.settings:get("shelf").sort_order)
         for _i, book in ipairs(sorted) do
-            local right_text
-            if book.finishReading == 1 then
-                right_text = _("Done")
-            elseif book.readUpdateTime and book.readUpdateTime > 0 then
-                right_text = os.date("%Y-%m-%d", book.readUpdateTime)
-            else
-                right_text = ""
+            if self:bookMatchesFilters(book) then
+                local right_text
+                if book.finishReading == 1 then
+                    right_text = _("Done")
+                elseif book.readUpdateTime and book.readUpdateTime > 0 then
+                    right_text = os.date("%Y-%m-%d", book.readUpdateTime)
+                else
+                    right_text = ""
+                end
+                table.insert(items, {
+                    text = book.title or book.bookId or _("Untitled"),
+                    mandatory = right_text,
+                    callback = self:safeCallback(book.title or book.bookId or _("Untitled"), function()
+                        self:showBookRecord(book)
+                    end),
+                })
             end
-            table.insert(items, {
-                text = book.title or book.bookId or _("Untitled"),
-                mandatory = right_text,
-                callback = self:safeCallback(book.title or book.bookId or _("Untitled"), function()
-                    self:showBookRecord(book)
-                end),
-            })
         end
         return items
     end
@@ -1576,7 +1682,7 @@ function WeReadPlugin:showMPShelfPage()
     local menu, buildItems
     local function refresh() menu:switchItemTable(nil, buildItems()) end
     buildItems = function()
-        local items = self:shelfToolbarItems(refresh)
+        local items = self:shelfToolbarItems(false, refresh)
         local sorted = sortBooks(books, self.settings:get("shelf").sort_order)
         for _i, book in ipairs(sorted) do
             table.insert(items, {
