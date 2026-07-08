@@ -367,6 +367,12 @@ function WeReadPlugin:getSettingsMenuItems()
             sub_item_table_func = function()
                 return {
                     {
+                        text = _("Scan local cache"),
+                        callback = self:safeCallback(_("Scan local cache"), function()
+                            self:confirmScanLocalCache()
+                        end),
+                    },
+                    {
                         text = _("Cache cleanup"),
                         callback = self:safeCallback(_("Cache cleanup"), function()
                             self:showCacheManagement()
@@ -988,14 +994,6 @@ function WeReadPlugin:showCacheManagement()
                     self:refreshCacheManagement(_("Cache cleared"))
                 end,
             })
-        end),
-    })
-
-    table.insert(items, 1, {
-        text = _("[Scan] Scan local cache"),
-        separator = true,
-        callback = self:safeCallback(_("Scan local cache"), function()
-            self:confirmScanLocalCache()
         end),
     })
 

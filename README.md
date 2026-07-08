@@ -177,6 +177,7 @@ curl 'https://weread.qq.com/web/mp/articles?bookId=...' \
 │   └── 上报状态
 ├── 设置
 │   ├── 缓存管理
+│   │   ├── 扫描本地缓存
 │   │   ├── 缓存清理
 │   │   └── 缓存目录
 │   ├── 重新加载 config.lua
