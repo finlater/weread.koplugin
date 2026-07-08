@@ -21,8 +21,6 @@ Annotations.UNDERLINE_CSS = [[
 Annotations.THOUGHT_CSS = [[
 .wr-thought-link{text-decoration:none;color:inherit;}
 .wr-star{font-size:0.6em;vertical-align:super;line-height:0;color:#aaa;margin-left:1px;}
-.weread-thoughts-section{height:0;line-height:0;margin:0;padding:0;border:0;overflow:hidden;}
-.weread-thought-anchor{font-size:0;line-height:0;height:0;width:0;overflow:hidden;}
 ]]
 
 --- 去除字符串开头的 UTF-8 BOM（\ufeff）。
@@ -242,25 +240,53 @@ function Annotations.buildThoughtAsides(thought_reviews, chapter_uid)
     if type(thought_reviews) ~= "table" then return "" end
     if not chapter_uid then return "" end
 
-    -- Do not embed full review/thought text into the chapter body.
-    -- Keep only empty anchor targets so <a href="#thought_..."> links remain valid.
-    -- The popup reads the real review text from cache/<book_id>/thoughts/<chapter_uid>.json.
-    local parts = { '<section epub:type="footnotes" class="weread-thoughts-section">' }
-    local seen = {}
+    local parts = { '<section epub:type="footnotes">' }
 
     for _, rv in ipairs(thought_reviews) do
         if rv.pageReviews and #rv.pageReviews > 0 then
             local range_str = rv.range or "0-0"
             local id = "thought_" .. tostring(chapter_uid) .. "_" .. range_str:gsub("-", "_")
-            if not seen[id] then
-                seen[id] = true
-                parts[#parts + 1] = '<span id="' .. id .. '" class="weread-thought-anchor"></span>'
+            parts[#parts + 1] = '<aside epub:type="footnote" id="' .. id .. '" class="footnote weread-thought">'
+
+            -- 引用原文（截断）
+            local abstract = nil
+            local first_pr = rv.pageReviews[1]
+            if first_pr and first_pr.review then
+                abstract = first_pr.review.abstract or first_pr.review.contextAbstract
             end
+
+            for i, pr in ipairs(rv.pageReviews) do
+                local review = pr.review or {}
+                local author = review.author or {}
+                local name = author.nick or author.name or "匿名"
+                local content = review.content or ""
+                local likes = pr.likesCount or 0
+
+                parts[#parts + 1] = '<p style="white-space:pre-line">'
+
+                -- 第一条想法附带引用原文
+                if i == 1 and abstract then
+                    local q = truncateRunes(abstract, 50)
+                    parts[#parts + 1] = '<span style="color:#666;font-style:italic">「' ..
+                    htmlEscape(q) .. '」</span><br/>'
+                end
+
+                -- 作者 + 点赞
+                local meta = "▸ " .. htmlEscape(name)
+                if likes > 0 then meta = meta .. " · ♥ " .. likes end
+                parts[#parts + 1] = '<span style="color:#999;font-size:0.85em">' .. meta .. '</span><br/>'
+
+                -- 正文
+                parts[#parts + 1] = '<span>' .. htmlEscape(content) .. '</span>'
+                parts[#parts + 1] = '</p>'
+            end
+
+            parts[#parts + 1] = '</aside>'
         end
     end
 
     parts[#parts + 1] = '</section>'
-    return table.concat(parts, "\\n")
+    return table.concat(parts, "\n")
 end
 
 --- 在 HTML 中注入下划线标记。

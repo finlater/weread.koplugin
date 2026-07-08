@@ -1,6 +1,7 @@
 local Crypto = require("lib.crypto")
 local WeRead = require("lib.weread")
 local Thoughts = require("lib.thoughts")
+local Footnotes = require("lib.footnotes")
 local bit = require("bit")
 local ok_logger, logger = pcall(require, "logger")
 if not ok_logger then
@@ -279,10 +280,27 @@ end
 
 local function body_fragment(xhtml)
     xhtml = tostring(xhtml or "")
-    local body = xhtml:match("<body[^>]*>(.-)</body>")
-        or xhtml:match("<body[^>]*>(.*)")
-    if body then
-        return body
+    local bodies = {}
+    local remaining = xhtml
+    while remaining ~= "" do
+        local body_start = remaining:find("<body", 1, true)
+        if not body_start then
+            break
+        end
+        local body_open_end = remaining:find(">", body_start, true)
+        if not body_open_end then
+            break
+        end
+        local body_close = remaining:find("</body>", body_open_end, true)
+        if not body_close then
+            bodies[#bodies + 1] = remaining:sub(body_open_end + 1)
+            break
+        end
+        bodies[#bodies + 1] = remaining:sub(body_open_end + 1, body_close - 1)
+        remaining = remaining:sub(body_close + 7)
+    end
+    if #bodies > 0 then
+        return table.concat(bodies, "\n")
     end
     xhtml = xhtml:gsub("<%?xml.-%?>", "")
     xhtml = xhtml:gsub("<!DOCTYPE.-%>", "")
@@ -964,9 +982,12 @@ function Content.fetch_chapter_css(client, settings, book, chapter)
 end
 
 
-local function apply_chapter_annotations(client, settings, book, chapter, xhtml, css, force_underlines_and_thoughts)
-    local cache = settings:get("cache", {})
-    if cache.download_underlines_and_thoughts ~= true and force_underlines_and_thoughts ~= true then
+local function apply_chapter_annotations(client, settings, book, chapter, xhtml, css, options)
+    options = options or {}
+    -- Plan B: annotation injection is controlled by the download action,
+    -- not by a global setting. Ordinary downloads stay clean; the dedicated
+    -- "with underlines and thoughts" action passes include_annotations=true.
+    if options.include_annotations ~= true then
         return xhtml, css
     end
     local book_id = book.book_id or book.bookId
@@ -975,11 +996,65 @@ local function apply_chapter_annotations(client, settings, book, chapter, xhtml,
     return processed, Thoughts.merge_css(css, annotation_css)
 end
 
-function Content.fetch_chapter_epub(client, settings, book, chapter)
+local function append_before_body_close(xhtml, fragment)
+    if type(fragment) ~= "string" or fragment == "" then
+        return xhtml
+    end
+    local pos = xhtml:lower():find("</body>", 1, true)
+    if pos then
+        return xhtml:sub(1, pos - 1) .. fragment .. xhtml:sub(pos)
+    end
+    return xhtml .. fragment
+end
+
+local function footnote_meta(client, settings, book, state)
+    state = state or {}
+    local book_id = book.book_id or book.bookId
+    return {
+        book_dir = Content.book_cache_dir(settings, book_id),
+        book_id = book_id,
+        is_txt = book._content_format == "txt",
+        chapters = state.chapters or book.chapters,
+        fetch_chapter_html = function(chapter)
+            return Content.fetch_chapter_xhtml(client, settings, book, chapter)
+        end,
+        fetch_catalog = function()
+            local reader_url = book.reader_url or WeRead.reader_url(book_id)
+            local catalog = client:post_json("https://weread.qq.com/web/book/chapterInfos", {
+                bookIds = { tostring(book_id) },
+            }, { referer = reader_url })
+            return Content.normalize_chapters(catalog, book_id)
+        end,
+    }
+end
+
+local function apply_chapter_footnotes(client, settings, book, chapter, xhtml, css, state)
+    if book._content_format == "txt" then
+        return xhtml, css
+    end
+    local processed, section = Footnotes.process(xhtml, footnote_meta(client, settings, book, state))
+    if section and section ~= "" then
+        processed = append_before_body_close(processed, section)
+    end
+    if processed ~= xhtml or (section and section ~= "") then
+        css = Thoughts.merge_css(css, Footnotes.FOOTNOTES_CSS)
+    end
+    return processed, css
+end
+
+local function apply_chapter_enrichments(client, settings, book, chapter, xhtml, css, state)
+    state = state or {}
+    xhtml, css = apply_chapter_annotations(client, settings, book, chapter, xhtml, css, state)
+    xhtml, css = apply_chapter_footnotes(client, settings, book, chapter, xhtml, css, state)
+    return xhtml, css
+end
+
+function Content.fetch_chapter_epub(client, settings, book, chapter, options)
+    options = options or {}
     local book_id = book.book_id or book.bookId
     local xhtml = Content.fetch_chapter_xhtml(client, settings, book, chapter)
     local css = Content.fetch_chapter_css(client, settings, book, chapter)
-    xhtml, css = apply_chapter_annotations(client, settings, book, chapter, xhtml, css)
+    xhtml, css = apply_chapter_enrichments(client, settings, book, chapter, xhtml, css, options)
     local assets = {}
     local cache = settings:get("cache", {})
     if cache.download_book_images then
@@ -1009,7 +1084,7 @@ function Content.fetch_single_chapter_content(client, settings, book, chapter, s
     if not state.css then
         state.css = Content.fetch_chapter_css(client, settings, book, chapter)
     end
-    xhtml, state.css = apply_chapter_annotations(client, settings, book, chapter, xhtml, state.css, state.force_underlines_and_thoughts)
+    xhtml, state.css = apply_chapter_enrichments(client, settings, book, chapter, xhtml, state.css, state)
     local chapter_assets = {}
     local cache = settings:get("cache", {})
     if cache.download_book_images then
@@ -1044,7 +1119,7 @@ function Content.fetch_chapters_epub(client, settings, book, chapters, options)
         if not css then
             css = Content.fetch_chapter_css(client, settings, book, chapter)
         end
-        xhtml, css = apply_chapter_annotations(client, settings, book, chapter, xhtml, css)
+        xhtml, css = apply_chapter_enrichments(client, settings, book, chapter, xhtml, css, { include_annotations = options.annotations == true, chapters = chapters })
         if cache.download_book_images then
             if options.progress then
                 options.progress(chapter_index, #chapters, chapter, "images")
@@ -1073,6 +1148,7 @@ function Content.fetch_chapters_epub(client, settings, book, chapters, options)
         book.cached_chapters[tostring(chapter.chapterUid or chapter_index)] = path
     end
     book.cached_file = path
+    book.annotations_cached = options.annotations == true
     book.reader_url = book.reader_url or WeRead.reader_url(book.book_id or book.bookId)
     return path, selected
 end
@@ -1507,165 +1583,5 @@ function Content.fetch_mp_article_html(client, settings, book, article, opts)
     end
     return Content.save_mp_article_html(settings, book, article, body)
 end
-
-
-local function read_file_bytes(path)
-    local file, err = io.open(path, "rb")
-    if not file then
-        return nil, err
-    end
-    local data = file:read("*a")
-    file:close()
-    return data
-end
-
-local function zip_u16(data, pos)
-    local a, b = data:byte(pos, pos + 1)
-    if not a or not b then return nil end
-    return a + b * 256
-end
-
-local function zip_u32(data, pos)
-    local a, b, c, d = data:byte(pos, pos + 3)
-    if not a or not b or not c or not d then return nil end
-    return a + b * 256 + c * 65536 + d * 16777216
-end
-
-local function read_stored_zip_entries(path)
-    local data, err = read_file_bytes(path)
-    if not data then
-        return nil, err
-    end
-
-    local entries = {}
-    local pos = 1
-    while pos + 30 <= #data do
-        local sig = zip_u32(data, pos)
-        if sig ~= 0x04034b50 then
-            break
-        end
-
-        local method = zip_u16(data, pos + 8)
-        local comp_size = zip_u32(data, pos + 18)
-        local name_len = zip_u16(data, pos + 26)
-        local extra_len = zip_u16(data, pos + 28)
-        if not method or not comp_size or not name_len or not extra_len then
-            return nil, "Invalid ZIP local header"
-        end
-        if method ~= 0 then
-            return nil, "Unsupported EPUB compression method: " .. tostring(method)
-        end
-
-        local name_start = pos + 30
-        local name_end = name_start + name_len - 1
-        local body_start = name_end + 1 + extra_len
-        local body_end = body_start + comp_size - 1
-        if body_end > #data then
-            return nil, "Truncated ZIP entry"
-        end
-
-        entries[#entries + 1] = {
-            name = data:sub(name_start, name_end),
-            data = data:sub(body_start, body_end),
-        }
-
-        pos = body_end + 1
-    end
-
-    if #entries == 0 then
-        return nil, "No stored ZIP entries found"
-    end
-    return entries
-end
-
-function Content.extract_thought_ranges_from_epub(path)
-    if type(path) ~= "string" or path == "" then
-        return nil, "No EPUB path"
-    end
-
-    local entries, err = read_stored_zip_entries(path)
-    if not entries then
-        return nil, err
-    end
-
-    local chapters = {}
-    local total = 0
-
-    local function add_id(id)
-        local chapter_uid, start_pos, end_pos = tostring(id or ""):match("^thought_(.-)_(%d+)_(%d+)$")
-        if not chapter_uid or not start_pos or not end_pos then
-            return
-        end
-        local range = tostring(start_pos) .. "-" .. tostring(end_pos)
-        chapters[chapter_uid] = chapters[chapter_uid] or { ranges = {}, seen = {} }
-        if not chapters[chapter_uid].seen[range] then
-            chapters[chapter_uid].seen[range] = true
-            chapters[chapter_uid].ranges[#chapters[chapter_uid].ranges + 1] = range
-            total = total + 1
-        end
-    end
-
-    for _, entry in ipairs(entries) do
-        if entry.name:match("%.xhtml$") or entry.name:match("%.html$") then
-            for id in entry.data:gmatch('id="(thought_[^"]+)"') do
-                add_id(id)
-            end
-            for href in entry.data:gmatch('href="#(thought_[^"]+)"') do
-                add_id(href)
-            end
-        end
-    end
-
-    local result = {}
-    for chapter_uid, item in pairs(chapters) do
-        table.sort(item.ranges, function(a, b)
-            local as = tonumber(a:match("^(%d+)%-")) or 0
-            local bs = tonumber(b:match("^(%d+)%-")) or 0
-            return as < bs
-        end)
-        result[chapter_uid] = item.ranges
-    end
-
-    return result, total
-end
-
-
-
-function Content.inspect_epub_annotations(path)
-    local result = {
-        has_underlines = false,
-        has_thoughts = false,
-        has_thought_anchors = false,
-        is_clean = true,
-    }
-
-    if type(path) ~= "string" or path == "" then
-        return result, "No EPUB path"
-    end
-
-    local entries, err = read_stored_zip_entries(path)
-    if not entries then
-        return result, err
-    end
-
-    for _, entry in ipairs(entries) do
-        if entry.name:match("%.xhtml$") or entry.name:match("%.html$") or entry.name:match("%.css$") then
-            local data = entry.data or ""
-            if data:find("wr%-underline") then
-                result.has_underlines = true
-            end
-            if data:find("weread%-thought") then
-                result.has_thoughts = true
-            end
-            if data:find("thought_") then
-                result.has_thought_anchors = true
-            end
-        end
-    end
-
-    result.is_clean = not result.has_underlines and not result.has_thoughts and not result.has_thought_anchors
-    return result, nil
-end
-
 
 return Content
