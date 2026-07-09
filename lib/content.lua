@@ -166,106 +166,33 @@ local function write_file(path, data)
     file:close()
 end
 
-local crc32_table
-local function crc32(data)
-    if not crc32_table then
-        crc32_table = {}
-        for i = 0, 255 do
-            local crc = i
-            for bit_index = 1, 8 do
-                if bit.band(crc, 1) ~= 0 then
-                    crc = bit.bxor(bit.rshift(crc, 1), 0xedb88320)
-                else
-                    crc = bit.rshift(crc, 1)
-                end
-            end
-            crc32_table[i] = crc
+local function write_epub(path, entries)
+    local Archiver = require("ffi/archiver")
+    local archive, err = Archiver.Writer:new(path)
+    if not archive then
+        error("failed to open archive for writing: " .. tostring(err))
+    end
+
+    local mtime = os.time()
+
+    archive:setZipCompression("store")
+    local mimetype_data = "application/epub+zip"
+    for _, entry in ipairs(entries) do
+        if entry.name == "mimetype" then
+            mimetype_data = entry.data
+            break
         end
     end
-    local crc = 0xffffffff
-    for i = 1, #data do
-        local index = bit.band(bit.bxor(crc, data:byte(i)), 0xff)
-        crc = bit.bxor(bit.rshift(crc, 8), crc32_table[index])
-    end
-    return bit.bxor(crc, 0xffffffff)
-end
+    archive:addFileFromMemory("mimetype", mimetype_data, mtime)
 
-local function le16(n)
-    return string.char(bit.band(n, 0xff), bit.band(bit.rshift(n, 8), 0xff))
-end
-
-local function le32(n)
-    return string.char(
-        bit.band(n, 0xff),
-        bit.band(bit.rshift(n, 8), 0xff),
-        bit.band(bit.rshift(n, 16), 0xff),
-        bit.band(bit.rshift(n, 24), 0xff)
-    )
-end
-
-local function make_zip(entries)
-    local out = {}
-    local central = {}
-    local offset = 0
-
-    for entry_index, entry in ipairs(entries) do
-        local name = entry.name
-        local data = entry.data or ""
-        local crc = crc32(data)
-        local local_header = table.concat({
-            le32(0x04034b50),
-            le16(20),
-            le16(0),
-            le16(0),
-            le16(0),
-            le16(0),
-            le32(crc),
-            le32(#data),
-            le32(#data),
-            le16(#name),
-            le16(0),
-            name,
-        })
-        table.insert(out, local_header)
-        table.insert(out, data)
-
-        table.insert(central, table.concat({
-            le32(0x02014b50),
-            le16(20),
-            le16(20),
-            le16(0),
-            le16(0),
-            le16(0),
-            le16(0),
-            le32(crc),
-            le32(#data),
-            le32(#data),
-            le16(#name),
-            le16(0),
-            le16(0),
-            le16(0),
-            le16(0),
-            le32(0),
-            le32(offset),
-            name,
-        }))
-
-        offset = offset + #local_header + #data
+    archive:setZipCompression("deflate")
+    for _, entry in ipairs(entries) do
+        if entry.name ~= "mimetype" then
+            archive:addFileFromMemory(entry.name, entry.data or "", mtime)
+        end
     end
 
-    local central_data = table.concat(central)
-    table.insert(out, central_data)
-    table.insert(out, table.concat({
-        le32(0x06054b50),
-        le16(0),
-        le16(0),
-        le16(#entries),
-        le16(#entries),
-        le32(#central_data),
-        le32(offset),
-        le16(0),
-    }))
-    return table.concat(out)
+    archive:close()
 end
 
 local function xml_escape(value)
@@ -611,7 +538,7 @@ function Content.save_chapter_epub(settings, book, chapter, xhtml, assets, css)
     for asset_index, asset in ipairs(asset_entries) do
         table.insert(entries, asset)
     end
-    write_file(path, make_zip(entries))
+    write_epub(path, entries)
     return path
 end
 
@@ -731,7 +658,7 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
     table.insert(entries, { name = "OEBPS/nav.xhtml", data = nav })
     table.insert(entries, { name = "OEBPS/toc.ncx", data = ncx })
     table.insert(entries, { name = "OEBPS/style.css", data = css })
-    write_file(path, make_zip(entries))
+    write_epub(path, entries)
     return path
 end
 
