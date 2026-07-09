@@ -106,7 +106,7 @@ function Thoughts.apply(client, settings, book_id, chapter_uid, xhtml)
     end
 
     ul_data.chapterUid = chapter_uid
-    local processed, annotation_css = Annotations.process(xhtml, ul_data, thought_reviews)
+    local processed, annotation_css = Annotations.process(xhtml, ul_data, thought_reviews, book_id)
     if processed ~= xhtml then
         log_info("injected underlines for chapter:", chapter_uid)
     end

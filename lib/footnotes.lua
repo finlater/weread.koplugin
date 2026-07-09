@@ -236,6 +236,9 @@ function Footnotes.fetch_missing_anchors(meta, missing, ref_files)
     if type(missing) ~= "table" or #missing == 0 then
         return {}
     end
+    if type(meta) ~= "table" then
+        return {}
+    end
 
     ref_files = ref_files or {}
     local file_set = {}

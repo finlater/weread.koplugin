@@ -556,7 +556,7 @@ function Content.save_chapter_epub(settings, book, chapter, xhtml, assets, css)
     end
     local chapter_xhtml = [[<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="zh-CN">
 <head>
 <title>]] .. xml_escape(title) .. [[</title>
 <link rel="stylesheet" type="text/css" href="../style.css"/>
@@ -639,7 +639,7 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
         table.insert(spine_items, [[<itemref idref="cover"/>]])
         local cover_xhtml = [[<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="zh-CN">
 <head><title>Cover</title>
 <style>html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;}img{display:block;width:100%;height:100%;object-fit:contain;}</style>
 </head>
@@ -661,7 +661,7 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
         local title = chapter.title or ("Chapter " .. uid)
         local chapter_xhtml = [[<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="zh-CN">
 <head>
 <title>]] .. xml_escape(title) .. [[</title>
 <link rel="stylesheet" type="text/css" href="../style.css"/>

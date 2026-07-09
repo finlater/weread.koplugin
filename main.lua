@@ -92,7 +92,7 @@ end
 local WeReadPlugin = WidgetContainer:extend{
     name = "weread",
     is_doc_only = false,
-    version = "0.1.1",
+    version = "0.2.1",
 }
 
 local function plugin_dir()
@@ -330,7 +330,7 @@ function WeReadPlugin:getMainMenuItems()
                     "show=", tostring(cache.show_annotations)
                 )
                 if cache.show_annotations and not self:currentBookHasAnnotations() then
-                    self:showInfo(_("当前缓存书不包含划线和想法。请先使用“重新下载当前书（带划线和想法）”生成新版本。\n\n如果想法/评论的显示方式不符合预期，可以检查 KOReader 的“页内 EPUB 脚注”设置。"))
+                    self:showInfo(_("当前缓存书不包含划线和想法。请先使用“重新下载当前书（带划线和想法）”生成新版本。"))
                 end
                 self:applyAnnotationVisibility()
             end),
@@ -1958,7 +1958,7 @@ function WeReadPlugin:confirmDownloadAllChapters(book, options)
         local confirm
         local message = T(_("将全部 %1 个章节下载为一个 EPUB？"), tostring(#chapters))
         if options.annotations then
-            message = message .. "\n\n" .. _("本次下载会包含划线和想法。\n\n如果想法/评论的显示方式不符合预期，可以检查 KOReader 的“页内 EPUB 脚注”设置。")
+            message = message .. "\n\n" .. _("本次下载会包含划线和想法。")
         else
             message = message .. "\n\n" .. _("本次下载将生成干净 EPUB，不包含划线和想法。")
         end
@@ -2087,9 +2087,6 @@ function WeReadPlugin:_downloadStep(dl)
             logger.info(LOG_MODULE, "book download completed:", "chapters=", tostring(#dl.selected))
         end
         local done_message = T(_("已下载 %1 个章节。\n\n书籍已保存：\n%2"), tostring(#dl.selected), path)
-        if dl.annotations then
-            done_message = done_message .. "\n\n" .. _("如果想法/评论的显示方式不符合预期，可以检查 KOReader 的“页内 EPUB 脚注”设置。")
-        end
         done_message = done_message .. "\n\n" .. _("现在阅读？")
         UIManager:show(ConfirmBox:new{
             text = done_message,
@@ -2371,12 +2368,16 @@ function WeReadPlugin:_teardownThoughtInterception()
     if self._annotation_tap_suppression_setup and self.ui then
         pcall(function()
             self.ui:unRegisterTouchZones({
-                { id = "weread_thought_suppress", overrides = { "tap_link" } },
+                { id = "weread_thought_popup", overrides = { "tap_link" } },
             })
         end)
         self._annotation_tap_suppression_setup = nil
     end
-    self._thought_html_cache = nil
+    self._thought_json_cache = nil
+    local ok_popup, ThoughtPopup = pcall(require, "lib.thought_popup")
+    if ok_popup and ThoughtPopup and type(ThoughtPopup.closeVisible) == "function" then
+        pcall(function() ThoughtPopup.closeVisible() end)
+    end
 end
 
 function WeReadPlugin:_setupAnnotationTapSuppression()
@@ -2389,57 +2390,476 @@ function WeReadPlugin:_setupAnnotationTapSuppression()
     end
     self.ui:registerTouchZones({
         {
-            id = "weread_thought_suppress",
+            id = "weread_thought_popup",
             ges = "tap",
             screen_zone = { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 },
             overrides = { "tap_link" },
             handler = function(ges)
-                return self:_onHiddenThoughtTap(ges)
+                return self:_onThoughtLinkTap(ges)
             end,
         },
     })
     self._annotation_tap_suppression_setup = true
 end
 
-function WeReadPlugin:_isWeReadThoughtLink(link)
-    if type(link) ~= "table" then
-        return false
+function WeReadPlugin:_linkHref(link)
+    -- KOReader's link objects differ between engines and even between tap
+    -- locations inside the same anchor. On some pages, tapping the star exposes
+    -- href, while tapping the underlined text exposes the same URI under another
+    -- field. Search common fields first, then do a shallow recursive scan.
+    local seen = {}
+
+    local function extract(value, depth)
+        if depth > 4 or value == nil then
+            return nil
+        end
+        if type(value) == "string" then
+            local href = value:match("(wrthought://[^%s%\"%'<>%)]+)")
+                or value:match("(#wrthought%-[%w%._%-]+)")
+                or value:match("(wrthought%-[%w%._%-]+)")
+            if href then
+                return href
+            end
+            return nil
+        end
+        if type(value) ~= "table" or seen[value] then
+            return nil
+        end
+        seen[value] = true
+
+        for _, key in ipairs({ "href", "url", "target", "link", "uri", "dest", "destination", "src" }) do
+            local found = extract(value[key], depth + 1)
+            if found then
+                return found
+            end
+        end
+
+        for _, child in pairs(value) do
+            local found = extract(child, depth + 1)
+            if found then
+                return found
+            end
+        end
+        return nil
     end
 
-    for _, key in ipairs({ "href", "url", "target" }) do
-        local value = link[key]
-        if type(value) == "string" and value:find("#thought_", 1, true) then
-            return true
+    return extract(link, 0)
+end
+
+function WeReadPlugin:_isWeReadThoughtLink(link)
+    local href = self:_linkHref(link)
+    return type(href) == "string" and (href:find("^wrthought://") ~= nil or href:find("^#?wrthought%-") ~= nil)
+end
+
+local function uri_decode(text)
+    text = tostring(text or "")
+    text = text:gsub("%%(%x%x)", function(hex)
+        return string.char(tonumber(hex, 16) or 0)
+    end)
+    return text
+end
+
+local function decode_json_text(data)
+    if type(data) ~= "string" or data == "" then
+        return nil
+    end
+
+    local ok_json, json = pcall(require, "json")
+    if ok_json and type(json) == "table" then
+        if type(json.decode) == "function" then
+            local ok, parsed = pcall(json.decode, data)
+            if ok and type(parsed) == "table" then
+                return parsed
+            end
+        end
+        local ok, parsed = pcall(function()
+            return json:decode(data)
+        end)
+        if ok and type(parsed) == "table" then
+            return parsed
         end
     end
 
-    local xpointer = link.xpointer
-    if type(xpointer) ~= "string" or xpointer == "" then
-        return false
-    end
-
-    self._thought_html_cache = self._thought_html_cache or {}
-    if self._thought_html_cache[xpointer] ~= nil then
-        return self._thought_html_cache[xpointer] == true
-    end
-
-    local is_thought = false
-    if self.ui and self.ui.document and type(self.ui.document.getHTMLFromXPointer) == "function" then
-        local ok, html = pcall(function()
-            return self.ui.document:getHTMLFromXPointer(xpointer, 0x1001, true)
+    local ok_rapid, rapidjson = pcall(require, "rapidjson")
+    if ok_rapid and rapidjson then
+        if type(rapidjson) == "table" and type(rapidjson.decode) == "function" then
+            local ok, parsed = pcall(rapidjson.decode, data)
+            if ok and type(parsed) == "table" then
+                return parsed
+            end
+        end
+        local ok, parsed = pcall(function()
+            return rapidjson:decode(data)
         end)
-        is_thought = ok and type(html) == "string" and html:find("weread%-thought") ~= nil
+        if ok and type(parsed) == "table" then
+            return parsed
+        end
     end
 
-    self._thought_html_cache[xpointer] = is_thought
-    return is_thought
+    return nil
 end
 
-function WeReadPlugin:_onHiddenThoughtTap(ges)
-    if self.settings:get("cache").show_annotations ~= false then
+function WeReadPlugin:_parseThoughtHref(href)
+    if type(href) ~= "string" then
+        return nil
+    end
+
+    local rest = href:match("^wrthought://(.+)$")
+    if rest then
+        local book_id, chapter_uid, range = rest:match("^([^/]+)/([^/]+)/(.+)$")
+        if book_id and chapter_uid and range then
+            return {
+                book_id = uri_decode(book_id),
+                chapter_uid = uri_decode(chapter_uid),
+                range = uri_decode(range),
+            }
+        end
+    end
+
+    -- 新方案：内部锚点 #wrthought-BOOKID-CHAPTERUID-START-END。
+    -- 这不是外部链接；若插件拦截失败，KOReader 最多跳回当前划线位置。
+    local anchor = href:match("#?(wrthought%-[%w%._%-]+)")
+    if anchor then
+        local book_id, chapter_uid, start_pos, end_pos = anchor:match("^wrthought%-([^%-]+)%-([^%-]+)%-(%d+)%-([%d]+)$")
+        if book_id and chapter_uid and start_pos and end_pos then
+            return {
+                book_id = book_id,
+                chapter_uid = chapter_uid,
+                range = tostring(start_pos) .. "-" .. tostring(end_pos),
+            }
+        end
+    end
+
+    return nil
+end
+
+function WeReadPlugin:_thoughtCachePath(book_id, chapter_uid)
+    if not book_id or not chapter_uid then
+        return nil
+    end
+    local books = self.settings:get("books", {})
+    local book = books[tostring(book_id)] or books[book_id]
+    local dir = Content.book_resolved_dir(self.settings, tostring(book_id), book)
+    return dir .. "/thoughts/" .. tostring(chapter_uid) .. ".json"
+end
+
+function WeReadPlugin:_loadThoughtReviews(book_id, chapter_uid)
+    self._thought_json_cache = self._thought_json_cache or {}
+    local key = tostring(book_id or "") .. ":" .. tostring(chapter_uid or "")
+    if self._thought_json_cache[key] ~= nil then
+        local cached = self._thought_json_cache[key]
+        return cached ~= false and cached or nil
+    end
+
+    local path = self:_thoughtCachePath(book_id, chapter_uid)
+    if not path then
+        self._thought_json_cache[key] = false
+        return nil
+    end
+    local file = io.open(path, "r")
+    if not file then
+        logger.warn(LOG_MODULE, "thought cache not found:", path)
+        self._thought_json_cache[key] = false
+        return nil
+    end
+    local data = file:read("*a") or ""
+    file:close()
+    local parsed = decode_json_text(data)
+    if type(parsed) ~= "table" then
+        logger.warn(LOG_MODULE, "thought cache decode failed:", path)
+        self._thought_json_cache[key] = false
+        return nil
+    end
+    self._thought_json_cache[key] = parsed
+    return parsed
+end
+
+local function trim_text(text)
+    return tostring(text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function limit_text(text, max_len)
+    text = tostring(text or "")
+    max_len = max_len or 1800
+    if #text <= max_len then
+        return text
+    end
+    return text:sub(1, max_len) .. "..."
+end
+
+local function html_escape(value)
+    value = tostring(value or "")
+    value = value:gsub("&", "&amp;")
+    value = value:gsub("<", "&lt;")
+    value = value:gsub(">", "&gt;")
+    value = value:gsub('"', "&quot;")
+    return value
+end
+
+local function strip_tags(html)
+    return tostring(html or ""):gsub("<[^>]+>", ""):gsub("&lt;", "<"):gsub("&gt;", ">")
+        :gsub("&quot;", '"'):gsub("&amp;", "&")
+end
+
+function WeReadPlugin:_formatThoughtPopupHtml(range_review)
+    if type(range_review) ~= "table" or type(range_review.pageReviews) ~= "table" then
+        return nil
+    end
+
+    local parts = { '<div class="weread-thought-popup">' }
+    local first = range_review.pageReviews[1]
+    local abstract = first and first.review and (first.review.abstract or first.review.contextAbstract)
+    abstract = trim_text(abstract)
+    if abstract ~= "" then
+        parts[#parts + 1] = '<blockquote>「' .. html_escape(limit_text(abstract, 500)) .. '」</blockquote>'
+    end
+
+    for i, pr in ipairs(range_review.pageReviews) do
+        local review = pr.review or {}
+        local author = review.author or {}
+        local name = trim_text(author.nick or author.name or _("Anonymous"))
+        local likes = tonumber(pr.likesCount or review.likesCount or 0) or 0
+        local content = trim_text(review.content or "")
+        local header = tostring(i) .. ". " .. name
+        if likes > 0 then
+            header = header .. " · ♥ " .. tostring(likes)
+        end
+        parts[#parts + 1] = '<p><strong>' .. html_escape(header) .. '</strong><br/>'
+        if content ~= "" then
+            parts[#parts + 1] = html_escape(limit_text(content, 3000))
+        else
+            parts[#parts + 1] = html_escape(_("Empty thought"))
+        end
+        parts[#parts + 1] = '</p>'
+    end
+
+    parts[#parts + 1] = '</div>'
+    return table.concat(parts, "\n")
+end
+
+function WeReadPlugin:_formatThoughtPopupText(range_review)
+    local html = self:_formatThoughtPopupHtml(range_review)
+    if not html then
+        return nil
+    end
+    return strip_tags(html)
+end
+
+function WeReadPlugin:_thoughtPopupOptions(html)
+    local ok_device, Device = pcall(require, "device")
+    local Screen = ok_device and Device.screen
+    local scale = function(v)
+        if Screen and type(Screen.scaleBySize) == "function" then
+            return Screen:scaleBySize(v)
+        end
+        return v
+    end
+
+    -- Render WeRead comments relative to the reader's *visible* body font size.
+    -- Some KOReader documents do not expose it as document.configurable.font_size;
+    -- try several known places and normalize common stored formats. If all reads
+    -- fail, use a moderate fallback instead of the old too-small one.
+    local function normalize_font_size(value)
+        local n = tonumber(value)
+        if not n or n <= 0 then
+            return nil
+        end
+        -- Some settings may be stored as 2200 or 220 for a visible size around 22.
+        if n > 1000 then
+            n = n / 100
+        elseif n > 120 then
+            n = n / 10
+        end
+        if n >= 8 and n <= 90 then
+            return math.floor(n + 0.5)
+        end
+        return nil
+    end
+
+    local function read_setting(obj, key)
+        if not obj or type(obj.readSetting) ~= "function" then
+            return nil
+        end
+        local ok, value = pcall(function()
+            return obj:readSetting(key)
+        end)
+        if ok then
+            return value
+        end
+        return nil
+    end
+
+    local function find_reader_font_size(ui)
+        local keys = {
+            "font_size", "copt_font_size", "text_font_size", "reader_font_size",
+            "fontSize", "copt_font_size_default",
+        }
+        local objects = {}
+        if ui then
+            objects[#objects + 1] = ui.document and ui.document.configurable
+            objects[#objects + 1] = ui.document and ui.document.settings
+            objects[#objects + 1] = ui.document
+            objects[#objects + 1] = ui.view and ui.view.document and ui.view.document.configurable
+            objects[#objects + 1] = ui.view and ui.view.document
+            objects[#objects + 1] = ui.doc_settings
+            objects[#objects + 1] = ui.reader_settings
+        end
+        objects[#objects + 1] = rawget(_G, "G_reader_settings")
+
+        for _, obj in ipairs(objects) do
+            if type(obj) == "table" then
+                for _, key in ipairs(keys) do
+                    local direct = normalize_font_size(obj[key])
+                    if direct then
+                        return direct, key
+                    end
+                    local setting = normalize_font_size(read_setting(obj, key))
+                    if setting then
+                        return setting, key
+                    end
+                end
+            end
+        end
+        return nil, nil
+    end
+
+    local function find_reader_font_name(ui)
+        local keys = { "font_face", "font_family", "copt_font_face", "fontFace", "font" }
+        local objects = {}
+        if ui then
+            objects[#objects + 1] = ui.document and ui.document.configurable
+            objects[#objects + 1] = ui.document and ui.document.settings
+            objects[#objects + 1] = ui.document
+            objects[#objects + 1] = ui.view and ui.view.document and ui.view.document.configurable
+            objects[#objects + 1] = ui.view and ui.view.document
+            objects[#objects + 1] = ui.doc_settings
+            objects[#objects + 1] = ui.reader_settings
+        end
+        objects[#objects + 1] = rawget(_G, "G_reader_settings")
+        for _, obj in ipairs(objects) do
+            if type(obj) == "table" then
+                for _, key in ipairs(keys) do
+                    local value = obj[key]
+                    if type(value) == "string" and value ~= "" then
+                        return value
+                    end
+                    value = read_setting(obj, key)
+                    if type(value) == "string" and value ~= "" then
+                        return value
+                    end
+                end
+            end
+        end
+        return nil
+    end
+
+    -- KOReader's reader font_size is a CRE logical size, while ScrollHtmlWidget
+    -- expects screen-scaled widget pixels. Keep the 80% relation in CRE units,
+    -- then scale once for the popup renderer. Do not use the unscaled value as
+    -- CSS px: on Kindle Voyage that rendered much smaller than the reader text.
+    local fallback_reader_font_size = 28
+    local min_popup_font_size = scale(12)
+    local doc_margins = {
+        left = scale(20),
+        right = scale(20),
+        top = scale(10),
+        bottom = scale(10),
+    }
+    local doc_font_name = find_reader_font_name(self.ui)
+    local reader_font_size, reader_font_source = find_reader_font_size(self.ui)
+    local effective_reader_font_size = reader_font_size or self._weread_last_reader_font_size or fallback_reader_font_size
+
+    if reader_font_size then
+        self._weread_last_reader_font_size = reader_font_size
+    end
+
+    local popup_reader_units = math.max(12, math.floor(effective_reader_font_size * 0.8 + 0.5))
+    local doc_font_size = math.max(min_popup_font_size, scale(popup_reader_units))
+    local css_font_size = doc_font_size
+
+    logger.info(
+        LOG_MODULE,
+        "thought popup font:",
+        "reader=", tostring(effective_reader_font_size),
+        "source=", tostring(reader_font_source or (self._weread_last_reader_font_size and "last" or "fallback")),
+        "popup_units=", tostring(popup_reader_units),
+        "widget_px=", tostring(doc_font_size),
+        "css_px=", tostring(css_font_size),
+        "font=", tostring(doc_font_name or "default")
+    )
+
+    return {
+        html = html,
+        css = [[
+body{font-size:]] .. tostring(css_font_size) .. [[px !important;}
+.weread-thought-popup{font-size:1em !important;line-height:1.35;}
+.weread-thought-popup blockquote{margin:0 0 0.7em 0;padding-left:0.7em;border-left:2px solid #aaa;color:#555;font-size:1em !important;}
+.weread-thought-popup p{margin:0 0 0.85em 0;font-size:1em !important;}
+.weread-thought-popup strong{font-weight:bold;color:#333;font-size:1em !important;}
+]],
+        doc_font_name = doc_font_name,
+        doc_font_size = doc_font_size,
+        doc_margins = doc_margins,
+        height_ratio = 0.42,
+        dialog = self.ui,
+    }
+end
+
+function WeReadPlugin:showThoughtPopupFromHref(href)
+    local info = self:_parseThoughtHref(href)
+    if not info then
         return false
     end
-    if not self.ui or not self.ui.link or not self:detectWeReadBook() then
+
+    local reviews = self:_loadThoughtReviews(info.book_id, info.chapter_uid)
+    if type(reviews) ~= "table" then
+        self:showInfo(_("No cached thoughts found for this chapter. Please re-download the book with underlines and thoughts."))
+        return true
+    end
+
+    local target
+    for _, rv in ipairs(reviews) do
+        if tostring(rv.range or "") == tostring(info.range or "") then
+            target = rv
+            break
+        end
+    end
+
+    if not target then
+        self:showInfo(_("No matching thought found for this underline."))
+        return true
+    end
+
+    local html = self:_formatThoughtPopupHtml(target)
+    if not html or html == "" then
+        self:showInfo(_("No thought content."))
+        return true
+    end
+
+    local ok_popup, ThoughtPopup = pcall(require, "lib.thought_popup")
+    if ok_popup and ThoughtPopup and type(ThoughtPopup.show) == "function" then
+        local ok, err = pcall(function()
+            if type(ThoughtPopup.init) == "function" then
+                ThoughtPopup.init({})
+            end
+            ThoughtPopup.show(self:_thoughtPopupOptions(html))
+        end)
+        if ok then
+            return true
+        end
+        logger.warn(LOG_MODULE, "thought popup failed, fallback to ConfirmBox:", err)
+    end
+
+    local text = self:_formatThoughtPopupText(target)
+    UIManager:show(ConfirmBox:new{
+        text = text or strip_tags(html),
+        ok_text = _("Close"),
+    })
+    return true
+end
+
+function WeReadPlugin:_onThoughtLinkTap(ges)
+    if not self.ui or not self.ui.link then
         return false
     end
 
@@ -2450,10 +2870,18 @@ function WeReadPlugin:_onHiddenThoughtTap(ges)
         return false
     end
 
-    if self:_isWeReadThoughtLink(link) then
+    local href = self:_linkHref(link)
+    if type(href) ~= "string" or not (href:find("^wrthought://") or href:find("^#?wrthought%-")) then
+        return false
+    end
+
+    -- When annotations are hidden, swallow the tap so the custom scheme never
+    -- falls through to KOReader's default link handler.
+    if self.settings:get("cache").show_annotations == false then
         return true
     end
-    return false
+
+    return self:showThoughtPopupFromHref(href)
 end
 
 function WeReadPlugin:onReaderReady()
@@ -2461,9 +2889,11 @@ function WeReadPlugin:onReaderReady()
     self:_teardownThoughtInterception()
 
     local weread_book_id = self:detectWeReadBook()
-    if weread_book_id then
-        self:_setupAnnotationTapSuppression()
-    end
+    -- The handler only consumes WeRead thought links, so it is safe to register for
+    -- any reader document. This also keeps popups working if the cache directory
+    -- was changed after the book was generated and detectWeReadBook() cannot
+    -- resolve the old path.
+    self:_setupAnnotationTapSuppression()
 
     -- Do not call applyAnnotationVisibility() automatically on reader open.
     -- setStyleSheet() + UpdatePos can trigger visible reload/flicker on some
