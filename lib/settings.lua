@@ -24,6 +24,8 @@ local defaults = {
     cache = {
         download_book_images = true,
         download_mp_images = false,
+        download_underlines_and_thoughts = false,
+        show_annotations = true,
         max_size_mb = 1024,
     },
     read_report = {
@@ -40,6 +42,7 @@ local defaults = {
     shelf = {
         sort_order = "time_desc",
     },
+    download_dir = "",
     config_loaded = false,
 }
 
@@ -65,11 +68,14 @@ function Settings:new()
     ensure_dir(data_dir)
     local obj = {
         data_dir = data_dir,
-        cache_dir = data_dir .. "/cache",
+        default_cache_dir = data_dir .. "/cache",
         settings_file = DataStorage:getSettingsDir() .. "/weread.lua",
     }
-    ensure_dir(obj.cache_dir)
     obj.store = LuaSettings:open(obj.settings_file)
+    -- cache_dir is the download root; defaults to <data_dir>/cache unless overridden.
+    local download_dir = obj.store:readSetting("download_dir", "")
+    obj.cache_dir = (type(download_dir) == "string" and download_dir ~= "") and download_dir or obj.default_cache_dir
+    ensure_dir(obj.cache_dir)
     local cache = obj.store:readSetting("cache", deepcopy(defaults.cache))
     local cache_changed = false
     if cache.download_book_images == nil then
@@ -78,6 +84,14 @@ function Settings:new()
     end
     if cache.download_mp_images == nil then
         cache.download_mp_images = false
+        cache_changed = true
+    end
+    if cache.download_underlines_and_thoughts == nil then
+        cache.download_underlines_and_thoughts = false
+        cache_changed = true
+    end
+    if cache.show_annotations == nil then
+        cache.show_annotations = true
         cache_changed = true
     end
     if cache.download_images ~= nil then
@@ -112,6 +126,24 @@ function Settings:get_all()
         all[key] = self:get(key)
     end
     return all
+end
+
+function Settings:get_download_dir()
+    return self.cache_dir
+end
+
+-- Pass nil or "" to reset to the default download directory.
+function Settings:set_download_dir(path)
+    if type(path) ~= "string" or path == "" then
+        self:set("download_dir", "")
+        self.cache_dir = self.default_cache_dir
+    else
+        self:set("download_dir", path)
+        self.cache_dir = path
+    end
+    self:flush()
+    ensure_dir(self.cache_dir)
+    return self.cache_dir
 end
 
 function Settings:reset_account()

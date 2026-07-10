@@ -3,11 +3,13 @@ local ConfirmBox = require("ui/widget/confirmbox")
 local Dispatcher = require("dispatcher")
 local NetworkMgr = require("ui/network/manager")
 local DownloadDialog = require("lib.download_dialog")
+local Event = require("ui/event")
 local ProgressbarDialog = require("ui/widget/progressbardialog")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
 local logger = require("logger")
 local Menu = require("ui/widget/menu")
+local PathChooser = require("ui/widget/pathchooser")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local T = require("ffi/util").template
@@ -19,6 +21,7 @@ local Crypto = require("lib.crypto")
 local I18n = require("lib.i18n")
 local Settings = require("lib.settings")
 local WeRead = require("lib.weread")
+local ThoughtPopup = require("lib.thought_popup")
 
 -- `_` is the translation function; never reuse it as a loop placeholder in this file.
 local function _(text)
@@ -112,6 +115,8 @@ function WeReadPlugin:init()
     if rr.enabled and rr.mode == "manual" and rr.book_id ~= "" and not rr.report_on_open then
         self:startReadReport(true)
     end
+    ThoughtPopup.init()
+    self._reader_session_gen = 0
     logger.info(LOG_MODULE, "initialized:", "version=", self.version)
 end
 
@@ -306,8 +311,29 @@ function WeReadPlugin:getMainMenuItems()
             enabled_func = function() return false end,
         })
         table.insert(items, 3, {
-            text = _("Notes") .. "  (" .. _("WIP") .. ")",
-            enabled_func = function() return false end,
+            text = _("Show underlines and thoughts"),
+            checked_func = function()
+                return self.settings:get("cache").show_annotations ~= false
+            end,
+            keep_menu_open = true,
+            callback = self:safeCallback(_("Show underlines and thoughts"), function()
+                local cache = self.settings:get("cache")
+                cache.show_annotations = not (cache.show_annotations ~= false)
+                self.settings:set("cache", cache)
+                self.settings:flush()
+                logger.info(
+                    LOG_MODULE,
+                    "annotation visibility changed:",
+                    "show=", tostring(cache.show_annotations)
+                )
+                -- Keep the tap interception registered in both states; hiding is
+                -- handled by _onThoughtTap. Just close any popup already showing.
+                if not cache.show_annotations then
+                    ThoughtPopup.closeVisible()
+                    self._thought_popup_open = nil
+                end
+                self:applyAnnotationVisibility()
+            end),
         })
     end
 
@@ -318,9 +344,25 @@ function WeReadPlugin:getSettingsMenuItems()
     return {
         {
             text = _("Cache management"),
-            callback = self:safeCallback(_("Cache management"), function()
-                self:showCacheManagement()
-            end),
+            sub_item_table_func = function()
+                return {
+                    {
+                        text = _("Cache cleanup"),
+                        callback = self:safeCallback(_("Cache cleanup"), function()
+                            self:showCacheManagement()
+                        end),
+                    },
+                    {
+                        text_func = function()
+                            return T(_("Cache directory: %1"), BD.dirpath(self.settings:get_download_dir()))
+                        end,
+                        keep_menu_open = true,
+                        callback = self:safeCallback(_("Cache directory"), function(touchmenu_instance)
+                            self:showDownloadDirPicker(touchmenu_instance)
+                        end),
+                    },
+                }
+            end,
         },
         {
             text = _("Reload config.lua"),
@@ -372,7 +414,7 @@ function WeReadPlugin:getSettingsMenuItems()
             end,
         },
         {
-            text = _("Download images"),
+            text = _("Download content"),
             sub_item_table_func = function()
                 return {
                     {
@@ -417,6 +459,24 @@ function WeReadPlugin:getSettingsMenuItems()
                                 end),
                                 cancel_text = _("Cancel"),
                             })
+                        end),
+                    },
+                    {
+                        text = _("Underlines and thoughts"),
+                        keep_menu_open = true,
+                        checked_func = function()
+                            return self.settings:get("cache").download_underlines_and_thoughts
+                        end,
+                        callback = self:safeCallback(_("Underlines and thoughts"), function()
+                            local cache = self.settings:get("cache")
+                            cache.download_underlines_and_thoughts = not cache.download_underlines_and_thoughts
+                            self.settings:set("cache", cache)
+                            self.settings:flush()
+                            logger.info(
+                                LOG_MODULE,
+                                "underlines/thoughts download setting changed:",
+                                "enabled=", tostring(cache.download_underlines_and_thoughts)
+                            )
                         end),
                     },
                 }
@@ -464,6 +524,166 @@ function WeReadPlugin:setMPImageDownload(enabled)
     )
 end
 
+-- Returns true if the directory is usable (creatable and writable), else false + message.
+function WeReadPlugin:validateDownloadDir(path)
+    local lfs = require("libs/libkoreader-lfs")
+    if type(path) ~= "string" or path == "" then
+        return false, _("Invalid path.")
+    end
+    if not lfs.attributes(path, "mode") then
+        os.execute("mkdir -p " .. string.format("%q", path))
+        if not lfs.attributes(path, "mode") then
+            return false, _("Directory does not exist and could not be created.")
+        end
+    end
+    local test_file = path .. "/.weread_write_test"
+    local f = io.open(test_file, "w")
+    if not f then
+        return false, _("Directory is not writable.")
+    end
+    f:close()
+    os.remove(test_file)
+    return true
+end
+
+function WeReadPlugin:showDownloadDirPicker(touchmenu_instance)
+    local current = self.settings:get_download_dir()
+    local path_chooser = PathChooser:new{
+        select_directory = true,
+        select_file = false,
+        path = current,
+        onConfirm = function(path)
+            local ok, err = self:validateDownloadDir(path)
+            if not ok then
+                self:showInfo(T(_("Cannot use this directory: %1"), err))
+                return
+            end
+            local old_dir = self.settings:get_download_dir()
+            self.settings:set_download_dir(path)
+            logger.info(LOG_MODULE, "download directory changed:", path)
+            if touchmenu_instance then
+                touchmenu_instance:updateItems()
+            end
+            self:offerMoveBooksToNewDir(old_dir, path)
+        end,
+    }
+    UIManager:show(path_chooser)
+end
+
+-- After the download directory changes, offer to move already-cached books from
+-- their old locations into the new directory. Without this, old files stay behind
+-- as orphans (still reachable via the stored paths, but not under the new root).
+function WeReadPlugin:offerMoveBooksToNewDir(old_dir, new_dir)
+    if old_dir == new_dir then
+        self:showInfo(T(_("Download directory set to:\n%1"), new_dir))
+        return
+    end
+    local lfs = require("libs/libkoreader-lfs")
+    local books = self.settings:get("books", {})
+    local movable = {}
+    for book_id, book in pairs(books) do
+        local src = Content.book_resolved_dir(self.settings, book_id, book)
+        local dst = Content.book_cache_dir(self.settings, book_id)
+        if src ~= dst then
+            local attr = lfs.attributes(src)
+            if attr and attr.mode == "directory" then
+                table.insert(movable, { book_id = book_id, src = src, dst = dst })
+            end
+        end
+    end
+    if #movable == 0 then
+        self:showInfo(T(_("Download directory set to:\n%1"), new_dir))
+        return
+    end
+    UIManager:show(ConfirmBox:new{
+        text = T(_("Download directory changed. Move %1 cached book(s) to the new location?"), tostring(#movable)),
+        ok_text = _("Move"),
+        ok_callback = function()
+            self:moveBooksToNewDir(movable, new_dir)
+        end,
+        cancel_text = _("Keep"),
+        cancel_callback = function()
+            self:showInfo(T(_("Download directory set to:\n%1\nExisting downloads stay in the old location."), new_dir))
+        end,
+    })
+end
+
+function WeReadPlugin:moveBooksToNewDir(movable, new_dir)
+    self:showBusy(_("Moving cached books..."))
+    UIManager:scheduleIn(0.1, function()
+        local books = self.settings:get("books", {})
+        local moved, skipped, failed = 0, 0, 0
+        for _i, m in ipairs(movable) do
+            local ok, reason = self:moveBookDir(m.src, m.dst)
+            if ok then
+                local book = books[m.book_id]
+                if book then
+                    book.cache_dir = m.dst
+                    book.cached_file = self:remapCachedPath(book.cached_file, m.dst)
+                    if type(book.cached_chapters) == "table" then
+                        for uid, path in pairs(book.cached_chapters) do
+                            book.cached_chapters[uid] = self:remapCachedPath(path, m.dst)
+                        end
+                    end
+                end
+                moved = moved + 1
+            elseif reason == "target_exists" then
+                skipped = skipped + 1
+                logger.warn(LOG_MODULE, "skip move, target exists:", m.dst)
+            else
+                failed = failed + 1
+                logger.err(LOG_MODULE, "move book cache failed:", m.src, "->", m.dst)
+            end
+        end
+        self.settings:set("books", books)
+        self.settings:flush()
+        self:closeBusy()
+        if skipped == 0 and failed == 0 then
+            self:showInfo(T(_("Moved %1 book(s) to:\n%2"), tostring(moved), new_dir))
+        else
+            self:showInfo(T(_("Moved %1 book(s). %2 skipped (target already exists), %3 failed. These stay in the old location."), tostring(moved), tostring(skipped), tostring(failed)))
+        end
+    end)
+end
+
+-- Move one book directory to dst. Uses `mv`, which (unlike os.rename) handles
+-- moves across filesystems, e.g. internal storage to an SD card. Returns
+-- true on success, or false plus a reason ("target_exists" / "move_failed").
+function WeReadPlugin:moveBookDir(src, dst)
+    if src == dst then
+        return true
+    end
+    local lfs = require("libs/libkoreader-lfs")
+    if lfs.attributes(dst) then
+        -- The target already exists. Since the new directory is user-selected, it
+        -- may be unrelated user data that only happens to share the sanitized name.
+        -- Never delete it; leave the book in its old location instead.
+        return false, "target_exists"
+    end
+    local parent = dst:match("^(.*)/[^/]+$")
+    if parent then
+        os.execute("mkdir -p " .. string.format("%q", parent))
+    end
+    local status = os.execute("mv -f " .. string.format("%q", src) .. " " .. string.format("%q", dst))
+    if status == true or status == 0 then
+        return true
+    end
+    return false, "move_failed"
+end
+
+-- Rewrite a stored absolute file path to sit under the new book directory,
+-- keeping the original filename.
+function WeReadPlugin:remapCachedPath(path, dst)
+    if type(path) ~= "string" then
+        return path
+    end
+    local name = path:match("[^/]+$")
+    if not name then
+        return path
+    end
+    return dst .. "/" .. name
+end
+
 function WeReadPlugin:getShelfSortMenuItems()
     local sort_options = {
         { key = "time_desc", label = _("Last read time (newest first)") },
@@ -493,7 +713,6 @@ end
 function WeReadPlugin:showCacheManagement()
     local lfs = require("libs/libkoreader-lfs")
     local books = self.settings:get("books", {})
-    local cache_dir = self.settings.cache_dir
     local items = {}
     local entries = {}
     local seen_dirs = {}
@@ -547,21 +766,11 @@ function WeReadPlugin:showCacheManagement()
         })
     end
 
+    -- Only list plugin-owned entries tracked in the books table. Scanning the
+    -- filesystem would list unrelated subfolders when cache_dir is a user-selected
+    -- library directory, and deleting one would rm -rf a non-WeRead folder.
     for book_id, book in pairs(books) do
-        add_cache_entry(book_id, book.title, Content.book_cache_dir(self.settings, book_id))
-    end
-
-    local ok, iter, dir_obj = pcall(lfs.dir, cache_dir)
-    if ok then
-        for entry in iter, dir_obj do
-            if entry ~= "." and entry ~= ".." then
-                local path = cache_dir .. "/" .. entry
-                local attr = lfs.attributes(path)
-                if attr and attr.mode == "directory" then
-                    add_cache_entry(entry, entry, path)
-                end
-            end
-        end
+        add_cache_entry(book_id, book.title, Content.book_resolved_dir(self.settings, book_id, book))
     end
 
     table.sort(entries, function(a, b)
@@ -645,12 +854,13 @@ function WeReadPlugin:confirmClearBookCache(book_id, title)
 end
 
 function WeReadPlugin:clearBookCache(book_id)
-    local cache_dir = Content.book_cache_dir(self.settings, book_id)
-    os.execute("rm -rf " .. string.format("%q", cache_dir))
     local books = self.settings:get("books", {})
+    local cache_dir = Content.book_resolved_dir(self.settings, book_id, books[book_id])
+    os.execute("rm -rf " .. string.format("%q", cache_dir))
     if books[book_id] then
         books[book_id].cached_file = nil
         books[book_id].cached_chapters = nil
+        books[book_id].cache_dir = nil
         if WeRead.is_mp_book(book_id) then
             books[book_id].mp_articles = nil
             books[book_id].mp_articles_time = nil
@@ -661,21 +871,16 @@ function WeReadPlugin:clearBookCache(book_id)
 end
 
 function WeReadPlugin:clearAllMPCache()
-    local lfs = require("libs/libkoreader-lfs")
-    local cache_dir = self.settings.cache_dir
-    local ok, iter, dir_obj = pcall(lfs.dir, cache_dir)
-    if ok then
-        for entry in iter, dir_obj do
-            if entry ~= "." and entry ~= ".." and WeRead.is_mp_book(entry) then
-                os.execute("rm -rf " .. string.format("%q", cache_dir .. "/" .. entry))
-            end
-        end
-    end
+    -- Delete each MP book's real directory (which may sit under an old download
+    -- root) rather than scanning only the current cache_dir, and only touch
+    -- plugin-owned entries tracked in the books table.
     local books = self.settings:get("books", {})
     for book_id, book in pairs(books) do
         if WeRead.is_mp_book(book_id) then
+            os.execute("rm -rf " .. string.format("%q", Content.book_resolved_dir(self.settings, book_id, book)))
             book.cached_file = nil
             book.cached_chapters = nil
+            book.cache_dir = nil
             book.mp_articles = nil
             book.mp_articles_time = nil
         end
@@ -685,13 +890,12 @@ function WeReadPlugin:clearAllMPCache()
 end
 
 function WeReadPlugin:clearAllCache()
-    local cache_dir = self.settings.cache_dir
-    os.execute("rm -rf " .. string.format("%q", cache_dir))
-    os.execute("mkdir -p " .. string.format("%q", cache_dir))
     local books = self.settings:get("books", {})
     for book_id, book in pairs(books) do
+        os.execute("rm -rf " .. string.format("%q", Content.book_resolved_dir(self.settings, book_id, book)))
         book.cached_file = nil
         book.cached_chapters = nil
+        book.cache_dir = nil
         book.mp_articles = nil
         book.mp_articles_time = nil
     end
@@ -1139,9 +1343,10 @@ function WeReadPlugin:detectWeReadBook()
     if not file then
         return nil
     end
-    local cache_dir = self.settings.cache_dir
-    if file:sub(1, #cache_dir) == cache_dir then
-        local rest = file:sub(#cache_dir + 2)
+    -- Require a path boundary after the cache dir
+    local prefix = self.settings.cache_dir:gsub("/+$", "") .. "/"
+    if file:sub(1, #prefix) == prefix then
+        local rest = file:sub(#prefix + 1)
         local book_id = rest:match("^([^/]+)")
         return book_id
     end
@@ -1484,6 +1689,10 @@ function WeReadPlugin:rememberMPAccount(book)
     record.title = book.title or record.title
     record.author = book.author or record.author
     record.updated_at = os.time()
+    -- Keep the resolved cache directory in sync both ways so the transient book
+    -- object used for cached-path lookups knows where its articles actually live.
+    record.cache_dir = book.cache_dir or record.cache_dir
+    book.cache_dir = record.cache_dir
     books[book_id] = record
     self.settings:set("books", books)
     self.settings:flush()
@@ -1669,6 +1878,17 @@ function WeReadPlugin:downloadMPArticleAndRead(book, article)
             "MP article downloaded:",
             "images=", self.settings:get("cache").download_mp_images and "embedded" or "removed"
         )
+        -- Persist the resolved cache directory (set by save_mp_article_html) so the
+        -- article files can still be located after the download directory changes.
+        local book_id = book.book_id or book.bookId
+        if book_id and book.cache_dir then
+            local books = self.settings:get("books", {})
+            local record = books[book_id] or {}
+            record.cache_dir = book.cache_dir
+            books[book_id] = record
+            self.settings:set("books", books)
+            self.settings:flush()
+        end
         self:openFile(path_or_err)
     end)
 end
@@ -1893,8 +2113,9 @@ function WeReadPlugin:_downloadStep(dl)
 
     if dl.index > dl.total then
         local cover_data
-        if dl.book.cover then
-            pcall(function() cover_data = self.client:get_binary(dl.book.cover) end)
+        local cover_url = WeRead.normalize_cover_url(dl.book.cover)
+        if cover_url and cover_url ~= "" then
+            pcall(function() cover_data = self.client:get_binary(cover_url) end)
         end
         local ok, path = pcall(function()
             return Content.save_book_epub(
@@ -2125,10 +2346,6 @@ function WeReadPlugin:showCurrentBookDetails()
     self:showInfo(_("Current-book WeRead metadata is not linked yet. Open a parsed WeRead book from the plugin cache first."))
 end
 
-function WeReadPlugin:showNotes()
-    self:showInfo(_("Read-only WeRead notes are planned for V1 after the book list screen is connected."))
-end
-
 function WeReadPlugin:onShowWeRead()
     self:showAccountStatus()
 end
@@ -2171,15 +2388,304 @@ function WeReadPlugin:onWeReadSyncProgress()
     })
 end
 
+
+-- Runtime CSS that hides underlines and thought stars baked into cached EPUBs.
+-- Applied as an appended stylesheet (not persisted to the book sidecar) so it
+-- acts as a global display preference without mutating downloaded files.
+-- NOTE: only tweak visual/metric properties (border, padding, font-size). Never
+-- use display/white-space here — changing those marks the built DOM stale and
+-- makes ReaderRolling repeatedly prompt for a full document reload.
+local ANNOTATION_HIDE_CSS =
+    ".wr-underline{border-bottom:0 !important;padding-bottom:0 !important;} .wr-star{font-size:0 !important;}"
+
+-- Reapply the current annotation visibility preference to the open WeRead book.
+-- Show=true reapplies the base stylesheet + user tweaks (revealing baked-in
+-- underlines); show=false appends ANNOTATION_HIDE_CSS on top. Triggers a reflow.
+function WeReadPlugin:applyAnnotationVisibility()
+    if not self.ui or not self.ui.document then
+        return
+    end
+    if not self:detectWeReadBook() then
+        return
+    end
+    local typeset = self.ui.typeset
+    if not typeset or not typeset.css then
+        logger.warn(LOG_MODULE, "applyAnnotationVisibility: typeset stylesheet unavailable")
+        return
+    end
+    local show = self.settings:get("cache").show_annotations ~= false
+    local tweaks = ""
+    local styletweak = self.ui.styletweak
+    if styletweak and type(styletweak.getCssText) == "function" then
+        tweaks = styletweak:getCssText() or ""
+    end
+    if not show then
+        tweaks = tweaks .. "\n" .. ANNOTATION_HIDE_CSS
+    end
+    local ok, err = pcall(function()
+        self.ui.document:setStyleSheet(typeset.css, tweaks)
+        self.ui:handleEvent(Event:new("UpdatePos"))
+    end)
+    if not ok then
+        logger.warn(LOG_MODULE, "applyAnnotationVisibility failed:", err)
+    end
+end
+
+function WeReadPlugin:_teardownThoughtInterception()
+    if self._thought_interception_setup and self.ui then
+        self.ui:unRegisterTouchZones({
+            { id = "weread_thought_tap", overrides = { "tap_link" } },
+        })
+        self._thought_interception_setup = nil
+    end
+    ThoughtPopup.closeVisible()
+    ThoughtPopup.cancelPrewarm()
+    self._thought_popup_open = nil
+    self._current_thought_popup = nil
+    self._thought_html_cache = nil
+    self._thought_highlight_active = nil
+end
+
+function WeReadPlugin:_setupThoughtInterception()
+    local Device = require("device")
+    if not Device:isTouchDevice() then
+        return
+    end
+    if not self.ui or self._thought_interception_setup then
+        return
+    end
+
+    self.ui:registerTouchZones({
+        {
+            id = "weread_thought_tap",
+            ges = "tap",
+            screen_zone = { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 },
+            overrides = { "tap_link" },
+            handler = function(ges)
+                return self:_onThoughtTap(ges)
+            end,
+        },
+    })
+    self._thought_interception_setup = true
+end
+
+function WeReadPlugin:_clearThoughtHighlight(document)
+    if not self._thought_highlight_active then
+        return
+    end
+    pcall(function()
+        document:highlightXPointer()
+    end)
+    self._thought_highlight_active = nil
+    UIManager:setDirty(self.dialog, "ui")
+end
+
+function WeReadPlugin:_getThoughtPopupLayoutParams()
+    if not self.ui or not self.ui.document then
+        return nil
+    end
+
+    local Screen = require("device").screen
+    local document = self.ui.document
+
+    local font_face = self.ui.font and self.ui.font.font_face
+    if not font_face then
+        font_face = G_reader_settings:readSetting("cre_font")
+    end
+
+    local font_size = G_reader_settings:readSetting("footnote_popup_absolute_font_size")
+    local font_size_scaled
+    if font_size then
+        font_size_scaled = Screen:scaleBySize(font_size)
+    else
+        local relative = G_reader_settings:readSetting("footnote_popup_relative_font_size") or -2
+        local doc_font_size = (document.configurable and document.configurable.font_size) or 18
+        font_size_scaled = Screen:scaleBySize(doc_font_size) + relative
+    end
+
+    return {
+        doc_font_name = font_face,
+        doc_font_size = font_size_scaled,
+        doc_margins = document:getPageMargins(),
+        height_ratio = 0.35,
+    }
+end
+
+function WeReadPlugin:_showThoughtPopup(html, link, session_gen)
+    if session_gen and session_gen ~= self._reader_session_gen then
+        self._thought_popup_open = nil
+        return
+    end
+    if type(html) ~= "string" or html == "" then
+        self._thought_popup_open = nil
+        return
+    end
+
+    local Screen = require("device").screen
+    local document = self.ui.document
+    if link.from_xpointer then
+        local ok = pcall(function()
+            document:highlightXPointer()
+            document:highlightXPointer(link.from_xpointer)
+        end)
+        if ok then
+            self._thought_highlight_active = true
+            UIManager:setDirty(self.dialog, "partial")
+        end
+    end
+
+    local params = self:_getThoughtPopupLayoutParams()
+    if not params then
+        self._thought_popup_open = nil
+        return
+    end
+
+    ThoughtPopup.preloadFonts(params.doc_font_name)
+
+    local ok, popup = pcall(function()
+        return ThoughtPopup.show({
+            html = html,
+            doc_font_name = params.doc_font_name,
+            doc_font_size = params.doc_font_size,
+            doc_margins = params.doc_margins,
+            height_ratio = params.height_ratio,
+            dialog = self.dialog,
+            close_callback = function(footnote_height)
+                self._thought_popup_open = nil
+                self._current_thought_popup = nil
+                if self._thought_highlight_active then
+                    local highlight_page = document:getCurrentPage()
+                    local clear_gen = self._reader_session_gen or 0
+                    local clear_highlight = function()
+                        if clear_gen ~= self._reader_session_gen then
+                            return
+                        end
+                        document:highlightXPointer()
+                        if document:getCurrentPage() == highlight_page then
+                            UIManager:setDirty(self.dialog, "ui")
+                        end
+                    end
+                    self._thought_highlight_active = nil
+                    local footnote_top_y = Screen:getHeight() - footnote_height
+                    if link.link_y and link.link_y > footnote_top_y then
+                        UIManager:scheduleIn(0.5, clear_highlight)
+                    else
+                        clear_highlight()
+                    end
+                end
+            end,
+        })
+    end)
+
+    if not ok then
+        logger.warn(LOG_MODULE, "thought popup failed:", popup)
+        self._thought_popup_open = nil
+        self:_clearThoughtHighlight(document)
+        return
+    end
+
+    self._current_thought_popup = popup
+end
+
+function WeReadPlugin:_onThoughtTap(ges)
+    if not self.ui or not self.ui.document or not self.ui.link then
+        return false
+    end
+    if not self:detectWeReadBook() then
+        return false
+    end
+
+    local link = self.ui.link:getLinkFromGes(ges)
+    if not link or not link.xpointer then
+        return false
+    end
+
+    local html
+    local cache = self._thought_html_cache
+    if cache and cache[link.xpointer] ~= nil then
+        local cached = cache[link.xpointer]
+        if cached == false then
+            return false
+        end
+        html = cached
+    else
+        html = self.ui.document:getHTMLFromXPointer(link.xpointer, 0x1001, true)
+        if type(html) ~= "string" or not html:find("weread%-thought") then
+            self._thought_html_cache = self._thought_html_cache or {}
+            self._thought_html_cache[link.xpointer] = false
+            return false
+        end
+        self._thought_html_cache = self._thought_html_cache or {}
+        self._thought_html_cache[link.xpointer] = html
+    end
+
+    -- When annotations are hidden, still consume the tap so KOReader's built-in
+    -- footnote popup (triggered by the epub:type="noteref" link) does not fire,
+    -- but do not show our own thought popup either.
+    if self.settings:get("cache").show_annotations == false then
+        return true
+    end
+
+    if self._thought_popup_open then
+        return true
+    end
+    self._thought_popup_open = true
+    local session_gen = self._reader_session_gen or 0
+    UIManager:nextTick(function()
+        if session_gen ~= self._reader_session_gen then
+            self._thought_popup_open = nil
+            return
+        end
+        if not self.ui or not self.ui.document then
+            self._thought_popup_open = nil
+            return
+        end
+        self:_showThoughtPopup(html, link, session_gen)
+    end)
+    return true
+end
+
 function WeReadPlugin:onReaderReady()
+    self._reader_session_gen = (self._reader_session_gen or 0) + 1
+    self:_teardownThoughtInterception()
+
+    local weread_book_id = self:detectWeReadBook()
+    if weread_book_id then
+        -- Always register the tap interception: even when annotations are hidden
+        -- we must intercept taps on thought links to suppress the native footnote
+        -- popup. Visibility is decided inside _onThoughtTap / applyAnnotationVisibility.
+        self:_setupThoughtInterception()
+        local show_annotations = self.settings:get("cache").show_annotations ~= false
+        UIManager:nextTick(function()
+            if not self.ui or not self.ui.document then
+                return
+            end
+            self:applyAnnotationVisibility()
+            if not show_annotations then
+                return
+            end
+            local params = self:_getThoughtPopupLayoutParams()
+            if not params then
+                return
+            end
+            ThoughtPopup.preloadFonts(params.doc_font_name)
+            ThoughtPopup.prewarm({
+                doc_font_name = params.doc_font_name,
+                doc_font_size = params.doc_font_size,
+                doc_margins = params.doc_margins,
+                height_ratio = params.height_ratio,
+                dialog = self.dialog,
+            })
+        end)
+    end
+
     local rr = self.settings:get("read_report")
     if rr.mode == "auto" and rr.enabled then
-        local book_id = self:detectWeReadBook()
-        if book_id then
-            self._auto_report_book_id = book_id
+        if weread_book_id then
+            self._auto_report_book_id = weread_book_id
             local books = self.settings:get("books", {})
-            local book_record = books[book_id]
-            self._auto_report_book_title = book_record and book_record.title or book_id
+            local book_record = books[weread_book_id]
+            self._auto_report_book_title = book_record and book_record.title or weread_book_id
             self:startReadReport(true)
             self:showTransientInfo(T(_("Reading time report started: %1"), self._auto_report_book_title), 2)
         else
@@ -2191,6 +2697,9 @@ function WeReadPlugin:onReaderReady()
 end
 
 function WeReadPlugin:onCloseDocument()
+    self._reader_session_gen = (self._reader_session_gen or 0) + 1
+    self:_teardownThoughtInterception()
+
     local rr = self.settings:get("read_report")
     if rr.mode == "auto" then
         self._auto_report_book_id = nil

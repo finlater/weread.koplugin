@@ -201,6 +201,31 @@ function Client:post_json(url, data, opts)
     error(http_error(self, code, text, resp_headers))
 end
 
+function Client:post_no_cookie(url, data, opts)
+    opts = opts or {}
+    local headers = {
+        ["Content-Type"] = "application/json;charset=UTF-8",
+        ["Origin"] = "https://weread.qq.com",
+        ["Referer"] = opts.referer or "https://weread.qq.com/",
+    }
+    if opts.headers then
+        for key, value in pairs(opts.headers) do
+            headers[key] = value
+        end
+    end
+
+    local text, code, resp_headers = self:request({
+        url = url,
+        method = "POST",
+        headers = headers,
+        body = self:json_encode(data),
+    })
+    if code and code >= 200 and code < 300 then
+        return self:json_decode(text), code, resp_headers
+    end
+    error(http_error(self, code, text, resp_headers))
+end
+
 function Client:get_text(url, opts)
     opts = opts or {}
     local accept = header_value(opts.headers, "Accept") or opts.accept
@@ -285,7 +310,7 @@ function Client:gateway(api_name, params)
     if api_key == "" then
         error("WeRead API key is not configured")
     end
-    return self:post_json("https://i.weread.qq.com/api/agent/gateway", payload, {
+    return self:post_no_cookie("https://i.weread.qq.com/api/agent/gateway", params, {
         headers = {
             ["Authorization"] = "Bearer " .. api_key,
         },
@@ -465,6 +490,77 @@ function Client:get_skills_key()
     local url = WeRead.skills_key_url()
     local text = self:get_text(url, {timeout = {5, 10}})
     return self:json_decode(text)
+end
+
+function Client:get_chapter_underlines(book_id, chapter_uid)
+    if not book_id or tostring(book_id) == "" then
+        return false, nil, "empty book_id"
+    end
+    if not chapter_uid then
+        return false, nil, "empty chapter_uid"
+    end
+
+    local ok, result = pcall(function()
+        return self:gateway("/book/underlines", {
+            bookId = tostring(book_id),
+            chapterUid = chapter_uid,
+        })
+    end)
+    if not ok then
+        return false, nil, tostring(result)
+    end
+    if type(result) ~= "table" then
+        return false, nil, "underlines: gateway returned non-table"
+    end
+    return true, result
+end
+
+function Client:get_chapter_reviews(book_id, chapter_uid, ranges)
+    if not book_id or tostring(book_id) == "" then
+        return false, nil, "empty book_id"
+    end
+    if not chapter_uid then
+        return false, nil, "empty chapter_uid"
+    end
+    if type(ranges) ~= "table" or #ranges == 0 then
+        return true, { reviews = {} }
+    end
+
+    local BATCH_SIZE = 5
+    local all_reviews = {}
+    local socket_ok, socket = pcall(require, "socket")
+
+    for batch_start = 1, #ranges, BATCH_SIZE do
+        local batch = {}
+        for index = batch_start, math.min(batch_start + BATCH_SIZE - 1, #ranges) do
+            batch[#batch + 1] = {
+                range = ranges[index],
+                maxIdx = 0,
+                count = 30,
+                synckey = 0,
+            }
+        end
+
+        local ok, result = pcall(function()
+            return self:gateway("/book/readreviews", {
+                bookId = tostring(book_id),
+                chapterUid = chapter_uid,
+                reviews = batch,
+            })
+        end)
+
+        if ok and type(result) == "table" and type(result.reviews) == "table" then
+            for _, review in ipairs(result.reviews) do
+                all_reviews[#all_reviews + 1] = review
+            end
+        end
+
+        if batch_start + BATCH_SIZE <= #ranges and socket_ok and socket.sleep then
+            socket.sleep(0.3)
+        end
+    end
+
+    return true, { reviews = all_reviews }
 end
 
 return Client

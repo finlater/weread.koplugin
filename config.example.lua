@@ -38,6 +38,7 @@ return {
     cache = {
         download_book_images = true, -- 下载书籍章节中的图片
         download_mp_images = false,  -- 下载公众号文章中的图片
+        download_underlines_and_thoughts = false, -- 下载章节时注入划线与想法（默认关闭）
         max_size_mb = 1024,
     },
 

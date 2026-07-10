@@ -1,5 +1,6 @@
 local Crypto = require("lib.crypto")
 local WeRead = require("lib.weread")
+local Thoughts = require("lib.thoughts")
 local bit = require("bit")
 local ok_logger, logger = pcall(require, "logger")
 if not ok_logger then
@@ -45,6 +46,35 @@ end
 
 function Content.book_cache_dir(settings, book_id)
     return settings.cache_dir .. "/" .. basename_safe(book_id)
+end
+
+-- Resolve where a book's files actually live. The current settings.cache_dir may
+-- differ from where a book was downloaded (the user changed it since), so prefer
+-- concrete evidence of the real location: an explicit book.cache_dir (set when any
+-- file — chapter or MP article — is written), then the directory of a stored
+-- cached_file/chapter path, and only as a last resort the path recomputed under
+-- the current root. This keeps deletion, stats and moves on the real files instead
+-- of orphaning them. MP article-only books have no cached_file, so book.cache_dir
+-- is the only thing that pins them down.
+function Content.book_resolved_dir(settings, book_id, book)
+    if book and type(book.cache_dir) == "string" and book.cache_dir ~= "" then
+        return book.cache_dir
+    end
+    local function dirname(path)
+        if type(path) == "string" then
+            return path:match("^(.*)/[^/]+$")
+        end
+    end
+    local dir = book and dirname(book.cached_file)
+    if not dir and book and type(book.cached_chapters) == "table" then
+        for _i, chapter_path in pairs(book.cached_chapters) do
+            dir = dirname(chapter_path)
+            if dir then
+                break
+            end
+        end
+    end
+    return dir or Content.book_cache_dir(settings, book_id)
 end
 
 local function filename_safe(value)
@@ -247,12 +277,31 @@ local function xml_escape(value)
     return value
 end
 
+-- WeRead EPUB chapters may decode to multiple concatenated XHTML documents.
+-- The first <body> is often a title shell; main content lives in later bodies.
 local function body_fragment(xhtml)
     xhtml = tostring(xhtml or "")
-    local body = xhtml:match("<body[^>]*>(.-)</body>")
-        or xhtml:match("<body[^>]*>(.*)")
-    if body then
-        return body
+    local bodies = {}
+    local remaining = xhtml
+    while remaining ~= "" do
+        local body_start = remaining:find("<body", 1, true)
+        if not body_start then
+            break
+        end
+        local body_open_end = remaining:find(">", body_start, true)
+        if not body_open_end then
+            break
+        end
+        local body_close = remaining:find("</body>", body_open_end, true)
+        if not body_close then
+            bodies[#bodies + 1] = remaining:sub(body_open_end + 1)
+            break
+        end
+        bodies[#bodies + 1] = remaining:sub(body_open_end + 1, body_close - 1)
+        remaining = remaining:sub(body_close + 7)
+    end
+    if #bodies > 0 then
+        return table.concat(bodies, "\n")
     end
     xhtml = xhtml:gsub("<%?xml.-%?>", "")
     xhtml = xhtml:gsub("<!DOCTYPE.-%>", "")
@@ -330,9 +379,12 @@ local function swap_positions(encoded)
     local m = length - n - 2
     local step = #tostring(m)
     local i = 1
-    while #result < 10 and i + step < #tmp do
+    while #result < 10 and i + step - 1 < #tmp do
         table.insert(result, (tonumber(tmp:sub(i, i + step - 1)) or 0) % m)
-        table.insert(result, (tonumber(tmp:sub(i + 1, i + step)) or 0) % m)
+        local end2 = math.min(i + step, #tmp)
+        if i + 1 <= #tmp then
+            table.insert(result, (tonumber(tmp:sub(i + 1, end2)) or 0) % m)
+        end
         i = i + step
     end
     return result
@@ -815,6 +867,18 @@ function Content.ensure_reader_state(client, book)
     return state
 end
 
+--- Refresh psvts before downloading a chapter (matches per-chapter reader page fetch).
+function Content.refresh_reader_state(client, book, chapter)
+    book.psvts = nil
+    local book_id = book.book_id or book.bookId
+    if chapter and chapter.chapterUid then
+        book.reader_url = WeRead.reader_url(book_id, chapter.chapterUid)
+    else
+        book.reader_url = book.reader_url or WeRead.reader_url(book_id)
+    end
+    Content.ensure_reader_state(client, book)
+end
+
 function Content.fetch_catalog(client, book)
     local book_id = book.book_id or book.bookId
     local reader_url = book.reader_url or WeRead.reader_url(book_id)
@@ -836,7 +900,11 @@ function Content.fetch_chapter_shard(client, settings, book, chapter, endpoint)
     end
 
     local chapter_url = WeRead.reader_url(book_id, chapter.chapterUid)
-    local params = WeRead.make_content_params(book_id, chapter.chapterUid, book.psvts, { sc = 1 })
+    local is_style_shard = endpoint:find("/e_2", 1, true) ~= nil
+    local params = WeRead.make_content_params(book_id, chapter.chapterUid, book.psvts, {
+        sc = 1,
+        style = is_style_shard,
+    })
     local text = client:request({
         url = "https://weread.qq.com" .. endpoint,
         method = "POST",
@@ -877,6 +945,8 @@ function Content.fetch_txt_as_xhtml(client, settings, book, chapter)
 end
 
 function Content.fetch_chapter_xhtml(client, settings, book, chapter)
+    Content.refresh_reader_state(client, book, chapter)
+
     if book._content_format == "txt" then
         return Content.fetch_txt_as_xhtml(client, settings, book, chapter)
     end
@@ -915,11 +985,23 @@ function Content.fetch_chapter_css(client, settings, book, chapter)
     return nil
 end
 
+
+local function apply_chapter_annotations(client, settings, book, chapter, xhtml, css)
+    local cache = settings:get("cache", {})
+    if cache.download_underlines_and_thoughts ~= true then
+        return xhtml, css
+    end
+    local book_id = book.book_id or book.bookId
+    local chapter_uid = chapter and chapter.chapterUid
+    local processed, annotation_css = Thoughts.apply(client, settings, book_id, chapter_uid, xhtml)
+    return processed, Thoughts.merge_css(css, annotation_css)
+end
+
 function Content.fetch_chapter_epub(client, settings, book, chapter)
-    Content.ensure_reader_state(client, book)
     local book_id = book.book_id or book.bookId
     local xhtml = Content.fetch_chapter_xhtml(client, settings, book, chapter)
     local css = Content.fetch_chapter_css(client, settings, book, chapter)
+    xhtml, css = apply_chapter_annotations(client, settings, book, chapter, xhtml, css)
     local assets = {}
     local cache = settings:get("cache", {})
     if cache.download_book_images then
@@ -949,6 +1031,7 @@ function Content.fetch_single_chapter_content(client, settings, book, chapter, s
     if not state.css then
         state.css = Content.fetch_chapter_css(client, settings, book, chapter)
     end
+    xhtml, state.css = apply_chapter_annotations(client, settings, book, chapter, xhtml, state.css)
     local chapter_assets = {}
     local cache = settings:get("cache", {})
     if cache.download_book_images then
@@ -969,7 +1052,6 @@ end
 
 function Content.fetch_chapters_epub(client, settings, book, chapters, options)
     options = options or {}
-    Content.ensure_reader_state(client, book)
     local selected = {}
     local bodies = {}
     local assets = {}
@@ -984,6 +1066,7 @@ function Content.fetch_chapters_epub(client, settings, book, chapters, options)
         if not css then
             css = Content.fetch_chapter_css(client, settings, book, chapter)
         end
+        xhtml, css = apply_chapter_annotations(client, settings, book, chapter, xhtml, css)
         if cache.download_book_images then
             if options.progress then
                 options.progress(chapter_index, #chapters, chapter, "images")
@@ -1250,7 +1333,7 @@ end
 
 function Content.mp_article_path(settings, book, article)
     local book_id = book.book_id or book.bookId
-    local dir = Content.book_cache_dir(settings, book_id)
+    local dir = Content.book_resolved_dir(settings, book_id, book)
     local title = filename_safe(article.title or "article")
     return dir .. "/" .. title .. ".html"
 end
@@ -1273,7 +1356,10 @@ end
 
 function Content.save_mp_article_html(settings, book, article, body_html)
     local book_id = book.book_id or book.bookId
-    local dir = Content.book_cache_dir(settings, book_id)
+    local dir = Content.book_resolved_dir(settings, book_id, book)
+    -- Pin the real directory on the record so later lookups, moves and cleanup
+    -- can find these files after the download directory changes.
+    book.cache_dir = dir
     os.execute("mkdir -p " .. string.format("%q", dir))
     local title = article.title or "Article"
     local path = Content.mp_article_path(settings, book, article)
