@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  checks:
+    name: Basic checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install LuaJIT
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y luajit
+
+      - name: Lua syntax check
+        run: |
+          find . -name '*.lua' \
+            -not -path './config.lua' \
+            -not -path './.git/*' \
+            -print0 | while IFS= read -r -d '' file; do
+              luajit -b "$file" /tmp/luajit-check.out
+            done
+
+      - name: Python syntax check
+        run: |
+          if [ -d scripts ]; then
+            python3 -m py_compile scripts/*.py
+          fi
+
+      - name: Sensitive information scan
+        run: |
+          set -euo pipefail
+
+          found=0
+
+          scan() {
+            local description="$1"
+            local pattern="$2"
+
+            if rg -n -P "$pattern" . \
+              --glob '!config.lua' \
+              --glob '!cache/**' \
+              --glob '!*.epub' \
+              --glob '!.git/**'; then
+              echo "::error::$description"
+              found=1
+            fi
+          }
+
+          scan "Possible real WeRead API key. Remove API keys before committing." 'wrk-(?!x{8,})[A-Za-z0-9_-]{12,}'
+          scan "Possible real WeRead cookie value. Remove cookies before committing." '(wr_skey|wr_rt|wr_vid|ptcz)=((?!XXX)[^;[:space:]'\''"]{8,})'
+          scan "Possible real x-wrpa header. Remove anti-abuse headers before committing." 'x-wrpa-[0-9]+:\s*((?!\.\.\.)[A-Za-z0-9+/=_-]{12,})'
+          scan "Possible thirdwx value. Remove account/session data before committing." 'thirdwx[=:]\s*[A-Za-z0-9_-]{8,}'
+
+          exit "$found"

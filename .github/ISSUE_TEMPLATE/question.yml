@@ -1,0 +1,87 @@
+name: Question or support / 使用问题
+description: Ask for help with setup or usage. / 咨询安装、配置或使用问题。
+title: "[Question] "
+labels: ["question", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please include enough context for others to help you. Do not paste API keys, cookies, full cURL commands, or private book content.
+
+        请提供足够上下文，方便他人帮助你。不要粘贴 API key、cookie、完整 cURL 或私人书籍内容。
+
+  - type: textarea
+    id: question
+    attributes:
+      label: 问题 / Question
+      description: 请清楚描述你想咨询的问题。Clearly describe what you need help with.
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: 已尝试的操作 / What you tried
+      description: 请说明你已经尝试过什么，或贴出清晰的操作步骤/截图。Describe what you have tried, or provide clear steps/screenshots.
+      placeholder: |
+        1. 我按照 README 配置了...
+        2. 然后...
+        3. 结果...
+
+        1. I followed the README to configure...
+        2. Then...
+        3. Result...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: KOReader 日志 / KOReader logs
+      description: |
+        如果问题涉及报错、无法启动、无法下载、登录或同步失败，请提供 KOReader 日志。
+
+        大多数设备的日志文件是 KOReader 目录下的 `crash.log`：
+        - Kindle: `koreader/crash.log`
+        - Kobo: `.adds/koreader/crash.log`
+        - PocketBook: `applications/koreader/crash.log`
+        - Android: 在 KOReader 中打开 `菜单 -> 帮助 -> Bug Report` 导出日志
+
+        If your question involves errors, startup failures, download failures, login, or sync, provide KOReader logs.
+      placeholder: 粘贴相关日志片段，或说明已上传日志附件。 / Paste relevant log lines, or say that you attached the log file.
+    validations:
+      required: true
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: 插件版本 / Plugin version
+      placeholder: v0.1.0 / commit abc1234
+    validations:
+      required: true
+
+  - type: input
+    id: koreader-version
+    attributes:
+      label: KOReader 版本 / KOReader version
+      placeholder: KOReader 2026.03 / nightly 2026-07-10
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: 设备和系统 / Device and OS
+      placeholder: Kindle Paperwhite 5 / Kobo Libra 2 / Android 14 tablet
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前确认 / Pre-submit checklist
+      options:
+        - label: 我已经阅读 README，并搜索过已有 issue。 / I have read the README and searched existing issues.
+          required: true
+        - label: 我已经删除 API key、cookie、完整 cURL、账号信息等敏感内容。 / I have removed API keys, cookies, full cURL commands, account data, and other sensitive information.
+          required: true

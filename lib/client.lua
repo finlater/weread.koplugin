@@ -88,6 +88,32 @@ local function absolute_url(base_url, location)
     return prefix .. location
 end
 
+local function url_origin(url)
+    local scheme, authority = tostring(url or ""):match("^(https?)://([^/]+)")
+    if not scheme then
+        return nil
+    end
+    return scheme:lower() .. "://" .. authority:lower()
+end
+
+local function is_weread_url(url)
+    local authority = tostring(url or ""):match("^https?://([^/]+)")
+    if not authority then
+        return false
+    end
+    local host = authority:lower():gsub(":%d+$", "")
+    return host == "weread.qq.com" or host:sub(-#".weread.qq.com") == ".weread.qq.com"
+end
+
+local function clear_cross_origin_headers(headers)
+    for key in pairs(headers or {}) do
+        local name = tostring(key):lower()
+        if name == "authorization" or name == "cookie" or name == "origin" then
+            headers[key] = nil
+        end
+    end
+end
+
 local function transport_request(transport, request, timeout)
     timeout = timeout or DEFAULT_TIMEOUT_SECONDS
     local previous_timeout = transport.TIMEOUT
@@ -167,7 +193,11 @@ function Client:request_follow(opts, max_redirects)
             if not location then
                 return text, code, resp_headers, status
             end
-            url = absolute_url(url, location)
+            local next_url = absolute_url(url, location)
+            if url_origin(url) ~= url_origin(next_url) then
+                clear_cross_origin_headers(opts.headers)
+            end
+            url = next_url
             opts.method = "GET"
             opts.body = nil
             opts.headers = opts.headers or {}
@@ -245,15 +275,17 @@ function Client:get_text(url, opts)
     local headers = {
         ["Accept"] = opts.accept or "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         ["Referer"] = opts.referer or "https://weread.qq.com/",
-        ["Cookie"] = Cookie.to_header(cookies),
     }
+    if is_weread_url(url) then
+        headers["Cookie"] = Cookie.to_header(cookies)
+    end
     local text, code, resp_headers = self:request({
         url = url,
         method = "GET",
         headers = headers,
     })
     local set_cookie = header_value(resp_headers, "set-cookie")
-    if set_cookie then
+    if set_cookie and is_weread_url(url) then
         self.settings:set("cookies", Cookie.merge_set_cookie(cookies, set_cookie))
         self.settings:flush()
     end
@@ -290,20 +322,23 @@ function Client:get_binary(url, opts)
     local headers = {
         ["Accept"] = opts.accept or "*/*",
         ["Referer"] = opts.referer or "https://weread.qq.com/",
-        ["Cookie"] = Cookie.to_header(cookies),
     }
+    if is_weread_url(url) then
+        headers["Cookie"] = Cookie.to_header(cookies)
+    end
     if opts.headers then
         for key, value in pairs(opts.headers) do
             headers[key] = value
         end
     end
-    local text, code, resp_headers = self:request_follow({
+    local request_opts = {
         url = url,
         method = "GET",
         headers = headers,
-    })
+    }
+    local text, code, resp_headers = self:request_follow(request_opts)
     local set_cookie = header_value(resp_headers, "set-cookie")
-    if set_cookie then
+    if set_cookie and is_weread_url(request_opts.url) then
         self.settings:set("cookies", Cookie.merge_set_cookie(cookies, set_cookie))
         self.settings:flush()
     end

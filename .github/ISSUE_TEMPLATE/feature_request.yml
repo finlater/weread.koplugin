@@ -1,0 +1,67 @@
+name: Feature request / 功能请求
+description: Suggest a new feature or improvement. / 建议新功能或改进。
+title: "[Feature] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement.
+
+        感谢你提出改进建议。请说明具体使用场景；如果是界面或交互功能，截图、草图或录屏会很有帮助。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决的问题 / Problem to solve
+      description: 这个功能想解决什么具体问题？What problem would this feature solve?
+      placeholder: |
+        例如：我经常需要...，现在必须...
+        Example: I often need to..., but currently I have to...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案 / Proposed solution
+      description: 你希望插件如何工作？How would you like the plugin to behave?
+      placeholder: 请描述菜单位置、交互流程、输出结果等。 / Describe menu placement, flow, output, etc.
+    validations:
+      required: true
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: 截图或参考，可选 / Screenshots or references, optional
+      description: 如果是 UI/交互功能，请尽量提供截图、草图或参考。For UI/interaction features, screenshots, sketches, or references are strongly encouraged.
+    validations:
+      required: false
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: 插件版本 / Plugin version
+      description: 请提供当前使用的 release 版本号或 commit hash。Provide your current release version or commit hash.
+      placeholder: v0.1.0 / commit abc1234
+    validations:
+      required: true
+
+  - type: input
+    id: koreader-version
+    attributes:
+      label: KOReader 版本 / KOReader version
+      description: 可在 KOReader 的关于页面查看。You can find this in KOReader's About page.
+      placeholder: KOReader 2026.03 / nightly 2026-07-10
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前确认 / Pre-submit checklist
+      options:
+        - label: 我已经搜索过已有 issue，确认没有相同或非常类似的请求。 / I have searched existing issues and did not find the same or a very similar request.
+          required: true
+        - label: 这个请求不包含 API key、cookie、完整 cURL、账号信息或私人书籍内容。 / This request does not include API keys, cookies, full cURL commands, account data, or private book content.
+          required: true

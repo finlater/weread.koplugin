@@ -905,7 +905,7 @@ function Content.fetch_chapter_shard(client, settings, book, chapter, endpoint)
         sc = 1,
         style = is_style_shard,
     })
-    local text = client:request({
+    local text, code = client:request({
         url = "https://weread.qq.com" .. endpoint,
         method = "POST",
         headers = {
@@ -916,6 +916,9 @@ function Content.fetch_chapter_shard(client, settings, book, chapter, endpoint)
         },
         body = client:json_encode(params),
     })
+    if not code or code < 200 or code >= 300 then
+        error(endpoint .. " failed: HTTP " .. tostring(code or "unknown"))
+    end
     if text == "{}" then
         error(endpoint .. " returned empty object")
     end
@@ -953,17 +956,12 @@ function Content.fetch_chapter_xhtml(client, settings, book, chapter)
 
     local ok, e0 = pcall(Content.fetch_chapter_shard, client, settings, book, chapter, "/web/book/chapter/e_0")
 
-    if ok and e0:sub(1, 1) == "{" then
+    if ok and e0:sub(1, 1) == "{" and e0:find('"bookId"', 1, true) then
         book._content_format = "txt"
         return Content.fetch_txt_as_xhtml(client, settings, book, chapter)
     end
 
     if not ok then
-        local txt_ok, txt_result = pcall(Content.fetch_txt_as_xhtml, client, settings, book, chapter)
-        if txt_ok then
-            book._content_format = "txt"
-            return txt_result
-        end
         error(e0)
     end
 

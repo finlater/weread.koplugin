@@ -1,0 +1,159 @@
+name: Bug report / Bug 反馈
+description: Report a reproducible bug with logs and version information. / 提交包含日志和版本信息的可复现问题。
+title: "[Bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve WeRead KOReader Plugin.
+
+        感谢你帮助改进 WeRead KOReader Plugin。请尽量完整填写下面的信息，缺少日志、版本号或复现材料的问题可能会被标记为 `needs-info`。
+
+        Please remove sensitive information before submitting, including API keys, cookies, `x-wrpa-*` headers, full cURL commands, account IDs, and private book content.
+
+        提交前请删除敏感信息，包括 API key、cookie、`x-wrpa-*` 请求头、完整 cURL、账号信息和私人书籍内容。
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题描述 / Summary
+      description: 简要说明遇到了什么问题。Briefly describe the problem.
+      placeholder: |
+        例如：下载某本书时插件卡住并返回错误。
+        Example: The plugin hangs and returns an error when downloading a book.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤或截图 / Reproduction steps or screenshots
+      description: |
+        请提供清晰的复现步骤。如果问题与界面、弹窗、菜单、排版或显示有关，请附截图或录屏。
+
+        Please provide clear reproduction steps. If the problem is visual or UI-related, attach screenshots or a screen recording.
+      placeholder: |
+        1. 打开 KOReader...
+        2. 进入 工具 -> 微信读书 -> ...
+        3. 点击 ...
+        4. 看到错误 ...
+
+        或附上截图/录屏并说明触发方式。
+
+        1. Open KOReader...
+        2. Go to Tools -> WeRead -> ...
+        3. Tap ...
+        4. See the error ...
+
+        Or attach screenshots/recording and describe how to trigger it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: KOReader 日志 / KOReader logs
+      description: |
+        请提供 KOReader 日志。大多数设备的日志文件是 KOReader 目录下的 `crash.log`。
+
+        常见位置：
+        - Kindle: `koreader/crash.log`
+        - Kobo: `.adds/koreader/crash.log`
+        - PocketBook: `applications/koreader/crash.log`
+        - Android: 在 KOReader 中打开 `菜单 -> 帮助 -> Bug Report` 导出日志
+
+        Please provide KOReader logs. On most devices the log file is `crash.log` inside the KOReader directory.
+
+        Common locations:
+        - Kindle: `koreader/crash.log`
+        - Kobo: `.adds/koreader/crash.log`
+        - PocketBook: `applications/koreader/crash.log`
+        - Android: use `Menu -> Help -> Bug Report` in KOReader to export logs
+
+        Attach the log file or paste the relevant excerpt. Remove API keys, cookies, cURL commands, and private data before submitting.
+      placeholder: 粘贴相关日志片段，或说明已上传日志附件。 / Paste relevant log lines, or say that you attached the log file.
+    validations:
+      required: true
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: 插件版本 / Plugin version
+      description: 请提供 release 版本号、下载时间，或 commit hash。Provide the release version, download date, or commit hash.
+      placeholder: v0.1.0 / commit abc1234 / downloaded on 2026-07-10
+    validations:
+      required: true
+
+  - type: input
+    id: koreader-version
+    attributes:
+      label: KOReader 版本 / KOReader version
+      description: 可在 KOReader 的关于页面查看。You can find this in KOReader's About page.
+      placeholder: KOReader 2026.03 / nightly 2026-07-10
+    validations:
+      required: true
+
+  - type: input
+    id: device
+    attributes:
+      label: 设备和系统 / Device and OS
+      description: 请提供设备型号和系统。Provide your device model and OS.
+      placeholder: Kindle Paperwhite 5 / Kobo Libra 2 / Android 14 tablet
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 相关功能 / Affected area
+      description: 请选择最相关的功能模块。Choose the most relevant feature area.
+      options:
+        - 书架 / Bookshelf
+        - 搜索 / Search
+        - 书籍下载 / Book download
+        - 公众号文章 / MP articles
+        - 划线和想法 / Highlights and thoughts
+        - 阅读时间上报 / Reading time report
+        - 配置或登录 / Configuration or login
+        - 菜单或界面 / Menu or UI
+        - 其他 / Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: book
+    attributes:
+      label: 相关书籍信息，可选 / Related book information, optional
+      description: |
+        如果问题只在特定书籍上出现，可以提供微信读书书籍链接，或自己导入书籍的格式和特征。
+
+        If the issue only happens with a specific book, you may provide a WeRead book link, or the format/details of an imported book.
+
+        请不要公开上传受版权保护、包含隐私或不方便分享的书籍源文件。Do not publicly upload copyrighted, private, or sensitive book files.
+      placeholder: |
+        微信读书链接 / WeRead link:
+        自己导入的书籍格式 / Imported book format:
+        是否只影响这一本书 / Does it only affect this book:
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息 / Additional context
+      description: 其他你认为有帮助的信息。Any other context that may help.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交前确认 / Pre-submit checklist
+      options:
+        - label: 我已经搜索过已有 issue，确认不是重复问题。 / I have searched existing issues and this is not a duplicate.
+          required: true
+        - label: 我已经删除日志和截图中的 API key、cookie、完整 cURL、账号信息等敏感内容。 / I have removed API keys, cookies, full cURL commands, account data, and other sensitive information.
+          required: true
+        - label: 我已经提供 KOReader 日志、插件版本和 KOReader 版本。 / I have provided KOReader logs, plugin version, and KOReader version.
+          required: true
