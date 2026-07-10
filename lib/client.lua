@@ -201,31 +201,6 @@ function Client:post_json(url, data, opts)
     error(http_error(self, code, text, resp_headers))
 end
 
-function Client:post_no_cookie(url, data, opts)
-    opts = opts or {}
-    local headers = {
-        ["Content-Type"] = "application/json;charset=UTF-8",
-        ["Origin"] = "https://weread.qq.com",
-        ["Referer"] = opts.referer or "https://weread.qq.com/",
-    }
-    if opts.headers then
-        for key, value in pairs(opts.headers) do
-            headers[key] = value
-        end
-    end
-
-    local text, code, resp_headers = self:request({
-        url = url,
-        method = "POST",
-        headers = headers,
-        body = self:json_encode(data),
-    })
-    if code and code >= 200 and code < 300 then
-        return self:json_decode(text), code, resp_headers
-    end
-    error(http_error(self, code, text, resp_headers))
-end
-
 function Client:get_text(url, opts)
     opts = opts or {}
     local accept = header_value(opts.headers, "Accept") or opts.accept
@@ -310,7 +285,8 @@ function Client:gateway(api_name, params)
     if api_key == "" then
         error("WeRead API key is not configured")
     end
-    return self:post_no_cookie("https://i.weread.qq.com/api/agent/gateway", params, {
+    return self:post_json("https://i.weread.qq.com/api/agent/gateway", params, {
+        skip_cookie = true,
         headers = {
             ["Authorization"] = "Bearer " .. api_key,
         },

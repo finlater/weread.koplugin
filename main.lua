@@ -1077,11 +1077,12 @@ function WeReadPlugin:showQRCodeLoginDialog()
     local POLL_INTERVAL = 2
             
     local cookies = self.settings:get("cookies", {})
-    self.settings:set("cookies", {
-        wr_fp = cookies.wr_fp or self.client:generate_wr_fp(),
-        wr_scaleRatio = "1"
-    })
-    self.settings:flush()
+    if not cookies.wr_fp then 
+        cookies.wr_fp = self.client:generate_wr_fp()
+        if not cookies.wr_scaleRatio then cookies.wr_scaleRatio = "1" end
+        self.settings:set("cookies", cookies)
+        self.settings:flush()
+    end
 
     local ok_url, res = pcall(self.client.get_confirm_url, self.client)
     if not ok_url or type(res) ~= "table" or not res.url or not res.uid then
@@ -1100,11 +1101,13 @@ function WeReadPlugin:showQRCodeLoginDialog()
         text = res.url,
         width = Device.screen:getWidth(),
         height = Device.screen:getHeight(),
-        timeout = TIMEOUT_SECONDS,
+        -- +1s show timeout msg
+        timeout = TIMEOUT_SECONDS + 1,
         dismiss_callback =function()
             qr_closed = true
             logger.dbg(LOG_MODULE, "QRMessage dismiss_callback")
         end,
+        scale_factor = 0.8,
     }
 
     local cgi_key = self.client:generate_cgi_key()
@@ -1131,10 +1134,9 @@ function WeReadPlugin:showQRCodeLoginDialog()
         local ok_user, user_info = pcall(self.client.get_user_info, self.client, ret.vid)
         local msg = _("Login successful.")
         if ok_user and type(user_info) == "table" then
-            msg = string.format(
-                _("Login successful.\nNickname: %s City: %s"), 
-                user_info.name or _("Unknown"), 
-                user_info.location or _("Unknown")
+            msg = string.format("%s \n %s_%s", msg, 
+                user_info.location or _("Unknown"), 
+                user_info.name or _("Unknown")
             )
         else
             logger.warn(LOG_MODULE, "test get_user_info failed:", tostring(user_info))
@@ -1170,8 +1172,7 @@ function WeReadPlugin:showQRCodeLoginDialog()
         end
         logger.info(LOG_MODULE, "QR code scanned and confirmed. Logging in...")
         UIManager:close(login_qr)
-        self:showTransientInfo(_("QR code scanned. Logging in..."), 5)
-        perform_web_login(ret)
+        perform_web_login(ret) 
     end
     UIManager:show(login_qr)
     UIManager:nextTick(function()
