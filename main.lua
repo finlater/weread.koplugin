@@ -1089,11 +1089,13 @@ function WeReadPlugin:confirmScanLocalCache()
     end)
 end
 
--- After the download directory changes, offer to register any untracked items
--- already sitting in the new directory (e.g. manually copied in). base_message is
--- shown when there is nothing to add or the user skips. Importing requires
--- matching against the shelf, so without an API key or network the scan is
--- silently skipped; it can be run later from Cache management.
+-- After the download directory changes, offer to register untracked items
+-- already sitting in the new directory (e.g. manually copied in), as well as
+-- known books whose stored paths became stale and need rebinding to the files
+-- found here. base_message is shown when there is nothing to import or the user
+-- skips. Importing requires matching against the shelf, so without an API key
+-- or network the scan is silently skipped; it can be run later from Cache
+-- management.
 function WeReadPlugin:offerScanNewDir(new_dir, base_message)
     if not self.settings:is_api_configured() or not self:isNetworkOnline() then
         self:showInfo(base_message)
@@ -1108,17 +1110,18 @@ function WeReadPlugin:offerScanNewDir(new_dir, base_message)
             self:showInfo(base_message)
             return
         end
-        local pending = self:scanLocalCache(new_dir, allowed, true)
-        if pending == 0 then
+        local pending_added, pending_updated = self:scanLocalCache(new_dir, allowed, true)
+        if pending_added + pending_updated == 0 then
             self:showInfo(base_message)
             return
         end
         UIManager:show(ConfirmBox:new{
-            text = T(_("Found %1 untracked item(s) in the new directory. Add them to the library?"), tostring(pending)),
-            ok_text = _("Add"),
+            text = T(_("Found %1 new and %2 outdated item(s) in the new directory. Import them?"),
+                tostring(pending_added), tostring(pending_updated)),
+            ok_text = _("Import"),
             ok_callback = function()
-                local added = self:scanLocalCache(new_dir, allowed)
-                self:showInfo(T(_("Added %1 item(s) to the library."), tostring(added)))
+                local added, updated = self:scanLocalCache(new_dir, allowed)
+                self:showInfo(T(_("Imported %1 new and %2 updated item(s)."), tostring(added), tostring(updated)))
             end,
             cancel_text = _("Skip"),
             cancel_callback = function()

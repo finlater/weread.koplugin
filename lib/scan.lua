@@ -9,6 +9,21 @@
 
 local Scan = {}
 
+local function dirname(path)
+    if type(path) ~= "string" then
+        return nil
+    end
+    return path:match("^(.*)/[^/]+$")
+end
+
+local function file_exists(fs, path)
+    if type(path) ~= "string" then
+        return false
+    end
+    local attr = fs.attributes(path)
+    return attr ~= nil and attr.mode == "file"
+end
+
 -- opts:
 --   root     download root directory to scan
 --   fs       lfs-like interface: fs.dir(path) iterator, fs.attributes(path)
@@ -64,44 +79,69 @@ function Scan.scan_root(opts)
                     local is_mp = opts.is_mp(book_id)
                     local has_content = is_mp and has_html or (not is_mp and has_epub)
                     if has_content then
-                        local record = books[book_id]
-                        local is_new = record == nil
+                        local record = books[book_id] or { book_id = book_id }
+                        local had_cache = (type(record.cache_dir) == "string" and record.cache_dir ~= "")
+                            or record.cached_file ~= nil
+                        local is_new = not had_cache
+                        -- The same change detection drives both the dry-run
+                        -- counters and the actual import so they always agree.
+                        local dir_changed = record.cache_dir ~= dir
+                        -- Rebind the book file whenever the stored path is
+                        -- missing, points outside this directory (stale after a
+                        -- download-dir change), or no longer exists on disk. A
+                        -- valid file inside this directory is kept even when
+                        -- another epub here is larger. MP articles are opened
+                        -- per-article, not via a single file.
+                        local cf = record.cached_file
+                        local cf_valid = dirname(cf) == dir and file_exists(fs, cf)
+                        local needs_file = not is_mp and main_epub ~= nil and not cf_valid
+                        local needs_title = not record.title or record.title == ""
+                        local changed = is_new or dir_changed or needs_file or needs_title
                         if opts.dry_run then
-                            if is_new then
-                                added = added + 1
-                            end
-                        else
-                            record = record or { book_id = book_id }
-                            local changed = is_new
-                            if record.cache_dir ~= dir then
-                                record.cache_dir = dir
-                                changed = true
-                            end
-                            -- MP articles are opened per-article, not via a single file.
-                            if not is_mp and not record.cached_file and main_epub then
-                                record.cached_file = main_epub
-                                changed = true
-                            end
-                            if not record.title or record.title == "" then
-                                record.title = shelf_book.title
-                                    or (main_epub and main_epub:match("([^/]+)%.epub$"))
-                                    or book_id
-                                changed = true
-                            end
-                            if shelf_book.author and not record.author then
-                                record.author = shelf_book.author
-                            end
-                            if is_new then
-                                record.updated_at = opts.now
-                            end
                             if changed then
-                                books[book_id] = record
                                 if is_new then
                                     added = added + 1
                                 else
                                     updated = updated + 1
                                 end
                             end
+                        elseif changed then
+                            record.cache_dir = dir
+                            if needs_file then
+                                record.cached_file = main_epub
+                            end
+                            if needs_title then
+                                record.title = shelf_book.title
+                                    or (main_epub and main_epub:match("([^/]+)%.epub$"))
+                                    or book_id
+                            end
+                            if shelf_book.author and not record.author then
+                                record.author = shelf_book.author
+                            end
+                            -- Chapter paths may still point at an old download
+                            -- dir: follow files that also exist here by name,
+                            -- and drop entries that exist nowhere so they don't
+                            -- read as cached.
+                            if type(record.cached_chapters) == "table" then
+                                for uid, path in pairs(record.cached_chapters) do
+                                    if not file_exists(fs, path) then
+                                        local name = type(path) == "string" and path:match("[^/]+$")
+                                        local candidate = name and (dir .. "/" .. name)
+                                        if candidate and file_exists(fs, candidate) then
+                                            record.cached_chapters[uid] = candidate
+                                        else
+                                            record.cached_chapters[uid] = nil
+                                        end
+                                    end
+                                end
+                            end
+                            if is_new then
+                                record.updated_at = opts.now
+                                added = added + 1
+                            else
+                                updated = updated + 1
+                            end
+                            books[book_id] = record
                         end
                     end
                 end

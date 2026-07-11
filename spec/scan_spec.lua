@@ -182,6 +182,120 @@ test("metadata-only record binding fresh content counts as added", function()
     eq(books["123456"].updated_at, NOW, "updated_at stamped as new")
 end)
 
+test("stale cached_file from old dir is rebound to scanned epub", function()
+    local fs = make_fs({
+        ["/root"] = "dir",
+        ["/root/123456"] = "dir",
+        ["/root/123456/book.epub"] = 1000,
+    })
+    local books = {
+        ["123456"] = {
+            book_id = "123456",
+            title = "T",
+            cache_dir = "/old/123456",
+            cached_file = "/old/123456/book.epub",
+        },
+    }
+    local allowed = { ["123456"] = { book_id = "123456", title = "T" } }
+    -- Dry run must report this as a pending update, not silence it.
+    local d_added, d_updated = scan(fs, books, allowed, true)
+    eq(d_added, 0, "dry-run added")
+    eq(d_updated, 1, "dry-run updated")
+    eq(books["123456"].cached_file, "/old/123456/book.epub", "dry-run leaves record alone")
+    local added, updated = scan(fs, books, allowed)
+    eq(added, 0, "added")
+    eq(updated, 1, "updated")
+    eq(books["123456"].cache_dir, "/root/123456", "cache_dir rebound")
+    eq(books["123456"].cached_file, "/root/123456/book.epub", "cached_file rebound")
+end)
+
+test("missing cached_file in current dir is rebound", function()
+    local fs = make_fs({
+        ["/root"] = "dir",
+        ["/root/123456"] = "dir",
+        ["/root/123456/new.epub"] = 1000,
+    })
+    local books = {
+        ["123456"] = {
+            book_id = "123456",
+            title = "T",
+            cache_dir = "/root/123456",
+            cached_file = "/root/123456/deleted.epub",
+        },
+    }
+    local allowed = { ["123456"] = { book_id = "123456" } }
+    local added, updated = scan(fs, books, allowed)
+    eq(added, 0, "added")
+    eq(updated, 1, "updated")
+    eq(books["123456"].cached_file, "/root/123456/new.epub", "cached_file rebound")
+end)
+
+test("valid cached_file in scanned dir is kept over a larger epub", function()
+    local fs = make_fs({
+        ["/root"] = "dir",
+        ["/root/123456"] = "dir",
+        ["/root/123456/reading.epub"] = 100,
+        ["/root/123456/other.epub"] = 9000,
+    })
+    local books = {
+        ["123456"] = {
+            book_id = "123456",
+            title = "T",
+            cache_dir = "/root/123456",
+            cached_file = "/root/123456/reading.epub",
+        },
+    }
+    local allowed = { ["123456"] = { book_id = "123456" } }
+    local d_added, d_updated = scan(fs, books, allowed, true)
+    eq(d_added + d_updated, 0, "dry-run reports nothing pending")
+    local added, updated = scan(fs, books, allowed)
+    eq(added + updated, 0, "no change applied")
+    eq(books["123456"].cached_file, "/root/123456/reading.epub", "cached_file kept")
+end)
+
+test("cached_chapters are remapped or dropped on rebind", function()
+    local fs = make_fs({
+        ["/root"] = "dir",
+        ["/root/123456"] = "dir",
+        ["/root/123456/book.epub"] = 1000,
+        ["/root/123456/ch1.xhtml"] = 10,
+    })
+    local books = {
+        ["123456"] = {
+            book_id = "123456",
+            title = "T",
+            cache_dir = "/old/123456",
+            cached_file = "/old/123456/book.epub",
+            cached_chapters = {
+                c1 = "/old/123456/ch1.xhtml",
+                c2 = "/old/123456/ch2.xhtml",
+            },
+        },
+    }
+    local allowed = { ["123456"] = { book_id = "123456" } }
+    scan(fs, books, allowed)
+    local chapters = books["123456"].cached_chapters
+    eq(chapters.c1, "/root/123456/ch1.xhtml", "existing chapter remapped")
+    eq(chapters.c2, nil, "missing chapter dropped")
+end)
+
+test("MP record with stale cache_dir counts as pending update", function()
+    local fs = make_fs({
+        ["/root"] = "dir",
+        ["/root/MP_WXS_abc"] = "dir",
+        ["/root/MP_WXS_abc/article.html"] = 100,
+    })
+    local books = {
+        ["MP_WXS_abc"] = { book_id = "MP_WXS_abc", title = "某公众号", cache_dir = "/old/MP_WXS_abc" },
+    }
+    local allowed = { ["MP_WXS_abc"] = { book_id = "MP_WXS_abc" } }
+    local d_added, d_updated = scan(fs, books, allowed, true)
+    eq(d_updated, 1, "dry-run updated")
+    scan(fs, books, allowed)
+    eq(books["MP_WXS_abc"].cache_dir, "/root/MP_WXS_abc", "cache_dir rebound")
+    eq(books["MP_WXS_abc"].cached_file, nil, "MP still has no cached_file")
+end)
+
 test("unreadable root returns zeros", function()
     local fs = make_fs({})
     local added, updated = scan(fs, {}, {})
