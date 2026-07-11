@@ -10,6 +10,7 @@ local InputDialog = require("ui/widget/inputdialog")
 local logger = require("logger")
 local Menu = require("ui/widget/menu")
 local PathChooser = require("ui/widget/pathchooser")
+local time = require("ui/time")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local T = require("ffi/util").template
@@ -30,6 +31,12 @@ end
 
 local LOG_MODULE = "[WeRead]"
 local unpack_args = unpack or table.unpack
+
+local function thought_perf(stage, started, ...)
+    local elapsed = tonumber(time.now() - started) / 1000
+    logger.info(LOG_MODULE, "thought_perf", "stage=", stage,
+        "ms=", string.format("%.1f", elapsed), ...)
+end
 
 local function log_error(err)
     local text = tostring(err):gsub("[%c]+", " ")
@@ -2652,7 +2659,8 @@ function WeReadPlugin:_getThoughtPopupLayoutParams()
     }
 end
 
-function WeReadPlugin:_showThoughtPopup(html, link, session_gen)
+function WeReadPlugin:_showThoughtPopup(html, link, session_gen, tap_started)
+    local show_started = time.now()
     if session_gen and session_gen ~= self._reader_session_gen then
         self._thought_popup_open = nil
         return
@@ -2665,24 +2673,31 @@ function WeReadPlugin:_showThoughtPopup(html, link, session_gen)
     local Screen = require("device").screen
     local document = self.ui.document
     if link.from_xpointer then
+        local highlight_started = time.now()
         local ok = pcall(function()
             document:highlightXPointer()
             document:highlightXPointer(link.from_xpointer)
         end)
+        thought_perf("highlight", highlight_started, "ok=", tostring(ok))
         if ok then
             self._thought_highlight_active = true
             UIManager:setDirty(self.dialog, "partial")
         end
     end
 
+    local params_started = time.now()
     local params = self:_getThoughtPopupLayoutParams()
+    thought_perf("layout_params", params_started)
     if not params then
         self._thought_popup_open = nil
         return
     end
 
+    local fonts_started = time.now()
     ThoughtPopup.preloadFonts(params.doc_font_name)
+    thought_perf("preload_fonts", fonts_started)
 
+    local popup_started = time.now()
     local ok, popup = pcall(function()
         return ThoughtPopup.show({
             html = html,
@@ -2717,6 +2732,8 @@ function WeReadPlugin:_showThoughtPopup(html, link, session_gen)
             end,
         })
     end)
+    thought_perf("popup_show", popup_started, "ok=", tostring(ok),
+        "html_bytes=", tostring(#html))
 
     if not ok then
         logger.warn(LOG_MODULE, "thought popup failed:", popup)
@@ -2726,9 +2743,14 @@ function WeReadPlugin:_showThoughtPopup(html, link, session_gen)
     end
 
     self._current_thought_popup = popup
+    thought_perf("show_pipeline", show_started, "html_bytes=", tostring(#html))
+    if tap_started then
+        thought_perf("tap_to_popup_return", tap_started, "html_bytes=", tostring(#html))
+    end
 end
 
 function WeReadPlugin:_onThoughtTap(ges)
+    local tap_started = time.now()
     if not self.ui or not self.ui.document or not self.ui.link then
         return false
     end
@@ -2736,21 +2758,33 @@ function WeReadPlugin:_onThoughtTap(ges)
         return false
     end
 
+    local link_started = time.now()
     local link = self.ui.link:getLinkFromGes(ges)
+    thought_perf("link_lookup", link_started, "found=", tostring(link ~= nil))
     if not link or not link.xpointer then
         return false
     end
 
     local html
+    local cache_hit = false
     local cache = self._thought_html_cache
     if cache and cache[link.xpointer] ~= nil then
+        cache_hit = true
         local cached = cache[link.xpointer]
         if cached == false then
             return false
         end
         html = cached
     else
-        html = self.ui.document:getHTMLFromXPointer(link.xpointer, 0x1001, true)
+        local extract_started = time.now()
+        -- The generated EPUB groups all thought asides in one footnotes section.
+        -- Asking CREngine for the "final parent" expands a single target aside
+        -- to that whole section, which mixes unrelated thoughts and makes MuPDF
+        -- lay out hundreds of footnotes. The link target itself is already the
+        -- complete <aside>, so keep extraction scoped to that node.
+        html = self.ui.document:getHTMLFromXPointer(link.xpointer, 0x1001, false)
+        thought_perf("extract_html", extract_started,
+            "html_bytes=", tostring(type(html) == "string" and #html or 0))
         if type(html) ~= "string" or not html:find("weread%-thought") then
             self._thought_html_cache = self._thought_html_cache or {}
             self._thought_html_cache[link.xpointer] = false
@@ -2759,6 +2793,8 @@ function WeReadPlugin:_onThoughtTap(ges)
         self._thought_html_cache = self._thought_html_cache or {}
         self._thought_html_cache[link.xpointer] = html
     end
+    thought_perf("tap_resolve", tap_started, "cache_hit=", tostring(cache_hit),
+        "html_bytes=", tostring(#html))
 
     -- When annotations are hidden, still consume the tap so KOReader's built-in
     -- footnote popup (triggered by the epub:type="noteref" link) does not fire,
@@ -2772,7 +2808,9 @@ function WeReadPlugin:_onThoughtTap(ges)
     end
     self._thought_popup_open = true
     local session_gen = self._reader_session_gen or 0
+    local scheduled_at = time.now()
     UIManager:nextTick(function()
+        thought_perf("next_tick_delay", scheduled_at)
         if session_gen ~= self._reader_session_gen then
             self._thought_popup_open = nil
             return
@@ -2781,7 +2819,7 @@ function WeReadPlugin:_onThoughtTap(ges)
             self._thought_popup_open = nil
             return
         end
-        self:_showThoughtPopup(html, link, session_gen)
+        self:_showThoughtPopup(html, link, session_gen, tap_started)
     end)
     return true
 end

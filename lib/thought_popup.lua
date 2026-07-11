@@ -24,11 +24,18 @@ local InputContainer = require("ui/widget/container/inputcontainer")
 local LineWidget = require("ui/widget/linewidget")
 local ScrollHtmlWidget = require("ui/widget/scrollhtmlwidget")
 local Size = require("ui/size")
+local time = require("ui/time")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local Screen = Device.screen
 local logger = require("logger")
+
+local function thought_perf(stage, started, ...)
+    local elapsed = tonumber(time.now() - started) / 1000
+    logger.info("weread: thought_perf", "stage=", stage,
+        "ms=", string.format("%.1f", elapsed), ...)
+end
 -- ============================================================================
 -- 字体预加载模块
 -- ============================================================================
@@ -338,6 +345,7 @@ local ThoughtPopupWidget = InputContainer:extend{
 }
 
 function ThoughtPopupWidget:init()
+    local init_started = time.now()
     self.height_ratio = math.max(0.1, math.min(0.9, self.height_ratio or 0.35))
     self.width = Screen:getWidth()
     self.height = math.floor(Screen:getHeight() * self.height_ratio)
@@ -370,11 +378,20 @@ function ThoughtPopupWidget:init()
         }
     end
 
+    local prepare_started = time.now()
     self.html = prepareHTML(self.html)
+    thought_perf("prepare_html_new", prepare_started, "html_bytes=", tostring(#self.html))
+    local css_started = time.now()
     local css = CSSCache:getFullCSS(self.doc_font_name, self.doc_margins, self.css)
+    thought_perf("build_css_new", css_started, "css_bytes=", tostring(#css))
+    local widget_started = time.now()
     self.htmlwidget = createScrollHtmlWidget(self.html, css, self.doc_font_size,
         self.doc_margins, self.height_ratio, self.dialog)
+    thought_perf("create_html_widget_new", widget_started, "html_bytes=", tostring(#self.html))
+    local layout_started = time.now()
     self:_buildLayout()
+    thought_perf("build_layout_new", layout_started)
+    thought_perf("popup_init_total", init_started, "html_bytes=", tostring(#self.html))
 end
 
 function ThoughtPopupWidget:onShow()
@@ -384,7 +401,10 @@ function ThoughtPopupWidget:onShow()
 end
 
 function ThoughtPopupWidget:_reopen(opts)
+    local reopen_started = time.now()
+    local prepare_started = time.now()
     self.html = prepareHTML(opts.html)
+    thought_perf("prepare_html_reopen", prepare_started, "html_bytes=", tostring(#self.html))
     if opts.css then self.css = opts.css end
     self.doc_font_name = opts.doc_font_name or self.doc_font_name
     self.doc_font_size = opts.doc_font_size or self.doc_font_size
@@ -395,14 +415,23 @@ function ThoughtPopupWidget:_reopen(opts)
     self.height = math.floor(Screen:getHeight() * self.height_ratio)
 
     if self.htmlwidget then
+        local free_started = time.now()
         self.htmlwidget:free()
         self.htmlwidget = nil
+        thought_perf("free_html_widget", free_started)
     end
 
+    local css_started = time.now()
     local css = CSSCache:getFullCSS(self.doc_font_name, self.doc_margins, self.css)
+    thought_perf("build_css_reopen", css_started, "css_bytes=", tostring(#css))
+    local widget_started = time.now()
     self.htmlwidget = createScrollHtmlWidget(self.html, css, self.doc_font_size,
         self.doc_margins, self.height_ratio, self.dialog)
+    thought_perf("create_html_widget_reopen", widget_started, "html_bytes=", tostring(#self.html))
+    local layout_started = time.now()
     self:_buildLayout()
+    thought_perf("build_layout_reopen", layout_started)
+    thought_perf("popup_reopen_total", reopen_started, "html_bytes=", tostring(#self.html))
 end
 
 function ThoughtPopupWidget:_buildLayout()
@@ -428,7 +457,10 @@ function ThoughtPopupWidget:_buildLayout()
         VerticalSpan:new{ width = padding_bottom },
     }
 
+    local page_height_started = time.now()
     local single_page_height = self.htmlwidget:getSinglePageHeight()
+    thought_perf("single_page_height", page_height_started,
+        "single_page=", tostring(single_page_height ~= nil))
     if single_page_height then
         local reduced_height = single_page_height + top_border_size + padding_top + padding_bottom
         vgroup = CenterContainer:new{
@@ -539,6 +571,7 @@ function M.prewarm(opts)
     UIManager:nextTick(function()
         if gen ~= PrewarmState.generation then return end
 
+        local prewarm_started = time.now()
         local ok, err = pcall(function()
             FontPreloader:preloadForFont(opts.doc_font_name)
 
@@ -553,8 +586,9 @@ function M.prewarm(opts)
         end)
 
         if ok then
-            logger.info("weread: thought popup MuPDF prewarmed")
+            thought_perf("prewarm_total", prewarm_started, "ok=", "true")
         else
+            thought_perf("prewarm_total", prewarm_started, "ok=", "false")
             logger.warn("weread: thought popup prewarm failed:", err)
         end
     end)
@@ -567,6 +601,7 @@ local ShowState = {
 }
 
 function M.show(opts)
+    local show_started = time.now()
     if type(opts.html) ~= "string" or opts.html == "" then
         error("thought popup: invalid html")
     end
@@ -574,11 +609,18 @@ function M.show(opts)
     ShowState.generation = ShowState.generation + 1
 
     if _pooled_popup then
+        local reopen_started = time.now()
         _pooled_popup:_reopen(opts)
+        thought_perf("reuse_popup", reopen_started, "html_bytes=", tostring(#opts.html))
+        local ui_show_started = time.now()
         UIManager:show(_pooled_popup)
+        thought_perf("ui_manager_show_reopen", ui_show_started)
+        thought_perf("module_show_total_reopen", show_started,
+            "html_bytes=", tostring(#opts.html))
         return _pooled_popup
     end
 
+    local new_started = time.now()
     local popup = ThoughtPopupWidget:new{
         html = opts.html,
         css = opts.css,
@@ -589,9 +631,14 @@ function M.show(opts)
         dialog = opts.dialog,
         close_callback = opts.close_callback,
     }
+    thought_perf("create_popup", new_started, "html_bytes=", tostring(#opts.html))
 
     _pooled_popup = popup
+    local ui_show_started = time.now()
     UIManager:show(popup)
+    thought_perf("ui_manager_show_new", ui_show_started)
+    thought_perf("module_show_total_new", show_started,
+        "html_bytes=", tostring(#opts.html))
     return popup
 end
 

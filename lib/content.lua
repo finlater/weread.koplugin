@@ -487,7 +487,7 @@ function Content.save_chapter_epub(settings, book, chapter, xhtml, assets, css)
     end
     local chapter_xhtml = [[<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="zh-CN">
 <head>
 <title>]] .. xml_escape(title) .. [[</title>
 <link rel="stylesheet" type="text/css" href="../style.css"/>
@@ -592,7 +592,7 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
         local title = chapter.title or ("Chapter " .. uid)
         local chapter_xhtml = [[<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="zh-CN">
 <head>
 <title>]] .. xml_escape(title) .. [[</title>
 <link rel="stylesheet" type="text/css" href="../style.css"/>

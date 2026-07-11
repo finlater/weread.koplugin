@@ -21,6 +21,7 @@ Annotations.UNDERLINE_CSS = [[
 Annotations.THOUGHT_CSS = [[
 .wr-thought-link{text-decoration:none;color:inherit;}
 .wr-star{font-size:0.6em;vertical-align:super;line-height:0;color:#aaa;margin-left:1px;}
+.weread-thought{display:none;}
 ]]
 
 --- 去除字符串开头的 UTF-8 BOM（\ufeff）。
