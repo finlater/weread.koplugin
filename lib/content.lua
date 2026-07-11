@@ -168,9 +168,9 @@ end
 
 local function write_epub(path, entries)
     local Archiver = require("ffi/archiver")
-    local archive, err = Archiver.Writer:new(path)
-    if not archive then
-        error("failed to open archive for writing: " .. tostring(err))
+    local archive = Archiver.Writer:new{}
+    if not archive:open(path, "epub") then
+        error("failed to open archive for writing: " .. tostring(archive.err))
     end
 
     local mtime = os.time()
