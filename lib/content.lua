@@ -44,8 +44,14 @@ local function basename_safe(value)
     return value
 end
 
+-- Directory name a book is stored under (sanitized book id). Exposed so the
+-- local-cache scanner can match on-disk directory names against shelf book ids.
+function Content.book_dir_name(book_id)
+    return basename_safe(book_id)
+end
+
 function Content.book_cache_dir(settings, book_id)
-    return settings.cache_dir .. "/" .. basename_safe(book_id)
+    return settings.cache_dir .. "/" .. Content.book_dir_name(book_id)
 end
 
 -- Resolve where a book's files actually live. The current settings.cache_dir may

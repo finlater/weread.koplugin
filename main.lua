@@ -20,6 +20,7 @@ local Client = require("lib.client")
 local Content = require("lib.content")
 local Crypto = require("lib.crypto")
 local I18n = require("lib.i18n")
+local Scan = require("lib.scan")
 local Settings = require("lib.settings")
 local Thoughts = require("lib.thoughts")
 local WeRead = require("lib.weread")
@@ -367,8 +368,8 @@ function WeReadPlugin:getSettingsMenuItems()
             sub_item_table_func = function()
                 return {
                     {
-                        text = _("Scan local cache"),
-                        callback = self:safeCallback(_("Scan local cache"), function()
+                        text = _("Scan and match local books"),
+                        callback = self:safeCallback(_("Scan and match local books"), function()
                             self:confirmScanLocalCache()
                         end),
                     },
@@ -1026,87 +1027,21 @@ function WeReadPlugin:refreshCacheManagement(message)
 end
 
 -- Register manually copied content under a download root into the books table.
-function WeReadPlugin:scanLocalCache(root, dry_run)
+-- Only directories whose name matches a shelf book id in `allowed` are imported
+-- (see lib/scan.lua), so unrelated folders in a user-selected download dir can
+-- never be registered and later removed by cache cleanup.
+function WeReadPlugin:scanLocalCache(root, allowed, dry_run)
     local lfs = require("libs/libkoreader-lfs")
     local books = self.settings:get("books", {})
-    local added, updated = 0, 0
-    local ok, iter, dir_obj = pcall(lfs.dir, root)
-    if not ok then
-        return 0, 0
-    end
-    for entry in iter, dir_obj do
-        if entry ~= "." and entry ~= ".." then
-            local dir = root .. "/" .. entry
-            local attr = lfs.attributes(dir)
-            if attr and attr.mode == "directory" then
-                local book_id = entry
-                local is_mp = WeRead.is_mp_book(book_id)
-                -- MP dirs hold .html articles; regular books hold .epub, and we
-                -- track the largest one as the book file to open.
-                local main_epub, main_size, has_content = nil, -1, false
-                local ok2, fiter, fobj = pcall(lfs.dir, dir)
-                if ok2 then
-                    for f in fiter, fobj do
-                        if f ~= "." and f ~= ".." then
-                            local fattr = lfs.attributes(dir .. "/" .. f)
-                            if fattr and fattr.mode == "file" then
-                                local ext = f:match("%.([^.]+)$")
-                                ext = ext and ext:lower()
-                                if is_mp then
-                                    if ext == "html" then
-                                        has_content = true
-                                    end
-                                elseif ext == "epub" then
-                                    has_content = true
-                                    if (fattr.size or 0) > main_size then
-                                        main_size = fattr.size or 0
-                                        main_epub = dir .. "/" .. f
-                                    end
-                                end
-                            end
-                        end
-                    end
-                end
-                if has_content then
-                    local record = books[book_id]
-                    local is_new = record == nil
-                    if dry_run then
-                        if is_new then
-                            added = added + 1
-                        end
-                    else
-                        record = record or { book_id = book_id }
-                        local changed = is_new
-                        if record.cache_dir ~= dir then
-                            record.cache_dir = dir
-                            changed = true
-                        end
-                        -- MP articles are opened per-article, not via a single file.
-                        if not is_mp and not record.cached_file and main_epub then
-                            record.cached_file = main_epub
-                            changed = true
-                        end
-                        if not record.title or record.title == "" then
-                            -- MP account names are not on disk, so fall back to the id.
-                            record.title = (main_epub and main_epub:match("([^/]+)%.epub$")) or book_id
-                            changed = true
-                        end
-                        if is_new then
-                            record.updated_at = os.time()
-                        end
-                        if changed then
-                            books[book_id] = record
-                            if is_new then
-                                added = added + 1
-                            else
-                                updated = updated + 1
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
+    local added, updated = Scan.scan_root({
+        root = root,
+        fs = lfs,
+        books = books,
+        allowed = allowed,
+        is_mp = WeRead.is_mp_book,
+        dry_run = dry_run,
+        now = os.time(),
+    })
     if not dry_run then
         self.settings:set("books", books)
         self.settings:flush()
@@ -1114,36 +1049,83 @@ function WeReadPlugin:scanLocalCache(root, dry_run)
     return added, updated
 end
 
+-- Build the set of importable directory names from the user's WeRead shelf.
+-- Must be called from an online context; raises on API failure.
+function WeReadPlugin:fetchShelfAllowedMap()
+    local result = self.client:gateway("/shelf/sync", {})
+    local allowed = {}
+    for _i, book in ipairs(result and result.books or {}) do
+        if book.bookId then
+            allowed[Content.book_dir_name(book.bookId)] = {
+                book_id = book.bookId,
+                title = book.title,
+                author = book.author,
+            }
+        end
+    end
+    return allowed
+end
+
 function WeReadPlugin:confirmScanLocalCache()
-    self:showBusy(_("Scanning local cache..."))
-    UIManager:scheduleIn(0.1, function()
-        local added, updated = self:scanLocalCache(self.settings.cache_dir)
+    if not self.settings:is_api_configured() then
+        self:showInfo(_("Scanning requires the official API key to match folders against your WeRead shelf."))
+        return
+    end
+    self:runOnlineTask(_("Scan and match local books"), function()
+        self:showBusy(_("Scanning local cache..."))
+        local ok, allowed = pcall(function()
+            return self:fetchShelfAllowedMap()
+        end)
+        if not ok then
+            self:closeBusy()
+            logger.err(LOG_MODULE, "scan shelf fetch failed:", log_error(allowed))
+            self:showInfo(T(_("%1 failed:\n%2"), _("Scan and match local books"), display_error(allowed)))
+            return
+        end
+        local added, updated = self:scanLocalCache(self.settings.cache_dir, allowed)
         self:closeBusy()
-        self:refreshCacheManagement(T(_("Scan complete. %1 added, %2 updated."), tostring(added), tostring(updated)))
+        self:refreshCacheManagement(T(_("Scan complete. %1 added, %2 updated."),
+            tostring(added), tostring(updated)))
     end)
 end
 
 -- After the download directory changes, offer to register any untracked items
 -- already sitting in the new directory (e.g. manually copied in). base_message is
--- shown when there is nothing to add or the user skips.
+-- shown when there is nothing to add or the user skips. Importing requires
+-- matching against the shelf, so without an API key or network the scan is
+-- silently skipped; it can be run later from Cache management.
 function WeReadPlugin:offerScanNewDir(new_dir, base_message)
-    local pending = self:scanLocalCache(new_dir, true)
-    if pending == 0 then
+    if not self.settings:is_api_configured() or not self:isNetworkOnline() then
         self:showInfo(base_message)
         return
     end
-    UIManager:show(ConfirmBox:new{
-        text = T(_("Found %1 untracked item(s) in the new directory. Add them to the library?"), tostring(pending)),
-        ok_text = _("Add"),
-        ok_callback = function()
-            local added = self:scanLocalCache(new_dir)
-            self:showInfo(T(_("Added %1 item(s) to the library."), tostring(added)))
-        end,
-        cancel_text = _("Skip"),
-        cancel_callback = function()
+    self:runOnlineTask(_("Scan and match local books"), function()
+        local ok, allowed = pcall(function()
+            return self:fetchShelfAllowedMap()
+        end)
+        if not ok then
+            logger.warn(LOG_MODULE, "skip scan, shelf fetch failed:", log_error(allowed))
             self:showInfo(base_message)
-        end,
-    })
+            return
+        end
+        local pending = self:scanLocalCache(new_dir, allowed, true)
+        if pending == 0 then
+            self:showInfo(base_message)
+            return
+        end
+        UIManager:show(ConfirmBox:new{
+            text = T(_("Found %1 untracked item(s) in the new directory. Add them to the library?"), tostring(pending)),
+            ok_text = _("Add"),
+            ok_callback = function()
+                local added = self:scanLocalCache(new_dir, allowed)
+                self:showInfo(T(_("Added %1 item(s) to the library."), tostring(added)))
+            end,
+            cancel_text = _("Skip"),
+            cancel_callback = function()
+                self:showInfo(base_message)
+            end,
+        })
+    end)
 end
 
 function WeReadPlugin:confirmClearBookCache(book_id, title, on_cleared)
