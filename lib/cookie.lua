@@ -65,7 +65,11 @@ function Cookie.merge_set_cookie(cookies, set_cookie)
 end
 
 function Cookie.has_login_cookie(cookies)
-    return cookies and cookies.wr_skey and #cookies.wr_skey >= 8
+    -- Modern WeRead uses wr_gid instead of wr_skey; fall back to wr_gid as the login credential.
+    if cookies and cookies.wr_skey and #cookies.wr_skey >= 8 then
+        return true
+    end
+    return cookies and cookies.wr_gid and #cookies.wr_gid >= 5
 end
 
 return Cookie

@@ -81,6 +81,32 @@ cp config.example.lua config.lua
 
 插件启动时自动加载 `config.lua`，也可以在运行时通过 `设置 → 重新加载 config.lua` 热加载。
 
+### 自动配置（推荐）
+
+现代版微信读书会检测 DevTools 并强制报错，且 `wr_skey` 等关键 cookie 是 HttpOnly 的，无法通过 `document.cookie` 读取，因此手动复制 cURL 的方式越来越困难。本仓库附带 `scripts/setup_auth.py`，使用 Playwright + CDP 自动获取 cookie 与 `x-wrpa-0` 头：
+
+```bash
+# 安装依赖（首次）
+pip install playwright
+playwright install chromium
+
+# 扫码登录一次后，浏览器会话会自动持久化到 ~/.weread_koplugin_browser/
+python scripts/setup_auth.py
+```
+
+脚本会自动：
+
+1. 打开持久化浏览器，扫码登录微信读书（仅首次需要）
+2. 通过 CDP `Network.getAllCookies` 获取所有 cookie（含 HttpOnly 的 `wr_skey`、`wr_vid` 等）
+3. 拦截 `web/book/read` 请求获取 `x-wrpa-0` 头
+4. 把结果写入 `config.lua` 的 `curl`、`mp_curl`、`wr_wrpa` 字段
+
+Cookie 过期后再次运行同一命令即可刷新，无需重新扫码。若 `wr_skey` 已不再发放，插件会自动回退检查 `wr_gid` 作为登录凭证。
+
+### 手动配置
+
+如果不便运行 Playwright 脚本，仍可按下面的小节手工抓取 cURL。`config.lua` 中各字段的语义与脚本生成的版本完全一致。
+
 ### 获取 API Key
 
 API Key 用于浏览书架、搜索书籍、读取进度。
@@ -155,9 +181,11 @@ curl 'https://weread.qq.com/web/mp/articles?bookId=...' \
 
 微信读书的 cookie 会定期过期。插件会尝试自动续期，但如果续期失败：
 
-1. 重新在浏览器中登录 weread.qq.com
-2. 重新复制 cURL 到 `config.lua`
-3. 在 KOReader 中：`设置 → 重新加载 config.lua`
+- **自动方式**：重新运行 `python scripts/setup_auth.py`，脚本会自动刷新 cookie 并写回 `config.lua`，无需重新扫码。
+- **手动方式**：
+  1. 重新在浏览器中登录 weread.qq.com
+  2. 重新复制 cURL 到 `config.lua`
+  3. 在 KOReader 中：`设置 → 重新加载 config.lua`
 
 ## 菜单结构
 
@@ -214,6 +242,7 @@ weread.koplugin/
 │   └── weread.lua          微信读书协议工具
 ├── scripts/
 │   ├── fetch_weread_epub.py     EPUB 生成参考脚本
+│   ├── setup_auth.py            自动获取 cookie / x-wrpa-0 头并生成 config.lua
 │   └── verify_mp_articles.py    公众号 API 验证脚本
 └── docs/
     ├── weread-api-reference.md      API 接口参考

@@ -156,8 +156,12 @@ function Settings:reset_account()
 end
 
 function Settings:is_cookie_configured()
+    -- Modern WeRead uses wr_gid instead of wr_skey; fall back to wr_gid.
     local cookies = self:get("cookies", {})
-    return cookies.wr_skey ~= nil and #cookies.wr_skey >= 8
+    if cookies.wr_skey ~= nil and #cookies.wr_skey >= 8 then
+        return true
+    end
+    return cookies.wr_gid ~= nil and #cookies.wr_gid >= 5
 end
 
 function Settings:is_api_configured()
