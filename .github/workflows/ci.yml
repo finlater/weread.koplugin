@@ -23,7 +23,6 @@ jobs:
       - name: Lua syntax check
         run: |
           find . -name '*.lua' \
-            -not -path './config.lua' \
             -not -path './.git/*' \
             -print0 | while IFS= read -r -d '' file; do
               luajit -b "$file" /tmp/luajit-check.out
@@ -46,7 +45,6 @@ jobs:
             local pattern="$2"
 
             if rg -n -P "$pattern" . \
-              --glob '!config.lua' \
               --glob '!cache/**' \
               --glob '!*.epub' \
               --glob '!.git/**'; then

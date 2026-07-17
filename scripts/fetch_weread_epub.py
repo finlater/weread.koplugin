@@ -156,6 +156,9 @@ def make_read_params(
     ts = int(time.time() * 1000)
     rn = random.randint(0, 999)
     ct = int(ts / 1000)
+    pc = pclts
+    if pc is None or str(pc) in {"", "0"}:
+        pc = weread_e(ct)
     params: dict[str, Any] = {
         "appId": web_app_id(),
         "b": weread_e(book_id),
@@ -170,7 +173,7 @@ def make_read_params(
         "sg": hashlib.sha256(f"{ts}{rn}{token}".encode("utf-8")).hexdigest(),
         "ct": ct,
         "ps": psvts,
-        "pc": pclts or weread_e(ct),
+        "pc": pc,
     }
     params["s"] = weread_sign(sorted_query(params))
     return params

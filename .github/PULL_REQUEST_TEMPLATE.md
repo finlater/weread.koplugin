@@ -54,6 +54,27 @@ Describe how you tested this PR.
 
 ```
 
+## 非公开 WeRead API / Non-public WeRead APIs
+
+如果本 PR 新增或修改任何非公开 WeRead Web API，必须同时在 `scripts/` 中提交一个可独立运行、可复现该接口行为的 Python 验证脚本。仅描述验证方式不能替代脚本。脚本不得打印或保存真实 API Key、Cookie、Token、完整 cURL 或账号标识。
+
+If this PR adds or changes any non-public WeRead Web API, it must include a standalone reproducible Python verification script under `scripts/`. Describing the validation is not a substitute for the script. The script must not print or persist real API keys, cookies, tokens, full cURL commands, or account identifiers.
+
+- [ ] 不涉及非公开 WeRead API / Does not touch non-public WeRead APIs
+- [ ] 已新增或更新可复现的 Python 验证脚本 / Added or updated a reproducible Python verification script
+
+脚本路径 / Script path:
+
+```text
+scripts/
+```
+
+复现命令与脱敏结果 / Reproduction command and sanitized result:
+
+```text
+
+```
+
 ## 截图 / Screenshots
 
 如果涉及 UI 或交互变更，请在这里添加截图或录屏。
@@ -65,7 +86,7 @@ If this changes UI or interaction, add screenshots or a screen recording here.
 - [ ] 我已经说明这个 PR 解决的问题或新增的特性。 / I described the problem fixed or feature added.
 - [ ] 如果是 bugfix，我已经提供复现步骤或关联 issue。 / For a bugfix, I provided reproduction steps or linked an issue.
 - [ ] 如果是新增 UI/交互特性，我已经提供截图或录屏。 / For a new UI/interaction feature, I added screenshots or a screen recording.
-- [ ] 我没有提交 `config.lua`、API key、cookie、`x-wrpa-*`、完整 cURL 或私人书籍内容。 / I did not commit `config.lua`, API keys, cookies, `x-wrpa-*`, full cURL commands, or private book content.
+- [ ] 我没有提交 KOReader `settings/weread.lua`、API key、cookie、token、`x-wrpa-*` 或私人书籍内容。 / I did not commit KOReader `settings/weread.lua`, API keys, cookies, tokens, `x-wrpa-*`, or private book content.
 - [ ] 如果修改了用户可见文本，我已经更新 `lib/i18n.lua`。 / If I changed user-facing text, I updated `lib/i18n.lua`.
 - [ ] 如果修改了菜单结构，我已经同步更新 README 菜单结构。 / If I changed menu structure, I updated the README menu tree.
-- [ ] 如果涉及非公开 WeRead Web API，我已经先在 `scripts/` 中验证或说明验证方式。 / If this touches non-public WeRead Web APIs, I validated it in `scripts/` or described the validation.
+- [ ] 如果涉及非公开 WeRead Web API，我已经在 `scripts/` 中提交可独立运行、可复现的 Python 验证脚本，并填写了复现命令和脱敏结果。 / If this touches non-public WeRead Web APIs, I included a standalone reproducible Python verification script under `scripts/` and documented the command and sanitized result.

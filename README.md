@@ -10,6 +10,7 @@
 
 - 浏览微信读书书架，搜索书籍
 - 下载单章或整本书为 EPUB，直接在 KOReader 中阅读
+- 章节目录按书籍缓存为独立 `catalog.json`，并支持在章节列表中手动刷新
 - 章节内容解码、CSS 样式、图片资源打包
 - 自动生成目录（TOC），自动嵌入封面
 - 下载并嵌入划线和想法，阅读时可一键显示/隐藏，点击划线查看想法内容
@@ -22,11 +23,11 @@
 
 **阅读时间上报**
 
-- 后台自动向微信读书上报阅读时长（默认每 30 秒一次）
+- 自动向微信读书上报阅读时长（默认每 30 秒一次）
 - 支持两种目标书籍模式：
   - **自动关联**：打开微信读书缓存书籍时自动上报该书，关闭时自动停止
   - **手动设置**：从书架选择一本固定书籍作为上报对象
-- 支持「仅在阅读时上报」或「KOReader 启动即上报」两种触发模式
+- 支持「仅在阅读时上报」或「KOReader 启动即上报」两种触发模式，不检查翻页活动
 - 上报状态可在菜单中查看（已上报次数、最近上报时间、错误信息）
 
 **书籍管理**
@@ -36,22 +37,14 @@
 - EPUB 自动嵌入封面图片
 - 缓存管理：查看/清理单本或全部缓存，并可扫描本地缓存目录导入手动放入的书籍与公众号文章（需联网，仅导入与微信读书书架 ID 匹配的目录）
 - 自定义下载目录：可指定书籍/文章的保存位置（默认 `<KOReader 数据目录>/weread/cache`）
+- 每本书的目录保存在 `<缓存目录>/<书籍 ID>/catalog.json`；旧版 `weread.lua` 中的目录会在启动时自动迁移
+- 书籍元数据、阅读上下文和公众号文章列表分别保存在书籍目录的 `metadata.json`、`reading_state.json` 和 `articles.json`；`weread.lua` 只保留缓存路径索引
 
 ## TODO
 
-- [ ] 阅读进度双向同步（KOReader 位置 ↔ 微信读书进度映射）
-- [ ] 当前书籍详情页（阅读中展示微信读书元数据）
-- [ ] 独立的标注/笔记浏览界面（书签、热门划线聚合查看；阅读时查看划线和想法已支持，见「功能 → 书籍」）
-
-## 贡献 / Contributing
-
-欢迎提交 issue 和 PR。提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
-
-Issues and PRs are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting.
-
-Bug 反馈请提供清晰的复现步骤或截图、KOReader 日志、插件版本和 KOReader 版本；PR 请说明解决的问题或新增的特性，并按模板填写测试方式和截图。
-
-For bug reports, include clear reproduction steps or screenshots, KOReader logs, plugin version, and KOReader version. For PRs, describe the problem fixed or feature added, and fill in the testing and screenshot sections in the template.
+- [ ] 阅读进度双向同步
+- [ ] 按需缓存章节
+- [ ] 书签/笔记
 
 ## 安装
 
@@ -69,104 +62,27 @@ koreader/plugins/weread.koplugin/
 工具 → 微信读书
 ```
 
-## 配置
+## 登录与认证
 
-所有配置通过 `config.lua` 文件完成。首次使用：
+插件只支持微信扫码登录，不需要创建或维护配置文件。
 
-```bash
-cp config.example.lua config.lua
-```
+扫码前需要先为账号开通微信读书 Skill：
 
-在电脑上编辑 `config.lua`，然后将整个插件目录同步到设备。
-
-插件启动时自动加载 `config.lua`，也可以在运行时通过 `设置 → 重新加载 config.lua` 热加载。
-
-### 获取 API Key
-
-API Key 用于浏览书架、搜索书籍、读取进度。
-
-1. 手机打开**微信读书 App**
-2. 点击底部 **我** 标签
-3. 进入 **设置**
-4. 找到 **微信读书SKILL** **获取API Key** 并复制
-
-```lua
-api_key = "wrk-xxxxxxxxxxxxxxxxxxxxxxxx",
-```
-
-### 获取书籍 cURL（cookie + 上报 payload）
-
-`curl` 字段用于提取登录 cookie 和阅读上报所需的 payload 字段。
-
-1. 电脑浏览器打开 [weread.qq.com](https://weread.qq.com)
-2. 登录你的微信读书账号
-3. 打开**任意一本书**的阅读页面
-4. 按 **F12** 打开开发者工具，切换到 **Network（网络）** 标签
-5. 在网络请求列表中找到 `read` 请求（URL 包含 `/web/book/read`）
-6. 右键该请求 → **Copy as cURL (bash)**
-7. 粘贴到 `config.lua` 的 `curl` 字段
-
-```lua
-curl = [[
-curl 'https://weread.qq.com/web/book/read' \
-  -H 'accept: ...' \
-  -b '...' \
-  --data-raw '{...}'
-]],
-```
-
-> 如果找不到 `/web/book/read` 请求，在阅读页面等待 30 秒左右，它会自动发送阅读时长上报请求。
-
-### 获取公众号 cURL（x-wrpa-0 验证头）
-
-`mp_curl` 字段用于获取公众号文章列表所需的验证头。
-
-1. 电脑浏览器打开 [weread.qq.com](https://weread.qq.com)
-2. 进入**任意一个公众号**的文章列表页面
-3. **F12** → **Network**
-4. 找到 `articles` 请求（URL 包含 `/web/mp/articles`）
-5. 右键 → **Copy as cURL (bash)**
-6. 粘贴到 `config.lua` 的 `mp_curl` 字段
-
-```lua
-mp_curl = [[
-curl 'https://weread.qq.com/web/mp/articles?bookId=...' \
-  -H 'accept: ...' \
-  -b '...' \
-  -H 'x-wrpa-0: ...'
-]],
-```
-
-> `mp_curl` 里包含的 cookie 如果比 `curl` 里的更新，插件会自动使用更新的版本。
-
-### 配置项一览
-
-| 字段 | 用途 | 必填 |
-|------|------|------|
-| `api_key` | 书架、搜索、进度同步 | 推荐 |
-| `curl` | 登录 cookie + 阅读上报 payload | 推荐 |
-| `mp_curl` | 公众号文章列表（x-wrpa-0） | 读公众号时需要 |
-| `cookie` | 备选，仅在 curl 为空时使用 | 可选 |
-| `sync` | 进度同步行为 | 可选 |
-| `cache` | 图片/划线想法下载、缓存大小限制 | 可选 |
-| `read_report` | 阅读时间上报间隔 | 可选 |
-
-### Cookie 过期
-
-微信读书的 cookie 会定期过期。插件会尝试自动续期，但如果续期失败：
-
-1. 重新在浏览器中登录 weread.qq.com
-2. 重新复制 cURL 到 `config.lua`
-3. 在 KOReader 中：`设置 → 重新加载 config.lua`
+1. 手机打开**微信读书 App**。
+2. 进入 **我 → 设置 → 微信读书 Skill**。
+3. 点击 **获取 API Key**，确认已经生成个人官方 API Key。
+4. 在 KOReader 打开 **工具 → 微信读书 → 微信扫码登录**。
+5. 使用微信扫码并在手机端确认；若手机显示四位验证码，请在 KOReader 中输入。
 
 ## 菜单结构
 
 ```
 微信读书
+├── 微信扫码登录 / 已经登录 · 账号名
 ├── 同步进度           （阅读书籍时显示，开发中）
-├── 书籍详情           （阅读书籍时显示，开发中）
-├── 显示划线和想法     （阅读书籍时显示，开关，控制已下载书籍划线和想法的显隐）
-├── 书架               书架浏览（书籍 + 公众号分类）
+├── 书籍详情           （阅读微信读书缓存书籍时显示）
+├── 显示划线和想法     （阅读书籍时显示，开关）
+├── 书架               书架浏览（书籍 + 公众号分类；章节列表可手动刷新）
 ├── 搜索               搜索微信读书
 ├── 阅读时间上报        后台上报阅读时长
 │   ├── 启用阅读时间上报
@@ -180,8 +96,6 @@ curl 'https://weread.qq.com/web/mp/articles?bookId=...' \
 │   │   ├── 扫描并关联本地书籍
 │   │   ├── 缓存清理
 │   │   └── 缓存目录
-│   ├── 重新加载 config.lua
-│   ├── 立即续期 Cookie
 │   ├── 进度管理
 │   │   ├── 打开时拉取进度（暂不可用）
 │   │   └── 关闭时上传进度（暂不可用）
@@ -191,32 +105,13 @@ curl 'https://weread.qq.com/web/mp/articles?bookId=...' \
 │   │   └── 划线和想法（默认关闭）
 │   └── 账号管理
 │       ├── 账号状态
+│       ├── 立即续期 Cookie
 │       └── 清除账号数据
 └── 关于
 ```
 
-## 文件结构
+## 贡献 
 
-```
-weread.koplugin/
-├── _meta.lua              插件元数据
-├── main.lua               入口、UI、业务逻辑
-├── config.example.lua     配置模板
-├── config.lua             用户配置（git 忽略）
-├── CLAUDE.md              开发规范
-├── lib/
-│   ├── client.lua          HTTP 客户端
-│   ├── content.lua         内容解码、EPUB/HTML 生成
-│   ├── cookie.lua          Cookie 解析
-│   ├── crypto.lua          SHA-256、MD5
-│   ├── download_dialog.lua 下载进度对话框
-│   ├── i18n.lua            中文翻译
-│   ├── settings.lua        设置持久化
-│   └── weread.lua          微信读书协议工具
-├── scripts/
-│   ├── fetch_weread_epub.py     EPUB 生成参考脚本
-│   └── verify_mp_articles.py    公众号 API 验证脚本
-└── docs/
-    ├── weread-api-reference.md      API 接口参考
-    └── weread-content-research.md   内容解码研究
-```
+欢迎提交 issue 和 PR。提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+Bug 反馈请提供清晰的复现步骤或截图、KOReader 日志、插件版本和 KOReader 版本；PR 请说明解决的问题或新增的特性，并按模板填写测试方式和截图。

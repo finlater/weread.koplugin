@@ -1,18 +1,25 @@
 local DataStorage = require("datastorage")
+local BookStore = require("lib.book_store")
+local Cookie = require("lib.cookie")
 local LuaSettings = require("luasettings")
 local lfs = require("libs/libkoreader-lfs")
 
 local Settings = {}
 Settings.__index = Settings
+Settings.AUTH_SCHEMA_VERSION = 1
 
 local defaults = {
+    auth_schema_version = Settings.AUTH_SCHEMA_VERSION,
     api_key = "",
     cookies = {},
     wr_ticket = "",
     wr_wrpa = "",
-    config_auth_fingerprint = "",
-    config_preferences_fingerprint = "",
-    curl_payload = {},
+    account = {
+        name = "",
+        user_vid = "",
+        login_method = "",
+        login_time = 0,
+    },
     books = {},
     downloads = {},
     sync = {
@@ -43,7 +50,6 @@ local defaults = {
         sort_order = "time_desc",
     },
     download_dir = "",
-    config_loaded = false,
 }
 
 local function deepcopy(value)
@@ -61,6 +67,14 @@ local function ensure_dir(path)
     if not lfs.attributes(path, "mode") then
         lfs.mkdir(path)
     end
+end
+
+local function clear_auth_store(store)
+    store:saveSetting("api_key", "")
+    store:saveSetting("cookies", {})
+    store:saveSetting("wr_ticket", "")
+    store:saveSetting("wr_wrpa", "")
+    store:saveSetting("account", deepcopy(defaults.account))
 end
 
 function Settings:new()
@@ -102,6 +116,35 @@ function Settings:new()
         obj.store:saveSetting("cache", cache)
         obj.store:flush()
     end
+    local legacy_changed = false
+    for _, key in ipairs({
+        "config_auth_fingerprint",
+        "config_preferences_fingerprint",
+        "config_loaded",
+        "curl_payload",
+    }) do
+        if obj.store:readSetting(key, nil) ~= nil then
+            if type(obj.store.delSetting) == "function" then
+                obj.store:delSetting(key)
+            else
+                obj.store:saveSetting(key, nil)
+            end
+            legacy_changed = true
+        end
+    end
+    local stored_auth_version = tonumber(obj.store:readSetting("auth_schema_version", 0)) or 0
+    if stored_auth_version < Settings.AUTH_SCHEMA_VERSION then
+        -- Authentication before schema v1 may have come from legacy manual
+        -- flows and has no reliable QR account provenance.
+        -- Invalidate only credentials; books, downloads and user preferences
+        -- remain intact and the UI will guide the user through a fresh QR login.
+        clear_auth_store(obj.store)
+        obj.store:saveSetting("auth_schema_version", Settings.AUTH_SCHEMA_VERSION)
+        legacy_changed = true
+    end
+    if legacy_changed then
+        obj.store:flush()
+    end
     return setmetatable(obj, self)
 end
 
@@ -109,15 +152,84 @@ function Settings:get(key, default)
     if default == nil then
         default = defaults[key]
     end
-    return self.store:readSetting(key, deepcopy(default))
+    if key ~= "books" then
+        return self.store:readSetting(key, deepcopy(default))
+    end
+    local indexes = self.store:readSetting("books", {})
+    local books = {}
+    for book_id, index in pairs(indexes or {}) do
+        books[book_id] = BookStore.load(self, book_id, index)
+    end
+    return books
 end
 
 function Settings:set(key, value)
+    if key == "books" and type(value) == "table" then
+        local indexes = {}
+        for book_id, book in pairs(value) do
+            local ok, index_or_err = BookStore.save(self, book_id, book)
+            if not ok then
+                error("Could not save book data: " .. tostring(index_or_err))
+            end
+            indexes[book_id] = index_or_err
+        end
+        value = indexes
+    end
     self.store:saveSetting(key, value)
+end
+
+function Settings:has_legacy_book_records()
+    local books = self.store:readSetting("books", {})
+    return not BookStore.is_minimal_index(books)
 end
 
 function Settings:flush()
     self.store:flush()
+end
+
+function Settings:update_auth(credentials, options)
+    credentials = credentials or {}
+    options = options or {}
+    local changed = false
+
+    if type(credentials.cookies) == "table" then
+        local cookies = credentials.cookies
+        if options.replace_cookies ~= true then
+            cookies = Cookie.merge(self:get("cookies", {}), cookies)
+        else
+            cookies = deepcopy(cookies)
+        end
+        self:set("cookies", cookies)
+        changed = true
+    end
+
+    for _, key in ipairs({ "api_key", "wr_ticket", "wr_wrpa" }) do
+        local value = credentials[key]
+        if type(value) == "string" then
+            self:set(key, value)
+            changed = true
+        end
+    end
+    if type(credentials.account) == "table" then
+        self:set("account", deepcopy(credentials.account))
+        changed = true
+    end
+
+    if changed and options.flush ~= false then
+        self:flush()
+    end
+    return changed
+end
+
+function Settings:merge_set_cookie(set_cookie, options)
+    if not set_cookie or set_cookie == "" then
+        return false
+    end
+    local cookies = Cookie.merge_set_cookie(self:get("cookies", {}), set_cookie)
+    return self:update_auth({ cookies = cookies }, {
+        replace_cookies = true,
+        flush = not options or options.flush ~= false,
+    })
 end
 
 function Settings:get_all()
@@ -147,78 +259,16 @@ function Settings:set_download_dir(path)
 end
 
 function Settings:reset_account()
-    self:set("api_key", "")
-    self:set("cookies", {})
-    self:set("wr_ticket", "")
-    self:set("wr_wrpa", "")
-    self:set("curl_payload", {})
+    clear_auth_store(self.store)
     self:flush()
 end
 
 function Settings:is_cookie_configured()
-    local cookies = self:get("cookies", {})
-    return cookies.wr_skey ~= nil and #cookies.wr_skey >= 8
+    return Cookie.has_login_cookie(self:get("cookies", {})) == true
 end
 
 function Settings:is_api_configured()
     return self:get("api_key", "") ~= ""
-end
-
-function Settings:apply_config(config, options)
-    options = options or {}
-    if type(config) ~= "table" then
-        return false, "config must return a table"
-    end
-    if type(config.api_key) == "string" then
-        self:set("api_key", config.api_key)
-    end
-    if options.apply_preferences ~= false and type(config.sync) == "table" then
-        local sync = self:get("sync")
-        for key, value in pairs(config.sync) do
-            sync[key] = value
-        end
-        self:set("sync", sync)
-    end
-    if options.apply_preferences ~= false and type(config.cache) == "table" then
-        local cache = self:get("cache")
-        for key, value in pairs(config.cache) do
-            if key ~= "download_images" then
-                cache[key] = value
-            end
-        end
-        if config.cache.download_book_images == nil and config.cache.download_images ~= nil then
-            cache.download_book_images = config.cache.download_images
-        end
-        cache.download_images = nil
-        self:set("cache", cache)
-    end
-    if options.apply_preferences ~= false and type(config.read_report) == "table" then
-        local rr = self:get("read_report")
-        if config.read_report.interval_seconds then
-            rr.interval_seconds = config.read_report.interval_seconds
-        end
-        if config.read_report.report_on_open ~= nil then
-            rr.report_on_open = config.read_report.report_on_open
-        end
-        if type(config.read_report.book_id) == "string" and config.read_report.book_id ~= "" then
-            rr.book_id = config.read_report.book_id
-            rr.book_title = config.read_report.book_title or rr.book_title
-            if config.read_report.enabled ~= nil then
-                rr.enabled = config.read_report.enabled
-            end
-        end
-        self:set("read_report", rr)
-    end
-    if options.apply_preferences ~= false and type(config.shelf) == "table" then
-        local shelf = self:get("shelf")
-        for key, value in pairs(config.shelf) do
-            shelf[key] = value
-        end
-        self:set("shelf", shelf)
-    end
-    self:set("config_loaded", true)
-    self:flush()
-    return true
 end
 
 return Settings

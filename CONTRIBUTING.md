@@ -123,31 +123,31 @@ Feature PRs must describe:
 - Code, variable names, and commit messages should be in English.
 - User-facing strings should use `_()` and be translated in `lib/i18n.lua`.
 - If menu items are added, removed, renamed, or moved, update `main.lua`, `lib/i18n.lua`, and the README menu tree together.
-- For non-public WeRead Web APIs, validate the behavior with a script in `scripts/` before implementing it in Lua.
-- Do not commit `config.lua`, generated EPUB/cache files, API keys, cookies, anti-abuse headers, or private book content.
+- For non-public WeRead Web APIs, include a standalone reproducible Python verification script in `scripts/` before implementing it in Lua.
+- Do not commit KOReader `settings/weread.lua`, generated EPUB/cache files, API keys, cookies, anti-abuse headers, or private book content.
 
 项目约定：
 
 - 代码、变量名和 commit message 使用英文。
 - 用户可见文本需要使用 `_()`，并在 `lib/i18n.lua` 中添加中文翻译。
 - 如果新增、删除、重命名或移动菜单项，需要同时更新 `main.lua`、`lib/i18n.lua` 和 README 菜单结构。
-- 涉及非公开 WeRead Web API 时，先在 `scripts/` 中写脚本验证，再实现 Lua 版本。
-- 不要提交 `config.lua`、生成的 EPUB/cache、API key、cookie、反滥用请求头或私人书籍内容。
+- 涉及非公开 WeRead Web API 时，必须先在 `scripts/` 中提交可独立运行、可复现的 Python 验证脚本，再实现 Lua 版本。
+- 不要提交 KOReader 的 `settings/weread.lua`、生成的 EPUB/cache、API key、cookie、反滥用请求头或私人书籍内容。
 
 ## Local checks / 本地检查
 
 Before submitting a PR, run the relevant checks if possible:
 
 ```bash
-find . -name '*.lua' -not -path './config.lua' -print0 | xargs -0 -n1 luac -p
+find . -name '*.lua' -print0 | xargs -0 -n1 luac -p
 python3 -m py_compile scripts/*.py
-rg -n -P "wrk-(?!x{8,})[A-Za-z0-9_-]{12,}|(wr_skey|wr_rt|wr_vid|ptcz)=((?!XXX)[^;[:space:]'\''\"]{8,})|x-wrpa-[0-9]+:\s*((?!\.\.\.)[A-Za-z0-9+/=_-]{12,})|thirdwx[=:]\s*[A-Za-z0-9_-]{8,}" . --glob '!config.lua' --glob '!cache/**' --glob '!*.epub'
+rg -n -P "wrk-(?!x{8,})[A-Za-z0-9_-]{12,}|(wr_skey|wr_rt|wr_vid|ptcz)=((?!XXX)[^;[:space:]'\''\"]{8,})|x-wrpa-[0-9]+:\s*((?!\.\.\.)[A-Za-z0-9+/=_-]{12,})|thirdwx[=:]\s*[A-Za-z0-9_-]{8,}" . --glob '!cache/**' --glob '!*.epub'
 ```
 
 提交 PR 前，如果可以，请运行相关检查：
 
 ```bash
-find . -name '*.lua' -not -path './config.lua' -print0 | xargs -0 -n1 luac -p
+find . -name '*.lua' -print0 | xargs -0 -n1 luac -p
 python3 -m py_compile scripts/*.py
-rg -n -P "wrk-(?!x{8,})[A-Za-z0-9_-]{12,}|(wr_skey|wr_rt|wr_vid|ptcz)=((?!XXX)[^;[:space:]'\''\"]{8,})|x-wrpa-[0-9]+:\s*((?!\.\.\.)[A-Za-z0-9+/=_-]{12,})|thirdwx[=:]\s*[A-Za-z0-9_-]{8,}" . --glob '!config.lua' --glob '!cache/**' --glob '!*.epub'
+rg -n -P "wrk-(?!x{8,})[A-Za-z0-9_-]{12,}|(wr_skey|wr_rt|wr_vid|ptcz)=((?!XXX)[^;[:space:]'\''\"]{8,})|x-wrpa-[0-9]+:\s*((?!\.\.\.)[A-Za-z0-9+/=_-]{12,})|thirdwx[=:]\s*[A-Za-z0-9_-]{8,}" . --glob '!cache/**' --glob '!*.epub'
 ```

@@ -841,7 +841,7 @@ Fields:
 | `sg` | `sha256(str(ts) + str(rn) + reader.token)` |
 | `ct` | Current Unix timestamp in seconds |
 | `ps` | `window.__INITIAL_STATE__.reader.psvts` |
-| `pc` | `reader.pclts`; if absent, `_e(ct)` worked for content requests and is a reasonable fallback |
+| `pc` | `reader.pclts`; if absent, empty, or `0`, use `_e(ct)` |
 | `s` | `weread_sign(sorted_query(all fields except s))` |
 
 `appId` algorithm:

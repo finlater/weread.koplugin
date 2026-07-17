@@ -1,4 +1,5 @@
 local Crypto = require("lib.crypto")
+local ReaderState = require("lib.reader_state")
 local WeRead = require("lib.weread")
 local Thoughts = require("lib.thoughts")
 local bit = require("bit")
@@ -81,6 +82,82 @@ function Content.book_resolved_dir(settings, book_id, book)
         end
     end
     return dir or Content.book_cache_dir(settings, book_id)
+end
+
+function Content.catalog_cache_path(settings, book)
+    local book_id = book and (book.book_id or book.bookId)
+    if not book_id then
+        return nil
+    end
+    return Content.book_resolved_dir(settings, book_id, book) .. "/catalog.json"
+end
+
+function Content.save_catalog_cache(client, settings, book, chapters)
+    if type(chapters) ~= "table" then
+        return false, "chapter list is not a table"
+    end
+    local path = Content.catalog_cache_path(settings, book)
+    if not path then
+        return false, "missing book id"
+    end
+    local dir = path:match("^(.*)/[^/]+$")
+    os.execute("mkdir -p " .. string.format("%q", dir))
+    local ok, encoded = pcall(function()
+        return client:json_encode({
+            version = 1,
+            updated_at = os.time(),
+            chapters = chapters,
+        })
+    end)
+    if not ok then
+        return false, encoded
+    end
+    local tmp_path = path .. ".tmp"
+    local file, err = io.open(tmp_path, "wb")
+    if not file then
+        return false, err
+    end
+    local write_ok, write_err = file:write(encoded)
+    file:close()
+    if not write_ok then
+        os.remove(tmp_path)
+        return false, write_err
+    end
+    local rename_ok, rename_err = os.rename(tmp_path, path)
+    if not rename_ok then
+        os.remove(tmp_path)
+        return false, rename_err
+    end
+    book.cache_dir = dir
+    return true, path
+end
+
+function Content.load_catalog_cache(client, settings, book)
+    local path = Content.catalog_cache_path(settings, book)
+    if not path then
+        return nil
+    end
+    local file = io.open(path, "rb")
+    if not file then
+        return nil
+    end
+    local encoded = file:read("*a")
+    file:close()
+    local ok, decoded = pcall(function()
+        return client:json_decode(encoded)
+    end)
+    if not ok or type(decoded) ~= "table" then
+        if logger then
+            logger.warn(LOG_MODULE, "ignore invalid catalog cache:", path)
+        end
+        return nil
+    end
+    local chapters = decoded.chapters
+    if type(chapters) ~= "table" then
+        return nil
+    end
+    book.chapters = chapters
+    return chapters
 end
 
 local function filename_safe(value)
@@ -356,15 +433,8 @@ function Content.decode_content_shard(e0)
     return decode_encoded_body(checked_body(e0))
 end
 
-function Content.extract_reader_state(html)
-    return {
-        book_id = html:match([["bookId"%s*:%s*"([^"]+)"]]) or html:match([["bookId"%s*:%s*(%d+)]]),
-        title = html:match([["title"%s*:%s*"([^"]+)"]]),
-        author = html:match([["author"%s*:%s*"([^"]+)"]]),
-        psvts = html:match([["psvts"%s*:%s*"([^"]+)"]]),
-        pclts = html:match([["pclts"%s*:%s*"([^"]+)"]]),
-        token = html:match([["token"%s*:%s*"([^"]+)"]]),
-    }
+function Content.extract_reader_state(html, json_decode)
+    return ReaderState.extract(html, json_decode)
 end
 
 function Content.normalize_chapters(payload, book_id)
@@ -479,8 +549,9 @@ end
 
 function Content.save_chapter_epub(settings, book, chapter, xhtml, assets, css)
     local book_id = book.book_id or book.bookId
-    local dir = Content.book_cache_dir(settings, book_id)
+    local dir = Content.book_resolved_dir(settings, book_id, book)
     os.execute("mkdir -p " .. string.format("%q", dir))
+    book.cache_dir = dir
     local book_title = book.title or "WeRead"
     local path = dir .. "/" .. filename_safe(book_title .. " - " .. (chapter.title or tostring(chapter.chapterUid or "chapter"))) .. ".epub"
     local title = chapter.title or book.title or "WeRead"
@@ -550,8 +621,9 @@ end
 
 function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix, assets, css, cover_data)
     local book_id = book.book_id or book.bookId
-    local dir = Content.book_cache_dir(settings, book_id)
+    local dir = Content.book_resolved_dir(settings, book_id, book)
     os.execute("mkdir -p " .. string.format("%q", dir))
+    book.cache_dir = dir
     local book_title = book.title or "WeRead"
     local path = dir .. "/" .. filename_safe(book_title .. " - " .. (suffix or "book")) .. ".epub"
     local author = book.author or "WeRead"
@@ -785,14 +857,20 @@ function Content.ensure_reader_state(client, book)
     local book_id = book.book_id or book.bookId
     local reader_url = book.reader_url or WeRead.reader_url(book_id)
     local reader_html = client:get_text(reader_url, { referer = reader_url })
-    local state = Content.extract_reader_state(reader_html)
+    local state = Content.extract_reader_state(reader_html, function(encoded)
+        return client:json_decode(encoded)
+    end)
     book.book_id = book.book_id or state.book_id or book.bookId
     book.title = book.title or state.title
     book.author = book.author or state.author
-    book.psvts = state.psvts or book.psvts
-    book.pclts = state.pclts or book.pclts
-    book.token = state.token or book.token
+    -- These values belong to one Web Reader session. Never retain a cached
+    -- value when the freshly opened reader omits it (notably pclts).
+    book.psvts = state.psvts
+    book.pclts = state.pclts
+    book.token = state.token
     book.reader_url = reader_url
+
+    ReaderState.apply_to_book(book, state)
 
     if not book.psvts then
         error("reader.psvts not found")
@@ -823,7 +901,7 @@ function Content.fetch_catalog(client, book)
     return chapters
 end
 
-function Content.fetch_chapter_shard(client, settings, book, chapter, endpoint)
+function Content.fetch_chapter_shard(client, _settings, book, chapter, endpoint)
     if not book.psvts then
         Content.ensure_reader_state(client, book)
     end
@@ -845,7 +923,6 @@ function Content.fetch_chapter_shard(client, settings, book, chapter, endpoint)
             ["Content-Type"] = "application/json;charset=UTF-8",
             ["Origin"] = "https://weread.qq.com",
             ["Referer"] = chapter_url,
-            ["Cookie"] = require("lib.cookie").to_header(settings:get("cookies", {})),
         },
         body = client:json_encode(params),
     })
@@ -1063,7 +1140,11 @@ end
 
 function Content.fetch_first_chapter(client, settings, book)
     Content.ensure_reader_state(client, book)
-    local chapters = book.chapters or Content.fetch_catalog(client, book)
+    local chapters = book.chapters or Content.load_catalog_cache(client, settings, book)
+    if not chapters then
+        chapters = Content.fetch_catalog(client, book)
+        Content.save_catalog_cache(client, settings, book, chapters)
+    end
     local chapter = Content.first_readable_chapter(chapters)
     if not chapter then
         error("No readable chapter found")

@@ -7,6 +7,14 @@ WeRead.USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit
 WeRead.DEFAULT_READER_TOKEN = "3c5c8717f3daf09iop3423zafeqoi"
 WeRead.SKILL_VERSION = "1.0.5"
 
+function WeRead.is_success_response(result, field)
+    if type(result) ~= "table" then
+        return false
+    end
+    local value = result[field or "succ"]
+    return value == true or tonumber(value) == 1
+end
+
 local function is_digit_string(value)
     return tostring(value):match("^%d+$") ~= nil
 end
@@ -151,6 +159,10 @@ function WeRead.make_read_payload(opts)
     local ts = opts.ts or (now * 1000 + math.random(0, 999))
     local rn = opts.rn or math.random(0, 999)
     local token = opts.token or WeRead.DEFAULT_READER_TOKEN
+    local pc = opts.pclts or opts.pc
+    if pc == nil or pc == "" or tonumber(pc) == 0 then
+        pc = WeRead.e(now)
+    end
 
     local params = {
         appId = opts.app_id or WeRead.web_app_id(opts.user_agent),
@@ -166,7 +178,7 @@ function WeRead.make_read_payload(opts)
         sg = Crypto.sha256_hex(tostring(ts) .. tostring(rn) .. token),
         ct = now,
         ps = opts.psvts or opts.ps or "",
-        pc = opts.pclts or opts.pc or WeRead.e(now),
+        pc = pc,
     }
     params.s = WeRead.sign(WeRead.sorted_query(params))
     return params
