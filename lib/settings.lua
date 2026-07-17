@@ -173,7 +173,7 @@ function Settings:apply_config(config, options)
     if type(config) ~= "table" then
         return false, "config must return a table"
     end
-    if type(config.api_key) == "string" then
+    if type(config.api_key) == "string" and config.api_key ~= "" then
         self:set("api_key", config.api_key)
     end
     if options.apply_preferences ~= false and type(config.sync) == "table" then

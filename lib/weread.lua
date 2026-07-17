@@ -3,6 +3,7 @@ local Crypto = require("lib.crypto")
 
 local WeRead = {}
 
+WeRead.SIMPLE_USER_AGENT ="Mozilla/5.0 (X11; U; Linux armv7l like Android; en-us) AppleWebKit/531.2+ (KHTML, like Gecko) Version/5.0 Safari/533.2+ Kindle/3.0+"
 WeRead.USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0"
 WeRead.DEFAULT_READER_TOKEN = "3c5c8717f3daf09iop3423zafeqoi"
 WeRead.SKILL_VERSION = "1.0.5"
@@ -186,6 +187,14 @@ end
 
 function WeRead.mp_reader_url(book_id)
     return "https://weread.qq.com/web/mp/reader/" .. WeRead.e(book_id)
+end
+
+function WeRead.user_info_url(vid)
+    return "https://weread.qq.com/web/user?userVid=" .. WeRead.urlencode(vid)    
+end
+
+function WeRead.skills_key_url()
+    return "https://weread.qq.com/api/skills/apikeyGet"
 end
 
 --- Upgrade WeRead CDN cover URLs to the higher-resolution t9 token.

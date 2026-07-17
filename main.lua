@@ -2,6 +2,7 @@ local BD = require("ui/bidi")
 local ButtonDialog = require("ui/widget/buttondialog")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Dispatcher = require("dispatcher")
+local NetworkMgr = require("ui/network/manager")
 local DownloadDialog = require("lib.download_dialog")
 local Event = require("ui/event")
 local ProgressbarDialog = require("ui/widget/progressbardialog")
@@ -395,6 +396,15 @@ function WeReadPlugin:getSettingsMenuItems()
                     self:showInfo(_("config.lua loaded."))
                 end
             end),
+        },
+         {
+            text = _("QR code login"),
+            keep_menu_open = true,
+            callback = function()
+                UIManager:nextTick(function()
+                    self:showQRCodeLoginDialog()
+                end)
+            end,
         },
         {
             text = _("Renew cookie now"),
@@ -1249,6 +1259,119 @@ function WeReadPlugin:showImportCookieDialog()
         },
     }
     self:showInputDialog(dialog)
+end
+
+function WeReadPlugin:showQRCodeLoginDialog()
+    if not NetworkMgr:isConnected() then
+        self:showInfo(_("No network connection. Please connect Wi-Fi and try again."))
+        return
+    end
+    local TIMEOUT_SECONDS = 300
+    local POLL_INTERVAL = 2
+            
+    local cookies = self.settings:get("cookies", {})
+    if not cookies.wr_fp then 
+        cookies.wr_fp = self.client:generate_wr_fp()
+        if not cookies.wr_scaleRatio then cookies.wr_scaleRatio = "1" end
+        self.settings:set("cookies", cookies)
+        self.settings:flush()
+    end
+
+    local ok_url, res = pcall(self.client.get_confirm_url, self.client)
+    if not ok_url or type(res) ~= "table" or not res.url or not res.uid then
+        logger.err(LOG_MODULE, "get_confirm_url failed:", res)
+        self:showInfo(_("Login failed."))
+        return
+    end
+
+    local uid = res.uid
+    logger.dbg(LOG_MODULE, "UID:", uid)
+
+    local QRMessage = require("ui/widget/qrmessage")
+    local Device = require("device")
+    local qr_closed = false
+    local login_qr = QRMessage:new{
+        text = res.url,
+        width = Device.screen:getWidth(),
+        height = Device.screen:getHeight(),
+        -- +1s show timeout msg
+        timeout = TIMEOUT_SECONDS + 1,
+        dismiss_callback =function()
+            qr_closed = true
+            logger.dbg(LOG_MODULE, "QRMessage dismiss_callback")
+        end,
+        scale_factor = 0.8,
+    }
+
+    local cgi_key = self.client:generate_cgi_key()
+    local function perform_web_login(ret)
+        local current_cookies = self.settings:get("cookies", {})
+        local fp = current_cookies.wr_fp or self.client:generate_wr_fp()
+        local payload = {
+            vid = ret.vid,
+            skey = ret.skey,
+            code = ret.code,
+            isAutoLogout = 0,
+            pf = 2, cgiKey = cgi_key, fp = fp,
+        }
+        local ok_login, login_res = pcall(self.client.web_login, self.client, payload)
+        local has_login = self.settings:is_cookie_configured()
+
+        if not (ok_login and has_login) then
+            logger.err(LOG_MODULE, "Weblogin failed: ok =", ok_login, "has_login =", has_login, "error =", tostring(login_res))
+            self:showInfo(_("Login failed."))
+            return
+        end
+        logger.dbg(LOG_MODULE, "Login QR success")
+
+        local ok_user, user_info = pcall(self.client.get_user_info, self.client, ret.vid)
+        local msg = _("Login successful.")
+        if ok_user and type(user_info) == "table" then
+            msg = string.format("%s \n %s_%s", msg, 
+                user_info.location or _("Unknown"), 
+                user_info.name or _("Unknown")
+            )
+        else
+            logger.warn(LOG_MODULE, "test get_user_info failed:", tostring(user_info))
+        end
+        self:showInfo(msg)
+
+        if not self.settings:is_api_configured() then
+            local fetch_success, api_response = pcall(self.client.get_skills_key, self.client)
+            if fetch_success and type(api_response) == "table" and api_response.apikey then
+                self.settings:set("api_key", api_response.apikey)
+                self.settings:flush()
+            end
+        end
+    end
+
+    local poll_getinfo, start_time
+    poll_getinfo = function()
+        if qr_closed or not UIManager:isWidgetShown(login_qr) then
+            logger.dbg(LOG_MODULE, "Login QR quit, poll_getinfo exit")
+            return 
+        end
+        if os.time() - start_time > TIMEOUT_SECONDS then
+            qr_closed = true
+            UIManager:close(login_qr)
+            self:showInfo(_("Login timeout."))
+            return
+        end
+        local ok, ret = pcall(self.client.get_login_info, self.client, uid, cgi_key)
+        if not (ok and type(ret) == "table" and ret.vid and ret.skey and ret.code) then
+            logger.dbg(LOG_MODULE, "QR code Waiting for scan...") 
+            UIManager:scheduleIn(POLL_INTERVAL, poll_getinfo)
+            return
+        end
+        logger.info(LOG_MODULE, "QR code scanned and confirmed. Logging in...")
+        UIManager:close(login_qr)
+        perform_web_login(ret) 
+    end
+    UIManager:show(login_qr)
+    UIManager:nextTick(function()
+        start_time = os.time()
+        poll_getinfo() 
+    end)
 end
 
 function WeReadPlugin:renewCookieWithUI()
