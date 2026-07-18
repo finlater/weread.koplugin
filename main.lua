@@ -26,7 +26,7 @@ local ReadStats = require("lib.read_stats")
 local ReadStatsView = require("ui.read_stats_view")
 local Settings = require("lib.settings")
 local WeRead = require("lib.weread")
-local ThoughtPopup = require("lib.thought_popup")
+local ThoughtPopup = require("ui.thought_popup")
 
 -- `_` is the translation function; never reuse it as a loop placeholder in this file.
 local function _(text)

@@ -7,7 +7,7 @@
     3. 左右滑动关闭弹窗
     4. 性能优化：regular weight 字体、CSS 缓存、MuPDF 预热
 
-@module lib.thought_popup
+@module ui.thought_popup
 --]]--
 
 local BD = require("ui/bidi")
