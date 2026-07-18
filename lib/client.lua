@@ -413,6 +413,18 @@ function Client:get_progress(book_id)
     return self:gateway("/book/getprogress", { bookId = book_id })
 end
 
+-- Reading statistics detail.
+-- mode: "weekly" | "monthly" | "annually" | "overall"
+-- base_time: optional Unix timestamp; server normalizes it to the period start
+--            (Monday / 1st of month / Jan 1st). Pass 0/nil for the current period.
+function Client:get_read_stats(mode, base_time)
+    local params = { mode = mode or "monthly" }
+    if base_time and tonumber(base_time) and tonumber(base_time) > 0 then
+        params.baseTime = tonumber(base_time)
+    end
+    return self:gateway("/readdata/detail", params)
+end
+
 function Client:get_mp_articles(book_id, max_idx, count, wr_ticket)
     local url = string.format(
         "https://weread.qq.com/web/mp/articles?bookId=%s&maxIdx=%d&count=%d",

@@ -20,6 +20,8 @@ local Content = require("lib.content")
 local I18n = require("lib.i18n")
 local QRLogin = require("lib.qr_login")
 local ReadReport = require("lib.read_report")
+local ReadStats = require("lib.read_stats")
+local ReadStatsView = require("ui.read_stats_view")
 local Settings = require("lib.settings")
 local Thoughts = require("lib.thoughts")
 local WeRead = require("lib.weread")
@@ -223,6 +225,12 @@ function WeReadPlugin:getMainMenuItems()
                 end
                 return self:getReadReportMenuItems()
             end,
+        },
+        {
+            text = _("Reading statistics"),
+            callback = self:safeCallback(_("Reading statistics"), function()
+                self:showReadStats()
+            end),
         },
         {
             text = _("Settings"),
@@ -1370,6 +1378,47 @@ function WeReadPlugin:showReadReportBookPicker()
             title_bar_fm_style = true,
         }
         UIManager:show(self._picker_menu)
+    end)
+end
+
+function WeReadPlugin:showReadStats()
+    if not self:requireLogin(false, true) then
+        return
+    end
+    -- Open on the monthly tab by default.
+    self:loadReadStats("monthly", nil, nil)
+end
+
+-- Fetch reading statistics for a period and (re)show the visualization page.
+-- old_view, when provided, is closed once the new data is ready (tab switch or
+-- period navigation).
+function WeReadPlugin:loadReadStats(mode, base_time, old_view)
+    self:showBusy(_("Loading reading statistics..."))
+    self:runOnlineTask(_("Reading statistics"), function()
+        local ok, data = pcall(function()
+            return ReadStats.fetch(self.client, mode, base_time)
+        end)
+        self:closeBusy()
+        if not ok then
+            logger.err(LOG_MODULE, "load reading statistics failed:", log_error(data))
+            self:showInfo(T(_("%1 failed:\n%2"), _("Reading statistics"), display_error(data)))
+            return
+        end
+        if old_view then
+            UIManager:close(old_view)
+        end
+        local view
+        view = ReadStatsView.show(data, {
+            on_prev = function()
+                self:loadReadStats(mode, data.prev_base_time, view)
+            end,
+            on_next = function()
+                self:loadReadStats(mode, data.next_base_time, view)
+            end,
+            on_switch = function(new_mode)
+                self:loadReadStats(new_mode, nil, view)
+            end,
+        })
     end)
 end
 
