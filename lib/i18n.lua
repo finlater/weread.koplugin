@@ -229,7 +229,7 @@ local zh = {
     ["You have reached the last chapter."] = "已经是最后一章了。",
     ["WIP"] = "开发中",
     ["About (v%1)"] = "关于（v%1）",
-    ["WeRead Plugin v%1\n\nDisclaimer: This project is for personal learning and technical research only, not for commercial use. All consequences arising from the use of this project (including but not limited to account bans, data loss, etc.) are borne by the user. The project author assumes no responsibility. Please comply with WeRead's user agreement and applicable laws and regulations.\n\nhttps://github.com/qiuyukang/weread.koplugin"] = "WeRead 插件 v%1\n\n免责声明：本项目仅供个人学习和技术研究使用，不得用于商业用途。使用本项目所产生的一切后果（包括但不限于账号封禁、数据丢失等）由使用者自行承担，项目作者概不负责。请遵守微信读书的用户协议和相关法律法规。\n\nhttps://github.com/qiuyukang/weread.koplugin",
+    ["WeRead Plugin v%1\n\nDisclaimer: This project is for personal learning and technical research only, not for commercial use. All consequences arising from the use of this project (including but not limited to account bans, data loss, etc.) are borne by the user. The project author assumes no responsibility. Please comply with WeRead's user agreement and applicable laws and regulations.\n\nhttps://github.com/finlater/weread.koplugin"] = "WeRead 插件 v%1\n\n免责声明：本项目仅供个人学习和技术研究使用，不得用于商业用途。使用本项目所产生的一切后果（包括但不限于账号封禁、数据丢失等）由使用者自行承担，项目作者概不负责。请遵守微信读书的用户协议和相关法律法规。\n\nhttps://github.com/finlater/weread.koplugin",
     ["QR code login"] = "微信扫码登录",
     ["Unknown"] = "未知",
     -- Reading statistics

@@ -26,6 +26,7 @@ lib/reader_state.lua    Web Reader session and position extraction
 lib/settings.lua        Settings persistence via KOReader LuaSettings
 lib/weread.lua          WeRead protocol utilities (encoding, signing, URL helpers)
 ui/download_dialog.lua  Custom download progress dialog with cancel button
+ui/thought_popup.lua    Underline/thought popup widget (ScrollHtmlWidget, font preheat)
 ```
 
 ## Key Conventions
@@ -128,3 +129,4 @@ These are placeholder menu items shown when a WeRead book is open, currently gre
 
 - `docs/weread-api-reference.md` — full API endpoint reference (gateway + Web)
 - `docs/weread-content-research.md` — content decoding and image packaging research
+- `docs/weread-annotations-flow.md` — underline/thought download → embed → tap-to-display flow
