@@ -3163,9 +3163,8 @@ function WeReadPlugin:getChapterInfoFromFile(book, file_path)
     local is_full_book = (mapped_count > 1)
 
     if mapped_count == 1 and current_uid then
-        local target_uid = tonumber(current_uid)
         for i, ch in ipairs(book.chapters) do
-            if ch.chapterUid == target_uid then
+            if tostring(ch.chapterUid) == tostring(current_uid) then
                 return i, ch, is_full_book
             end
         end
