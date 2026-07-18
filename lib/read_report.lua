@@ -75,9 +75,22 @@ local function response_accepted(result, http_code)
     return false, body
 end
 
-local function response_summary(result, http_code)
+local function full_response_body(client, result)
+    if type(result) == "table" and client and type(client.json_encode) == "function" then
+        local ok, encoded = pcall(function()
+            return client:json_encode(result)
+        end)
+        if ok then
+            return encoded
+        end
+    end
+    return tostring(result)
+end
+
+local function response_summary(client, result, http_code)
     if type(result) ~= "table" then
         return "non_table_response, http=" .. tostring(http_code)
+            .. ", response_body=" .. full_response_body(client, result)
     end
     local body = response_body(result)
     local parts = {
@@ -98,6 +111,10 @@ local function response_summary(result, http_code)
         parts[#parts + 1] = "error_message="
             .. tostring(message):gsub("[%c]+", " "):sub(1, 160)
     end
+    -- Only rejected reading reports call this function. Keep the complete
+    -- decoded response in the failure log so unexpected server replies can be
+    -- diagnosed without enabling verbose logging for successful reports.
+    parts[#parts + 1] = "response_body=" .. full_response_body(client, result)
     return table.concat(parts, ", ")
 end
 
@@ -488,7 +505,7 @@ function ReadReport:report_once()
         return false
     end
 
-    local failure = response_summary(result, http_code)
+    local failure = response_summary(self.client, result, http_code)
     local refresh_ok, refreshed = pcall(function()
         return self:ensure_context(book_id, true)
     end)
@@ -502,7 +519,8 @@ function ReadReport:report_once()
             return true
         end
         failure = "initial=" .. failure .. "; refreshed="
-            .. (retry_ok and response_summary(retry_result, retry_code) or tostring(retry_result))
+            .. (retry_ok and response_summary(self.client, retry_result, retry_code)
+                or tostring(retry_result))
     else
         failure = failure .. "; context_refresh=" .. tostring(refreshed)
     end
@@ -519,7 +537,9 @@ function ReadReport:report_once()
     end)
     if not renew_ok or not WeRead.is_success_response(renew_result) then
         self:_set_error(
-            failure .. "; renewal=" .. (renew_ok and response_summary(renew_result) or tostring(renew_result)),
+            failure .. "; renewal=" .. (renew_ok
+                and response_summary(self.client, renew_result)
+                or tostring(renew_result)),
             "authentication",
             "read report cookie renewal failed:"
         )
@@ -543,7 +563,9 @@ function ReadReport:report_once()
         return true
     end
     self:_set_error(
-        failure .. "; final=" .. (final_ok and response_summary(final_result, final_code) or tostring(final_result)),
+        failure .. "; final=" .. (final_ok
+            and response_summary(self.client, final_result, final_code)
+            or tostring(final_result)),
         final_ok and "server" or "transport",
         "read report final retry failed:"
     )

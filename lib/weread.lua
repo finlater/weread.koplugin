@@ -132,6 +132,67 @@ function WeRead.web_app_id(user_agent)
     return "wb" .. table.concat(prefix) .. "h" .. tostring(hash)
 end
 
+-- Lua string indexes are byte offsets. Return a valid UTF-8 prefix containing
+-- at most max_chars code points so payload fields are never cut mid-character.
+function WeRead.utf8_substr(value, max_chars)
+    local text = tostring(value or "")
+    local limit = math.max(0, math.floor(tonumber(max_chars) or 0))
+    local index = 1
+    local count = 0
+
+    while index <= #text and count < limit do
+        local first = text:byte(index)
+        local width = 0
+        local second = text:byte(index + 1)
+
+        if first <= 0x7f then
+            width = 1
+        elseif first >= 0xc2 and first <= 0xdf
+            and second and second >= 0x80 and second <= 0xbf then
+            width = 2
+        elseif first == 0xe0
+            and second and second >= 0xa0 and second <= 0xbf then
+            width = 3
+        elseif first >= 0xe1 and first <= 0xec
+            and second and second >= 0x80 and second <= 0xbf then
+            width = 3
+        elseif first == 0xed
+            and second and second >= 0x80 and second <= 0x9f then
+            width = 3
+        elseif first >= 0xee and first <= 0xef
+            and second and second >= 0x80 and second <= 0xbf then
+            width = 3
+        elseif first == 0xf0
+            and second and second >= 0x90 and second <= 0xbf then
+            width = 4
+        elseif first >= 0xf1 and first <= 0xf3
+            and second and second >= 0x80 and second <= 0xbf then
+            width = 4
+        elseif first == 0xf4
+            and second and second >= 0x80 and second <= 0x8f then
+            width = 4
+        else
+            break
+        end
+
+        for offset = 2, width - 1 do
+            local continuation = text:byte(index + offset)
+            if not continuation or continuation < 0x80 or continuation > 0xbf then
+                width = 0
+                break
+            end
+        end
+        if width == 0 then
+            break
+        end
+
+        index = index + width
+        count = count + 1
+    end
+
+    return text:sub(1, index - 1)
+end
+
 function WeRead.make_content_params(book_id, chapter_uid, psvts, opts)
     opts = opts or {}
     local ct = opts.ct or os.time()
@@ -170,7 +231,7 @@ function WeRead.make_read_payload(opts)
         c = WeRead.e(opts.chapter_uid or 0),
         ci = opts.chapter_idx or 0,
         co = opts.chapter_offset or 0,
-        sm = (opts.summary or ""):sub(1, 20),
+        sm = WeRead.utf8_substr(opts.summary, 20),
         pr = opts.progress or 0,
         rt = opts.elapsed_seconds or 0,
         ts = ts,
