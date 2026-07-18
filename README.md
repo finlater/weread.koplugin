@@ -57,7 +57,7 @@
 
 ## 安装
 
-> ⚠️ 请使用**较新版本**的 KOReader，过旧的版本可能导致插件无法加载或启动失败（表现为「工具」菜单下找不到「微信读书」）。已知 `2024.11` 会出问题，`2026.3` 可正常使用；建议升级到最新版。详见 [#14](https://github.com/QiuYukang/weread.koplugin/issues/14)。
+> ⚠️ 请使用**较新版本**的 KOReader，过旧的版本可能导致插件无法加载或启动失败（表现为「工具」菜单下找不到「微信读书」）。已知 `2024.11` 会出问题，`2026.3` 可正常使用；建议升级到最新版。详见 [#14](https://github.com/finlater/weread.koplugin/issues/14)。
 
 将插件目录复制到 KOReader 的 plugins 目录：
 
