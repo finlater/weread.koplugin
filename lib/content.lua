@@ -1017,12 +1017,7 @@ local function footnote_meta(client, settings, book, state)
             return Content.fetch_chapter_xhtml(client, settings, book, chapter)
         end,
         fetch_catalog = function()
-            local book_id = book.book_id or book.bookId
-            local reader_url = book.reader_url or WeRead.reader_url(book_id)
-            local catalog = client:post_json("https://weread.qq.com/web/book/chapterInfos", {
-                bookIds = { tostring(book_id) },
-            }, { referer = reader_url })
-            return Content.normalize_chapters(catalog, book_id)
+            return Content.fetch_catalog(client, book)
         end,
     }
 end
@@ -1086,31 +1081,6 @@ function Content.fetch_chapter_epub(client, settings, book, chapter)
     return path, chapter
 end
 
-function Content.fetch_single_chapter_content(client, settings, book, chapter, state)
-    state = state or {}
-    local xhtml = Content.fetch_chapter_xhtml(client, settings, book, chapter)
-    if not state.css then
-        state.css = Content.fetch_chapter_css(client, settings, book, chapter)
-    end
-    xhtml, state.css = apply_chapter_enrichments(client, settings, book, chapter, xhtml, state.css, state)
-    local chapter_assets = {}
-    local cache = settings:get("cache", {})
-    if cache.download_book_images then
-        state.used_asset_names = state.used_asset_names or {}
-        local tar_assets, src_map = Content.download_chapter_assets(client, book, chapter, state.used_asset_names)
-        for _, asset in ipairs(tar_assets) do
-            table.insert(chapter_assets, asset)
-        end
-        xhtml = Content.rewrite_image_sources(xhtml, src_map)
-        local inline_xhtml, inline_assets = Content.download_remote_images(client, xhtml, state.used_asset_names)
-        xhtml = inline_xhtml
-        for _, a in ipairs(inline_assets) do
-            table.insert(chapter_assets, a)
-        end
-    end
-    return xhtml, chapter_assets
-end
-
 -- Split chapter downloading around annotation fetching so the UI can request
 -- thought batches cooperatively instead of blocking inside Thoughts.apply().
 function Content.fetch_single_chapter_source(client, settings, book, chapter, state)
@@ -1124,6 +1094,12 @@ end
 
 function Content.finalize_single_chapter_content(client, settings, book, chapter, xhtml, state)
     state = state or {}
+    -- Apply footnotes (image-based and cross-file). The downloader pipeline
+    -- applies annotations separately; footnotes are handled here so they
+    -- run regardless of annotation settings.
+    local new_css
+    xhtml, new_css = apply_chapter_footnotes(client, settings, book, chapter, xhtml, state.css, state)
+    state.css = new_css
     local chapter_assets = {}
     local cache = settings:get("cache", {})
     if cache.download_book_images then

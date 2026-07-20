@@ -6,26 +6,19 @@
 
 local ok_json, JSON = pcall(require, "json")
 if not ok_json then
-    ok_json, JSON = pcall(require, "rapidjson")
+    JSON = require("rapidjson")
 end
 
-local ok_ffiutil, ffiutil = pcall(require, "ffi/util")
+local ffiutil = require("ffi/util")
 local ok_logger, logger = pcall(require, "logger")
 if not ok_logger then
     logger = nil
 end
 
 local LOG_MODULE = "[WeRead]"
-
-local ok_util, util = pcall(require, "util")
+local util = require("util")
 
 local Footnotes = {}
-
-local function log_info(...)
-    if logger then
-        logger.info(LOG_MODULE, ...)
-    end
-end
 
 Footnotes.FOOTNOTES_CSS = [[
 .fn-ref{font-size:0.75em;vertical-align:super;line-height:0;}
@@ -37,18 +30,11 @@ div.footnotes{margin-top:2em;padding-top:0.5em;border-top:1px solid #ccc;}
 ]]
 
 local function join_path(a, b)
-    if ok_ffiutil then
-        return ffiutil.joinPath(a, b)
-    end
-    return tostring(a or "") .. "/" .. tostring(b or "")
+    return ffiutil.joinPath(a, b)
 end
 
 local function ensure_dir(path)
-    if ok_util and util.makePath then
-        util.makePath(path)
-        return
-    end
-    os.execute("mkdir -p " .. string.format("%q", path))
+    util.makePath(path)
 end
 
 local function sort_chapters(chapters)
@@ -132,7 +118,6 @@ function Footnotes.load_anchor_cache(book_dir)
     if not file then return {} end
     local data = file:read("*a")
     file:close()
-    if not ok_json then return {} end
     local ok, parsed = pcall(JSON.decode, data or "")
     if ok and type(parsed) == "table" then
         return parsed
@@ -143,7 +128,6 @@ end
 function Footnotes.save_anchor_cache(book_dir, cache)
     if type(book_dir) ~= "string" or book_dir == "" then return end
     if type(cache) ~= "table" then return end
-    if not ok_json then return end
     ensure_dir(join_path(book_dir, "footnotes"))
     local ok, encoded = pcall(JSON.encode, cache)
     if not ok then return end
@@ -459,9 +443,9 @@ function Footnotes.process(html, meta)
     local section = build_footnote_section(img_notes, cross_notes)
 
     if section ~= "" then
-        log_info("footnotes converted:", #img_notes + #cross_notes, "notes")
+        if logger then logger.info(LOG_MODULE, "footnotes converted:", #img_notes + #cross_notes, "notes") end
     elseif #refs > 0 then
-        log_info("footnotes refs found but content missing:", #refs)
+        if logger then logger.info(LOG_MODULE, "footnotes refs found but content missing:", #refs) end
     end
     return html2, section
 end
