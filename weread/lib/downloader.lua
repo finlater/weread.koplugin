@@ -25,7 +25,19 @@ local I18n = require("weread.lib.i18n")
 local Thoughts = require("weread.lib.thoughts")
 local WeRead = require("weread.lib.protocol")
 
+local _, json = pcall(require, "json")
+if not json then
+    _, json = pcall(require, "rapidjson")
+end
+if not json then
+    logger.warn("[WeRead]", "json module not available, chapter cache will be degraded")
+end
+
 local LOG_MODULE = "[WeRead]"
+
+-- Chapter download retry parameters (matching original api.lua).
+local CHAPTER_MAX_RETRIES = 5
+local CHAPTER_MAX_RETRY_INTERVAL = 10 -- seconds
 
 local function _(text)
     return I18n.tr(text)
@@ -65,6 +77,207 @@ local function allowOsStandby()
     if Device:isCervantes() or Device:isKobo() then
         PluginShare.pause_auto_suspend = false
     end
+-- ---------------------------------------------------------------------------
+-- Chapter cache (per-chapter xhtml + assets persisted to disk)
+-- ---------------------------------------------------------------------------
+
+local function filename_safe(value)
+    value = tostring(value or ""):gsub("[%z%c/\\:%*%?\"<>|]", "_")
+    value = value:gsub("^%s+", ""):gsub("%s+$", "")
+    if value == "" then return "_" end
+    return value
+end
+
+local function chapter_cache_root(settings, book)
+    local book_id = book.book_id or book.bookId
+    local dir = Content.book_resolved_dir(settings, book_id, book)
+    return dir .. "/chapters"
+end
+
+local function chapter_xhtml_path(settings, book, chapter_uid)
+    return chapter_cache_root(settings, book) .. "/" .. tostring(chapter_uid) .. ".xhtml"
+end
+
+local function chapter_assets_meta_path(settings, book, chapter_uid)
+    return chapter_cache_root(settings, book) .. "/" .. tostring(chapter_uid) .. ".assets.json"
+end
+
+local function asset_file_path(settings, book, href)
+    return chapter_cache_root(settings, book) .. "/assets/" .. filename_safe(href)
+end
+
+local function book_state_path(settings, book)
+    return chapter_cache_root(settings, book) .. "/_state.json"
+end
+
+local function ensure_dir(path)
+    os.execute("mkdir -p " .. string.format("%q", path))
+end
+
+local function read_file(path)
+    local file, err = io.open(path, "rb")
+    if not file then
+        return nil, err
+    end
+    local data = file:read("*a")
+    file:close()
+    return data
+end
+
+local function write_file(path, data)
+    local file, err = io.open(path, "wb")
+    if not file then
+        return false, err
+    end
+    file:write(data)
+    file:close()
+    return true
+end
+
+--- Compute a fingerprint of download-affecting settings so cached chapters
+--- are invalidated when the user changes relevant options.
+local function compute_settings_fingerprint(settings)
+    local cache = settings:get("cache", {})
+    -- Settings that affect chapter content; changing any of these requires
+    -- re-downloading all chapters.
+    return string.format("th=%s_img=%s",
+        tostring(cache.download_underlines_and_thoughts == true),
+        tostring(cache.download_book_images == true))
+end
+
+--- Remove all cached chapter data for a book.
+local function clear_chapter_cache(settings, book)
+    local root = chapter_cache_root(settings, book)
+    if root and root ~= "" and root ~= "/" then
+        os.execute("rm -rf " .. string.format("%q", root))
+        logger.info(LOG_MODULE, "chapter cache cleared (settings changed):", root)
+    end
+end
+
+--- Persist dl.state fields that accumulate across chapters so cached
+--- chapters can reconstruct the annotation CSS state.
+local function save_book_state(settings, book, state)
+    if not json then return end
+    local root = chapter_cache_root(settings, book)
+    ensure_dir(root)
+    local payload = {
+        css = state.css or "",
+        annotation_css_seen = state.annotation_css_seen or {},
+        settings_fingerprint = compute_settings_fingerprint(settings),
+    }
+    local ok, encoded = pcall(function() return json.encode(payload) end)
+    if ok then
+        write_file(book_state_path(settings, book), encoded)
+    end
+end
+
+--- Load previously persisted dl.state fields (annotation CSS accumulator).
+-- Returns nil if the saved fingerprint does not match current settings
+-- (stale cache after user changed download options).
+local function load_book_state(settings, book)
+    if not json then return nil end
+    local raw = read_file(book_state_path(settings, book))
+    if not raw then return nil end
+    local ok, payload = pcall(function() return json.decode(raw) end)
+    if not ok or type(payload) ~= "table" then
+        return nil
+    end
+    local current_fp = compute_settings_fingerprint(settings)
+    if payload.settings_fingerprint and payload.settings_fingerprint ~= current_fp then
+        logger.info(LOG_MODULE, "chapter cache settings fingerprint mismatch, discarding:",
+            "saved=", payload.settings_fingerprint, "current=", current_fp)
+        clear_chapter_cache(settings, book)
+        return nil
+    end
+    return {
+        css = payload.css or "",
+        annotation_css_seen = payload.annotation_css_seen or {},
+    }
+end
+
+--- Persist a fully-processed chapter so subsequent downloads can skip it.
+-- Writes:  chapters/<uid>.xhtml   (final processed xhtml)
+--          chapters/<uid>.assets.json  ([{href, media_type}, ...])
+--          chapters/assets/<safe_href>  (binary asset data)
+local function save_chapter_cache(settings, book, chapter_uid, xhtml, chapter_assets)
+    local root = chapter_cache_root(settings, book)
+    ensure_dir(root)
+    ensure_dir(root .. "/assets")
+
+    -- XHTML
+    local xhtml_path = chapter_xhtml_path(settings, book, chapter_uid)
+    if not write_file(xhtml_path, xhtml) then
+        logger.warn(LOG_MODULE, "failed to write chapter xhtml cache:", xhtml_path)
+        return false
+    end
+
+    -- Asset metadata + data
+    if chapter_assets and #chapter_assets > 0 then
+        local meta = {}
+        for _, asset in ipairs(chapter_assets) do
+            table.insert(meta, { href = asset.href, media_type = asset.media_type })
+            local apath = asset_file_path(settings, book, asset.href)
+            write_file(apath, asset.data)
+        end
+        if json then
+            local ok, encoded = pcall(function() return json.encode(meta) end)
+            if ok then
+                write_file(chapter_assets_meta_path(settings, book, chapter_uid), encoded)
+            else
+                logger.warn(LOG_MODULE, "failed to encode chapter asset meta:", chapter_uid)
+            end
+        end
+    end
+
+    logger.info(LOG_MODULE, "chapter cache saved:", "chapter_uid=", tostring(chapter_uid))
+    return true
+end
+
+--- Load a cached chapter back into memory.
+-- @return xhtml (string|nil), assets (table|nil)
+local function load_chapter_cache(settings, book, chapter_uid)
+    local xhtml_path = chapter_xhtml_path(settings, book, chapter_uid)
+    local xhtml = read_file(xhtml_path)
+    if not xhtml then
+        return nil
+    end
+
+    local assets = {}
+    local meta_path = chapter_assets_meta_path(settings, book, chapter_uid)
+    local meta_raw = read_file(meta_path)
+    if meta_raw and json then
+        local ok, meta = pcall(function() return json.decode(meta_raw) end)
+        if ok and type(meta) == "table" then
+            for _, entry in ipairs(meta) do
+                local apath = asset_file_path(settings, book, entry.href)
+                local data = read_file(apath)
+                if data then
+                    table.insert(assets, {
+                        href = entry.href,
+                        data = data,
+                        media_type = entry.media_type,
+                    })
+                end
+            end
+        end
+    end
+
+    logger.info(LOG_MODULE, "chapter cache hit:", "chapter_uid=", tostring(chapter_uid),
+        "xhtml_bytes=", tostring(#xhtml), "assets=", tostring(#assets))
+    return xhtml, assets
+end
+
+--- Check whether a chapter is cached on disk.
+local function chapter_cache_exists(settings, book, chapter_uid)
+    local xhtml_path = chapter_xhtml_path(settings, book, chapter_uid)
+    local file = io.open(xhtml_path, "rb")
+    if file then
+        file:close()
+        return true
+    end
+    return false
+end
+
 end
 
 local Downloader = {}
