@@ -25,7 +25,16 @@ local I18n = require("lib.i18n")
 local Thoughts = require("lib.thoughts")
 local WeRead = require("lib.weread")
 
+local ok_json, json = pcall(require, "json")
+if not ok_json then
+    ok_json, json = pcall(require, "rapidjson")
+end
+
 local LOG_MODULE = "[WeRead]"
+
+-- Chapter download retry parameters (matching original api.lua).
+local CHAPTER_MAX_RETRIES = 5
+local CHAPTER_MAX_RETRY_INTERVAL = 10 -- seconds
 
 local function _(text)
     return I18n.tr(text)
@@ -67,6 +76,145 @@ local function allowOsStandby()
     end
 end
 
+-- ---------------------------------------------------------------------------
+-- Chapter cache (per-chapter xhtml + assets persisted to disk)
+-- ---------------------------------------------------------------------------
+
+local function filename_safe(value)
+    value = tostring(value or ""):gsub("[%z%c/\\:%*%?\"<>|]", "_")
+    value = value:gsub("^%s+", ""):gsub("%s+$", "")
+    if value == "" then return "_" end
+    return value
+end
+
+local function chapter_cache_root(settings, book)
+    local book_id = book.book_id or book.bookId
+    local dir = Content.book_resolved_dir(settings, book_id, book)
+    return dir .. "/chapters"
+end
+
+local function chapter_xhtml_path(settings, book, chapter_uid)
+    return chapter_cache_root(settings, book) .. "/" .. tostring(chapter_uid) .. ".xhtml"
+end
+
+local function chapter_assets_meta_path(settings, book, chapter_uid)
+    return chapter_cache_root(settings, book) .. "/" .. tostring(chapter_uid) .. ".assets.json"
+end
+
+local function asset_file_path(settings, book, href)
+    return chapter_cache_root(settings, book) .. "/assets/" .. filename_safe(href)
+end
+
+local function ensure_dir(path)
+    os.execute("mkdir -p " .. string.format("%q", path))
+end
+
+local function read_file(path)
+    local file, err = io.open(path, "rb")
+    if not file then
+        return nil, err
+    end
+    local data = file:read("*a")
+    file:close()
+    return data
+end
+
+local function write_file(path, data)
+    local file, err = io.open(path, "wb")
+    if not file then
+        return false, err
+    end
+    file:write(data)
+    file:close()
+    return true
+end
+
+--- Persist a fully-processed chapter so subsequent downloads can skip it.
+-- Writes:  chapters/<uid>.xhtml   (final processed xhtml)
+--          chapters/<uid>.assets.json  ([{href, media_type}, ...])
+--          chapters/assets/<safe_href>  (binary asset data)
+local function save_chapter_cache(settings, book, chapter_uid, xhtml, chapter_assets)
+    local root = chapter_cache_root(settings, book)
+    ensure_dir(root)
+    ensure_dir(root .. "/assets")
+
+    -- XHTML
+    local xhtml_path = chapter_xhtml_path(settings, book, chapter_uid)
+    if not write_file(xhtml_path, xhtml) then
+        logger.warn(LOG_MODULE, "failed to write chapter xhtml cache:", xhtml_path)
+        return false
+    end
+
+    -- Asset metadata + data
+    if chapter_assets and #chapter_assets > 0 then
+        local meta = {}
+        for _, asset in ipairs(chapter_assets) do
+            table.insert(meta, { href = asset.href, media_type = asset.media_type })
+            local apath = asset_file_path(settings, book, asset.href)
+            write_file(apath, asset.data)
+        end
+        local meta_path = chapter_assets_meta_path(settings, book, chapter_uid)
+        local ok, encoded = pcall(function() return json.encode(meta) end)
+        if ok then
+            write_file(meta_path, encoded)
+        else
+            logger.warn(LOG_MODULE, "failed to encode chapter asset meta:", chapter_uid)
+        end
+    end
+
+    logger.info(LOG_MODULE, "chapter cache saved:", "chapter_uid=", tostring(chapter_uid))
+    return true
+end
+
+--- Load a cached chapter back into memory.
+-- @return xhtml (string|nil), assets (table|nil)
+local function load_chapter_cache(settings, book, chapter_uid)
+    local xhtml_path = chapter_xhtml_path(settings, book, chapter_uid)
+    local xhtml = read_file(xhtml_path)
+    if not xhtml then
+        return nil
+    end
+
+    local assets = {}
+    local meta_path = chapter_assets_meta_path(settings, book, chapter_uid)
+    local meta_raw = read_file(meta_path)
+    if meta_raw then
+        local ok, meta = pcall(function() return json.decode(meta_raw) end)
+        if ok and type(meta) == "table" then
+            for _, entry in ipairs(meta) do
+                local apath = asset_file_path(settings, book, entry.href)
+                local data = read_file(apath)
+                if data then
+                    table.insert(assets, {
+                        href = entry.href,
+                        data = data,
+                        media_type = entry.media_type,
+                    })
+                end
+            end
+        end
+    end
+
+    logger.info(LOG_MODULE, "chapter cache hit:", "chapter_uid=", tostring(chapter_uid),
+        "xhtml_bytes=", tostring(#xhtml), "assets=", tostring(#assets))
+    return xhtml, assets
+end
+
+--- Check whether a chapter is cached on disk.
+local function chapter_cache_exists(settings, book, chapter_uid)
+    local xhtml_path = chapter_xhtml_path(settings, book, chapter_uid)
+    local file = io.open(xhtml_path, "rb")
+    if file then
+        file:close()
+        return true
+    end
+    return false
+end
+
+-- ---------------------------------------------------------------------------
+-- Downloader
+-- ---------------------------------------------------------------------------
+
 local Downloader = {}
 Downloader.__index = Downloader
 
@@ -95,19 +243,19 @@ end
 
 function Downloader:_endStandby()
     local ref = self._standby_ref or 0
-    if ref <= 0 then
-        return
-    end
-    self._standby_ref = ref - 1
-    if self._standby_ref == 0 then
-        UIManager:allowStandby()
-        allowOsStandby()
+    if ref > 0 then
+        ref = ref - 1
+        self._standby_ref = ref
+        if ref == 0 then
+            allowOsStandby()
+            UIManager:allowStandby()
+        end
     end
 end
 
 function Downloader:_releaseStandby(dl)
     if dl and dl.standby_guard then
-        dl.standby_guard = nil
+        dl.standby_guard = false
         self:_endStandby()
     end
 end
@@ -161,6 +309,8 @@ function Downloader:start(book, chapters, suffix, options)
             total = total,
             failed = {},
             annotation_failed_batches = 0,
+            aborted = false,
+            abort_reason = nil,
             single_chapter = options.single_chapter == true,
             started_at = time.now(),
             standby_guard = true,
@@ -205,22 +355,28 @@ function Downloader:_perf(dl, stage, started, ...)
         "chapter=", tostring(dl.index) .. "/" .. tostring(dl.total), ...)
 end
 
+--- Abort the download on a failed chapter (no skip — prevent incomplete books).
 function Downloader:_failChapter(dl, err)
     local chapter = dl.chapters[dl.index]
     local uid = tostring(chapter and chapter.chapterUid or dl.index)
-    table.insert(dl.failed, uid)
-    logger.warn(LOG_MODULE, "chapter download failed:",
-        "index=", tostring(dl.index) .. "/" .. tostring(dl.total),
-        "chapter_uid=", uid, "error=", log_error(err))
+    dl.aborted = true
+    dl.abort_reason = T(
+        _("Chapter %1/%2 (%3) failed:\n%4"),
+        tostring(dl.index), tostring(dl.total),
+        tostring(chapter and chapter.title or uid),
+        display_error(err)
+    )
     dl.current = nil
     dl.annotation = nil
-    dl.index = dl.index + 1
-    if dl.progress_dialog then
-        dl.progress_dialog:reportProgress(dl.index - 1)
-    end
+    -- Jump to completion so the user sees the error and the standby guard is released.
+    dl.index = dl.total + 1
+    logger.err(LOG_MODULE, "chapter download failed (aborting):",
+        "index=", tostring(dl.index - 1) .. "/" .. tostring(dl.total),
+        "chapter_uid=", uid, "error=", log_error(err))
     self:_scheduleGuarded(dl, function() self:_step(dl) end)
 end
 
+--- Finalize a successfully-downloaded chapter and persist its cache.
 function Downloader:_finishChapter(dl)
     if dl.cancelled or not dl.current then return end
     local chapter = dl.current.chapter
@@ -250,6 +406,10 @@ function Downloader:_finishChapter(dl)
     for _i, asset in ipairs(chapter_assets or {}) do
         table.insert(dl.assets, asset)
     end
+
+    -- Persist chapter cache so subsequent downloads can skip this chapter.
+    save_chapter_cache(self.settings, dl.book, uid, xhtml, chapter_assets)
+
     dl.current = nil
     dl.annotation = nil
     dl.index = dl.index + 1
@@ -385,6 +545,20 @@ function Downloader:_step(dl)
     end
 
     if dl.index > dl.total then
+        if dl.aborted then
+            if dl.progress_dialog then
+                dl.progress_dialog:close()
+                dl.progress_dialog = nil
+            end
+            self:_releaseStandby(dl)
+            logger.err(LOG_MODULE, "book download aborted:", log_error(dl.abort_reason))
+            UIManager:show(ConfirmBox:new{
+                text = T(_("Download aborted.\n\n%1"), dl.abort_reason),
+                ok_text = _("Close"),
+            })
+            return
+        end
+
         if #dl.selected == 0 then
             if dl.progress_dialog then
                 dl.progress_dialog:close()
@@ -484,21 +658,63 @@ function Downloader:_step(dl)
     end
 
     local chapter = dl.chapters[dl.index]
+    local chapter_uid = tostring(chapter.chapterUid or dl.index)
+
+    -- Check for cached chapter before downloading.
+    if chapter_cache_exists(self.settings, dl.book, chapter_uid) then
+        local cached_xhtml, cached_assets = load_chapter_cache(self.settings, dl.book, chapter_uid)
+        if cached_xhtml then
+            dl.bodies[chapter_uid] = cached_xhtml
+            table.insert(dl.selected, chapter)
+            for _, asset in ipairs(cached_assets or {}) do
+                table.insert(dl.assets, asset)
+            end
+            dl.index = dl.index + 1
+            if dl.progress_dialog then
+                dl.progress_dialog:reportProgress(dl.index - 1)
+            end
+            self:_scheduleGuarded(dl, function() self:_step(dl) end)
+            return
+        end
+    end
+
     self:_setStage(dl,
         T(_("Downloading chapter %1/%2: %3"), tostring(dl.index), tostring(dl.total),
             chapter.title or tostring(chapter.chapterUid)),
         dl.index - 1)
+
+    -- Chapter download with exponential-backoff retry (matching original api.lua).
+    dl._chapter_retry = dl._chapter_retry or 0
     local started = time.now()
     local ok, xhtml = pcall(function()
         return Content.fetch_single_chapter_source(
             self.client, self.settings, dl.book, chapter, dl.state
         )
     end)
-    self:_perf(dl, "chapter_source", started, "ok=", tostring(ok))
+    self:_perf(dl, "chapter_source", started, "ok=", tostring(ok),
+        "retry=", tostring(dl._chapter_retry))
+
     if not ok then
+        if dl._chapter_retry < CHAPTER_MAX_RETRIES then
+            dl._chapter_retry = dl._chapter_retry + 1
+            local delay = math.min(2 ^ (dl._chapter_retry - 1), CHAPTER_MAX_RETRY_INTERVAL)
+            self:_setStage(dl,
+                T(_("Retrying chapter %1/%2 · attempt %3"),
+                    tostring(dl.index), tostring(dl.total), tostring(dl._chapter_retry)),
+                dl.index - 1)
+            -- Refresh reader state so psvts signatures don't expire between retries.
+            pcall(function()
+                Content.refresh_reader_state(self.client, dl.book, chapter)
+            end)
+            self:_scheduleGuarded(dl, function() self:_step(dl) end, delay)
+            return
+        end
+        dl._chapter_retry = 0
         self:_failChapter(dl, xhtml)
         return
     end
+    dl._chapter_retry = 0
+
     dl.current = { chapter = chapter, xhtml = xhtml }
     if Thoughts.is_download_enabled(self.settings) then
         self:_startAnnotations(dl)
