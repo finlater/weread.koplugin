@@ -270,7 +270,7 @@ function Downloader:_applyAnnotations(dl)
     local started = time.now()
     local ok, processed, annotation_css = pcall(function()
         return Thoughts.apply_data(self.settings, book_id, chapter.chapterUid,
-            dl.current.xhtml, annotation.underlines, annotation.reviews)
+            dl.current.xhtml, annotation.underlines, annotation.reviews, dl.book)
     end)
     self:_perf(dl, "apply_annotations", started, "ok=", tostring(ok),
         "reviews=", tostring(#annotation.reviews))

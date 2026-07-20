@@ -31,33 +31,6 @@ function Thoughts.cache_path(settings, book_id, chapter_uid)
     return Thoughts.cache_dir(settings, book_id) .. "/" .. tostring(chapter_uid) .. ".json"
 end
 
-function Thoughts.save_cache(settings, book_id, chapter_uid, reviews)
-    if type(reviews) ~= "table" or #reviews == 0 then
-        return false
-    end
-    local dir = Thoughts.cache_dir(settings, book_id)
-    os.execute("mkdir -p " .. string.format("%q", dir))
-    local path = Thoughts.cache_path(settings, book_id, chapter_uid)
-    local file = io.open(path, "w")
-    if not file then
-        return false
-    end
-    local ok, encoded = pcall(require("json").encode, reviews)
-    if not ok then
-        ok, encoded = pcall(function()
-            local json = require("rapidjson")
-            return json:encode(reviews)
-        end)
-    end
-    if not ok or not encoded then
-        file:close()
-        return false
-    end
-    file:write(encoded)
-    file:close()
-    log_info("cached thought groups:", #reviews, "chapter:", chapter_uid)
-    return true
-end
 
 --- 读取某章缓存的想法数据（save_cache 的对称读取端）。
 -- 点击划线时由 main.lua 调用，按 range 匹配后渲染弹窗。
@@ -124,18 +97,22 @@ function Thoughts.fetch_underlines(client, settings, book_id, chapter_uid)
     return true, data, Thoughts.collect_ranges(data)
 end
 
-function Thoughts.apply_data(settings, book_id, chapter_uid, xhtml, underlines_data, reviews)
+function Thoughts.apply_data(settings, book_id, chapter_uid, xhtml, underlines_data, reviews, book)
     if type(underlines_data) ~= "table" then
-        return xhtml, ""
+        underlines_data = {}
     end
     if type(reviews) == "table" and #reviews > 0 then
-        Thoughts.save_cache(settings, book_id, chapter_uid, reviews)
+        local Content = require("lib.content")
+        local book_dir = Content.book_resolved_dir(settings, book_id, book)
+        local ThoughtDB = require("lib.thought_db")
+        local db = ThoughtDB.open(book_dir)
+        if db then
+            pcall(ThoughtDB.putReviews, db, chapter_uid, reviews)
+            ThoughtDB.close(db)
+        end
     end
     underlines_data.chapterUid = chapter_uid
     local processed, annotation_css = Annotations.process(xhtml, underlines_data, reviews, book_id)
-    if processed ~= xhtml then
-        log_info("injected underlines for chapter:", chapter_uid)
-    end
     return processed, annotation_css or ""
 end
 

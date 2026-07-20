@@ -29,6 +29,7 @@ local Settings = require("lib.settings")
 local Thoughts = require("lib.thoughts")
 local WeRead = require("lib.weread")
 local ThoughtPopup = require("ui.thought_popup")
+local ThoughtDB = require("lib.thought_db")
 
 -- `_` is the translation function; never reuse it as a loop placeholder in this file.
 local function _(text)
@@ -2773,25 +2774,31 @@ function WeReadPlugin:_loadThoughtReviews(book_id, chapter_uid)
     return reviews
 end
 
--- Whether this href's chapter thoughts are already decoded in memory. Used to
--- decide if the first-tap loading message is needed (skipped once cached).
-function WeReadPlugin:_isChapterThoughtsCached(href)
-    local info = self:_parseThoughtHref(href)
-    if not info or not self._thought_json_cache then
-        return false
-    end
-    return self._thought_json_cache[tostring(info.book_id) .. ":" .. tostring(info.chapter_uid)] ~= nil
-end
-
 -- Load the chapter's cached thoughts, match the tapped range, render popup HTML.
 function WeReadPlugin:_buildThoughtHtmlFromHref(href)
     local info = self:_parseThoughtHref(href)
     if not info then
         return nil
     end
+
+    -- 1. Try SQLite indexed lookup
+    local books = self.settings:get("books", {})
+    local book = books[info.book_id]
+    if book then
+        local book_dir = Content.book_resolved_dir(self.settings, info.book_id, book)
+        local db = ThoughtDB.open(book_dir)
+        if db then
+            local sql_html = ThoughtDB.getReviewHTML(db, info.chapter_uid, info.range)
+            ThoughtDB.close(db)
+            if sql_html then
+                return sql_html
+            end
+        end
+    end
+
+    -- 2. JSON fallback for legacy caches
     local reviews = self:_loadThoughtReviews(info.book_id, info.chapter_uid)
     if type(reviews) ~= "table" then
-        -- Cache missing/unreadable (e.g. user deleted thoughts/<uid>.json).
         self:showInfo(_("No cached thoughts found for this chapter. Please re-download the book with underlines and thoughts."))
         return nil
     end
@@ -2804,7 +2811,6 @@ function WeReadPlugin:_buildThoughtHtmlFromHref(href)
             break
         end
     end
-    -- Recognized underline but no renderable thought (range not in cache, or empty).
     self:showInfo(_("No matching thought found for this underline."))
     return nil
 end
@@ -2849,20 +2855,9 @@ function WeReadPlugin:_onThoughtTap(ges)
     self._thought_html_cache = self._thought_html_cache or {}
     local html = self._thought_html_cache[href]
     if html == nil then
-        -- The first tap in a chapter reads + decodes its thoughts JSON, which can
-        -- take a moment for chapters with many thoughts. Show a brief loading
-        -- message; skipped once the chapter is cached, so it never flashes on
-        -- subsequent (instant) taps.
-        local loading
-        if not self:_isChapterThoughtsCached(href) then
-            loading = InfoMessage:new{ text = _("Loading thoughts…") }
-            UIManager:show(loading)
-            self:refreshUI()  -- force the message to paint before the blocking load
-        end
+        -- SQLite lookup is sub-millisecond; JSON fallback is a single file read.
+        -- No loading message needed.
         html = self:_buildThoughtHtmlFromHref(href) or false
-        if loading then
-            UIManager:close(loading)
-        end
         self._thought_html_cache_n = (self._thought_html_cache_n or 0) + 1
         if self._thought_html_cache_n > THOUGHT_HTML_CACHE_MAX then
             self._thought_html_cache = {}
