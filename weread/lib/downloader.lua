@@ -175,7 +175,7 @@ function Downloader:start(book, chapters, suffix, options)
             selected = {},
             bodies = {},
             assets = {},
-            state = {},
+            state = { chapters = chapters },
             total = total,
             failed = {},
             annotation_failed_batches = 0,
