@@ -2614,18 +2614,6 @@ function WeReadPlugin:_showThoughtPopup(html, link, session_gen, tap_started)
 
     local Screen = require("device").screen
     local document = self.ui.document
-    if link.from_xpointer then
-        local highlight_started = time.now()
-        local ok = pcall(function()
-            document:highlightXPointer()
-            document:highlightXPointer(link.from_xpointer)
-        end)
-        thought_perf("highlight", highlight_started, "ok=", tostring(ok))
-        if ok then
-            self._thought_highlight_active = true
-            UIManager:setDirty(self.dialog, "partial")
-        end
-    end
 
     local params_started = time.now()
     local params = self:_getThoughtPopupLayoutParams()
@@ -2635,10 +2623,14 @@ function WeReadPlugin:_showThoughtPopup(html, link, session_gen, tap_started)
         return
     end
 
+    -- Fonts are preloaded on book open; this is a cheap cache hit after that.
     local fonts_started = time.now()
     ThoughtPopup.preloadFonts(params.doc_font_name)
     thought_perf("preload_fonts", fonts_started)
 
+    -- Show the popup first. Highlighting the source text triggers an extra
+    -- partial refresh on e-ink; doing it after the popup is up makes the
+    -- response feel faster.
     local popup_started = time.now()
     local ok, popup = pcall(function()
         return ThoughtPopup.show({
@@ -2685,6 +2677,30 @@ function WeReadPlugin:_showThoughtPopup(html, link, session_gen, tap_started)
     end
 
     self._current_thought_popup = popup
+
+    -- Deferred highlight: runs after the popup has been handed to UIManager.
+    if link and link.from_xpointer then
+        local xpointer = link.from_xpointer
+        UIManager:nextTick(function()
+            if session_gen and session_gen ~= self._reader_session_gen then
+                return
+            end
+            if not self.ui or not self.ui.document then
+                return
+            end
+            local highlight_started = time.now()
+            local hok = pcall(function()
+                document:highlightXPointer()
+                document:highlightXPointer(xpointer)
+            end)
+            thought_perf("highlight", highlight_started, "ok=", tostring(hok))
+            if hok then
+                self._thought_highlight_active = true
+                UIManager:setDirty(self.dialog, "partial")
+            end
+        end)
+    end
+
     thought_perf("show_pipeline", show_started, "html_bytes=", tostring(#html))
     if tap_started then
         thought_perf("tap_to_popup_return", tap_started, "html_bytes=", tostring(#html))
@@ -2752,7 +2768,8 @@ end
 
 -- Load a chapter's cached thoughts, memoized per (book, chapter) so tapping
 -- different underlines in the same chapter reads/decodes the JSON only once.
--- Returns the decoded reviews array, or false if the chapter has no cache.
+-- Returns a table { list = reviews[], by_range = { [range] = review } }, or
+-- false if the chapter has no cache. The by_range map makes per-tap lookup O(1).
 function WeReadPlugin:_loadThoughtReviews(book_id, chapter_uid)
     self._thought_json_cache = self._thought_json_cache or {}
     local key = tostring(book_id) .. ":" .. tostring(chapter_uid)
@@ -2761,16 +2778,23 @@ function WeReadPlugin:_loadThoughtReviews(book_id, chapter_uid)
         return cached
     end
     local reviews = Thoughts.load_cache(self.settings, book_id, chapter_uid)
-    if type(reviews) ~= "table" then
-        reviews = false
+    local entry = false
+    if type(reviews) == "table" then
+        local by_range = {}
+        for _i, rv in ipairs(reviews) do
+            if rv and rv.range then
+                by_range[tostring(rv.range)] = rv
+            end
+        end
+        entry = { list = reviews, by_range = by_range }
     end
     self._thought_json_cache_n = (self._thought_json_cache_n or 0) + 1
     if self._thought_json_cache_n > THOUGHT_JSON_CACHE_MAX then
         self._thought_json_cache = {}
         self._thought_json_cache_n = 1
     end
-    self._thought_json_cache[key] = reviews
-    return reviews
+    self._thought_json_cache[key] = entry
+    return entry
 end
 
 -- Whether this href's chapter thoughts are already decoded in memory. Used to
@@ -2789,19 +2813,17 @@ function WeReadPlugin:_buildThoughtHtmlFromHref(href)
     if not info then
         return nil
     end
-    local reviews = self:_loadThoughtReviews(info.book_id, info.chapter_uid)
-    if type(reviews) ~= "table" then
+    local entry = self:_loadThoughtReviews(info.book_id, info.chapter_uid)
+    if type(entry) ~= "table" or type(entry.by_range) ~= "table" then
         -- Cache missing/unreadable (e.g. user deleted thoughts/<uid>.json).
         self:showInfo(_("No cached thoughts found for this chapter. Please re-download the book with underlines and thoughts."))
         return nil
     end
-    for _i, rv in ipairs(reviews) do
-        if tostring(rv.range or "") == info.range then
-            local html = Annotations.buildThoughtPopupHtml(rv)
-            if type(html) == "string" and html ~= "" then
-                return html
-            end
-            break
+    local rv = entry.by_range[info.range]
+    if rv then
+        local html = Annotations.buildThoughtPopupHtml(rv)
+        if type(html) == "string" and html ~= "" then
+            return html
         end
     end
     -- Recognized underline but no renderable thought (range not in cache, or empty).
@@ -2848,21 +2870,12 @@ function WeReadPlugin:_onThoughtTap(ges)
     -- Cache the rendered HTML by href (stable, page-independent).
     self._thought_html_cache = self._thought_html_cache or {}
     local html = self._thought_html_cache[href]
+    local cache_hit = (html ~= nil)
     if html == nil then
-        -- The first tap in a chapter reads + decodes its thoughts JSON, which can
-        -- take a moment for chapters with many thoughts. Show a brief loading
-        -- message; skipped once the chapter is cached, so it never flashes on
-        -- subsequent (instant) taps.
-        local loading
-        if not self:_isChapterThoughtsCached(href) then
-            loading = InfoMessage:new{ text = _("Loading thoughts…") }
-            UIManager:show(loading)
-            self:refreshUI()  -- force the message to paint before the blocking load
-        end
+        -- First tap in a chapter may need to read + decode thoughts JSON.
+        -- Avoid refreshUI here: a forced e-ink refresh for a loading toast often
+        -- costs more than the JSON load itself.
         html = self:_buildThoughtHtmlFromHref(href) or false
-        if loading then
-            UIManager:close(loading)
-        end
         self._thought_html_cache_n = (self._thought_html_cache_n or 0) + 1
         if self._thought_html_cache_n > THOUGHT_HTML_CACHE_MAX then
             self._thought_html_cache = {}
@@ -2870,7 +2883,7 @@ function WeReadPlugin:_onThoughtTap(ges)
         end
         self._thought_html_cache[href] = html
     end
-    thought_perf("tap_resolve", tap_started, "cached=", tostring(html ~= nil),
+    thought_perf("tap_resolve", tap_started, "cached=", tostring(cache_hit),
         "html_bytes=", tostring(type(html) == "string" and #html or 0))
     if html == false or type(html) ~= "string" then
         -- Recognized our underline but have no content (already told the user why,
@@ -2890,19 +2903,10 @@ function WeReadPlugin:_onThoughtTap(ges)
     end
     self._thought_popup_open = true
     local session_gen = self._reader_session_gen or 0
-    local scheduled_at = time.now()
-    UIManager:nextTick(function()
-        thought_perf("next_tick_delay", scheduled_at)
-        if session_gen ~= self._reader_session_gen then
-            self._thought_popup_open = nil
-            return
-        end
-        if not self.ui or not self.ui.document then
-            self._thought_popup_open = nil
-            return
-        end
-        self:_showThoughtPopup(html, link, session_gen, tap_started)
-    end)
+
+    -- Show immediately. The previous nextTick added a full event-loop frame of
+    -- latency on every tap; heavy work (JSON / HTML) is already done above.
+    self:_showThoughtPopup(html, link, session_gen, tap_started)
     return true
 end
 

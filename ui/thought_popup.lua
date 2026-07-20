@@ -457,22 +457,10 @@ function ThoughtPopupWidget:_buildLayout()
         VerticalSpan:new{ width = padding_bottom },
     }
 
-    local page_height_started = time.now()
-    local single_page_height = self.htmlwidget:getSinglePageHeight()
-    thought_perf("single_page_height", page_height_started,
-        "single_page=", tostring(single_page_height ~= nil))
-    if single_page_height then
-        local reduced_height = single_page_height + top_border_size + padding_top + padding_bottom
-        vgroup = CenterContainer:new{
-            dimen = Geom:new{
-                h = reduced_height,
-                w = self.width,
-            },
-            ignore = "height",
-            vgroup,
-        }
-        self.height = reduced_height
-    end
+    -- Intentionally skip getSinglePageHeight(). That call forces an extra MuPDF
+    -- layout pass on every open/reopen and is a major source of tap latency on
+    -- e-ink. The popup uses a fixed height_ratio (default 35%) instead; short
+    -- thoughts simply leave empty space at the bottom of the panel.
 
     self.container = FrameContainer:new{
         background = Blitbuffer.COLOR_WHITE,
