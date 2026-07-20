@@ -1013,6 +1013,7 @@ local function footnote_meta(client, settings, book, state)
         book_dir = Content.book_cache_dir(settings, book_id),
         book_id = book_id,
         is_txt = book._content_format == "txt",
+        chapters = state.chapters,
         fetch_chapter_html = function(chapter)
             return Content.fetch_chapter_xhtml(client, settings, book, chapter)
         end,
