@@ -445,6 +445,47 @@ function WeReadPlugin:getSettingsMenuItems()
             end,
         },
         {
+            text = _("Thoughts"),
+            sub_item_table_func = function()
+                return {
+                    {
+                        text = _("Ignore edge taps on underlines"),
+                        checked_func = function()
+                            return self.settings:get("cache").ignore_edge_thought_taps ~= false
+                        end,
+                        keep_menu_open = true,
+                        callback = self:safeCallback(_("Ignore edge taps on underlines"), function(touchmenu_instance)
+                            local cache = self.settings:get("cache")
+                            cache.ignore_edge_thought_taps = not (cache.ignore_edge_thought_taps ~= false)
+                            self.settings:set("cache", cache)
+                            self.settings:flush()
+                            logger.info(
+                                LOG_MODULE,
+                                "ignore_edge_thought_taps changed:",
+                                "enabled=", tostring(cache.ignore_edge_thought_taps)
+                            )
+                            if touchmenu_instance then
+                                touchmenu_instance:updateItems()
+                            end
+                        end),
+                    },
+                    {
+                        text_func = function()
+                            local ratio = tonumber(self.settings:get("cache").edge_tap_ratio) or 0.20
+                            return T(_("Edge zone: %1%"), math.floor(ratio * 100 + 0.5))
+                        end,
+                        enabled_func = function()
+                            return self.settings:get("cache").ignore_edge_thought_taps ~= false
+                        end,
+                        keep_menu_open = true,
+                        callback = self:safeCallback(_("Edge zone"), function(touchmenu_instance)
+                            self:showEdgeTapRatioPicker(touchmenu_instance)
+                        end),
+                    },
+                }
+            end,
+        },
+        {
             text = _("Account management"),
             sub_item_table_func = function()
                 return {
@@ -472,6 +513,52 @@ function WeReadPlugin:getSettingsMenuItems()
             end,
         },
     }
+end
+
+-- Let the user pick how wide the left/right page-turn edge zone is (percent of
+-- screen width on each side). Only used when ignore_edge_thought_taps is on.
+function WeReadPlugin:showEdgeTapRatioPicker(touchmenu_instance)
+    local choices = { 0.10, 0.15, 0.20, 0.25, 0.30, 0.40 }
+    local current = tonumber(self.settings:get("cache").edge_tap_ratio) or 0.20
+    local buttons = {}
+    for _i, ratio in ipairs(choices) do
+        local pct = math.floor(ratio * 100 + 0.5)
+        local label = T(_("%1%"), pct)
+        if math.abs(ratio - current) < 0.001 then
+            label = label .. "  ✓"
+        end
+        table.insert(buttons, {
+            {
+                text = label,
+                callback = function()
+                    UIManager:close(self._edge_ratio_dialog)
+                    self._edge_ratio_dialog = nil
+                    local cache = self.settings:get("cache")
+                    cache.edge_tap_ratio = ratio
+                    self.settings:set("cache", cache)
+                    self.settings:flush()
+                    logger.info(LOG_MODULE, "edge_tap_ratio changed:", "ratio=", tostring(ratio))
+                    if touchmenu_instance then
+                        touchmenu_instance:updateItems()
+                    end
+                end,
+            },
+        })
+    end
+    table.insert(buttons, {
+        {
+            text = _("Cancel"),
+            callback = function()
+                UIManager:close(self._edge_ratio_dialog)
+                self._edge_ratio_dialog = nil
+            end,
+        },
+    })
+    self._edge_ratio_dialog = ButtonDialog:new{
+        title = _("Edge zone width (each side)"),
+        buttons = buttons,
+    }
+    UIManager:show(self._edge_ratio_dialog)
 end
 
 function WeReadPlugin:setMPImageDownload(enabled)
@@ -2483,36 +2570,101 @@ function WeReadPlugin:applyAnnotationVisibility()
     end
 end
 
--- Hide our thought anchors from KOReader's link hit-testing while annotations
--- are hidden. crengine ignores CSS pointer-events for link detection, so without
--- this a tap on a hidden underline is swallowed by ReaderLink (it follows the
--- #wrthought anchor, a same-page jump) instead of turning the page. Returning nil
--- makes ReaderLink's tap_link handler find no link and decline, so the tap falls
--- through to KOReader's native page-turn (honoring the user's tap zones / RTL).
--- Only our own anchors are hidden, and only while annotations are off.
+-- True when the tap falls in the configured left/right page-turn edge zone.
+-- Honours cache.ignore_edge_thought_taps and cache.edge_tap_ratio.
+local function isPageTurnEdgeTap(plugin, ges)
+    if not plugin or not ges or not ges.pos then
+        return false
+    end
+    local cache = plugin.settings:get("cache")
+    if cache.ignore_edge_thought_taps == false then
+        return false
+    end
+    local ratio = tonumber(cache.edge_tap_ratio) or 0.20
+    if ratio < 0.05 then
+        ratio = 0.05
+    elseif ratio > 0.45 then
+        ratio = 0.45
+    end
+    local Screen = require("device").screen
+    local x = ges.pos.x
+    local w = Screen:getWidth()
+    local edge = w * ratio
+    return x < edge or x > (w - edge)
+end
+
+-- Hide our thought anchors from KOReader's link hit-testing when:
+--   1) annotations are hidden, or
+--   2) edge-tap ignore is on and the tap is in the left/right page-turn zone.
+--
+-- crengine ignores CSS pointer-events for link detection, so without this a tap
+-- on a thought underline is swallowed by ReaderLink (it follows the #wrthought
+-- anchor — a same-page jump / native link popup showing the underlined text)
+-- instead of turning the page.
+--
+-- Simply returning nil from getLinkFromGes is not enough: when the user enables
+-- "Allow larger tap area around links" or "Ignore external links", ReaderLink:onTap
+-- still calls onGoToPageLink() and re-discovers the nearby #wrthought-* anchor.
+-- We therefore also wrap onTap itself and return false for ignored thoughts,
+-- so the event continues to propagate to the page-turn zone (honoring the user's
+-- tap zones / RTL). Only our own anchors are affected.
 function WeReadPlugin:_installLinkFilter()
     if not self.ui or not self.ui.link or self._orig_getLinkFromGes then
         return
     end
-    self._orig_getLinkFromGes = self.ui.link.getLinkFromGes
+
     local plugin = self
+
+    -- 1) Filter getLinkFromGes (covers the simple / no-larger-area path)
+    self._orig_getLinkFromGes = self.ui.link.getLinkFromGes
     self.ui.link.getLinkFromGes = function(link_self, ges)
         local link = plugin._orig_getLinkFromGes(link_self, ges)
-        if link and plugin.settings:get("cache").show_annotations == false then
-            local href = plugin:_linkHref(link)
-            if type(href) == "string" and href:find("wrthought%-") then
-                return nil
-            end
+        if not link then
+            return nil
+        end
+        local href = plugin:_linkHref(link)
+        if type(href) ~= "string" or not href:find("wrthought%-") then
+            return link
+        end
+        if plugin.settings:get("cache").show_annotations == false
+            or isPageTurnEdgeTap(plugin, ges) then
+            return nil
         end
         return link
+    end
+
+    -- 2) Also wrap onTap so the larger-area / onGoToPageLink path is skipped
+    if not self._orig_onTap then
+        self._orig_onTap = self.ui.link.onTap
+        self.ui.link.onTap = function(link_self, arg, ges)
+            -- Re-use the filtered getLinkFromGes so the decision stays in one place.
+            local link = plugin.ui.link.getLinkFromGes(link_self, ges)
+            if link then
+                local href = plugin:_linkHref(link)
+                if type(href) == "string" and href:find("wrthought%-") then
+                    if plugin.settings:get("cache").show_annotations == false
+                        or isPageTurnEdgeTap(plugin, ges) then
+                        -- Skip native handling; let the event fall through to page-turn.
+                        return false
+                    end
+                end
+            end
+            return plugin._orig_onTap(link_self, arg, ges)
+        end
     end
 end
 
 function WeReadPlugin:_removeLinkFilter()
-    if self._orig_getLinkFromGes and self.ui and self.ui.link then
-        self.ui.link.getLinkFromGes = self._orig_getLinkFromGes
+    if self.ui and self.ui.link then
+        if self._orig_getLinkFromGes then
+            self.ui.link.getLinkFromGes = self._orig_getLinkFromGes
+        end
+        if self._orig_onTap then
+            self.ui.link.onTap = self._orig_onTap
+        end
     end
     self._orig_getLinkFromGes = nil
+    self._orig_onTap = nil
 end
 
 function WeReadPlugin:_teardownThoughtInterception()
@@ -2817,6 +2969,12 @@ function WeReadPlugin:_onThoughtTap(ges)
     -- The tap zone is only registered for WeRead books, so a cached flag is
     -- enough here; avoid re-scanning the book table on every tap.
     if not self._current_weread_book_id then
+        return false
+    end
+
+    -- Edge taps are for page turns — never intercept them for thoughts.
+    -- The link filter also hides our anchors here so native link UI does not fire.
+    if isPageTurnEdgeTap(self, ges) then
         return false
     end
 
