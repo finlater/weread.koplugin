@@ -1321,6 +1321,7 @@ function WeReadPlugin:confirmClearAccount()
         ok_text = _("Clear"),
         ok_callback = self:safeCallback(_("Clear"), function()
             self.qr_login:cancel()
+            self.read_report:stop("account_cleared")
             self.settings:reset_account()
             self:refreshLoginMenu()
             self:showInfo(_("WeRead account data cleared."))

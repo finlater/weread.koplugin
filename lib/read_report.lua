@@ -484,6 +484,22 @@ function ReadReport:_renewal_allowed()
     return self.now() - (self.last_renew_attempt or 0) >= RENEWAL_COOLDOWN_SECONDS
 end
 
+function ReadReport:_auth_fingerprint()
+    local cookies = self.settings:get("cookies", {}) or {}
+    local keys = {}
+    for key in pairs(cookies) do
+        keys[#keys + 1] = tostring(key)
+    end
+    table.sort(keys)
+    local parts = {}
+    for _i, key in ipairs(keys) do
+        parts[#parts + 1] = key .. "=" .. tostring(cookies[key])
+    end
+    parts[#parts + 1] = "ticket=" .. tostring(self.settings:get("wr_ticket", ""))
+    parts[#parts + 1] = "wrpa=" .. tostring(self.settings:get("wr_wrpa", ""))
+    return table.concat(parts, ";")
+end
+
 -- ------------------------------------------------------------------
 -- Subprocess job management (parent side)
 -- ------------------------------------------------------------------
@@ -514,6 +530,7 @@ function ReadReport:_start_job(book_id, allow_renewal, generation, task)
         book_id = book_id,
         started_at = self.now(),
         poll_interval = JOB_POLL_INITIAL_SECONDS,
+        auth_fingerprint = self:_auth_fingerprint(),
     }
     job.poll = function()
         self:_poll_job(job, generation, task)
@@ -542,7 +559,7 @@ function ReadReport:_poll_job(job, generation, task)
             -- the background so it does not linger as a zombie.
             self:_collect_pid(job.pid)
         end
-        self:_apply_job_outcome(job.book_id, self:_decode_outcome(payload))
+        self:_apply_job_outcome(job, self:_decode_outcome(payload))
         self:_schedule_next(generation, task)
         return
     end
@@ -619,18 +636,23 @@ end
 -- Outcome application (parent side)
 -- ------------------------------------------------------------------
 
-function ReadReport:_apply_job_outcome(book_id, outcome)
+function ReadReport:_apply_job_outcome(job, outcome)
+    local book_id = job.book_id
     if type(outcome) == "table" then
         if type(outcome.auth) == "table" then
-            local ok, err = pcall(function()
-                self.settings:update_auth({
-                    cookies = outcome.auth.cookies,
-                    wr_ticket = outcome.auth.wr_ticket,
-                    wr_wrpa = outcome.auth.wr_wrpa,
-                }, { replace_cookies = true })
-            end)
-            if not ok then
-                log("warn", "persist renewed auth failed:", tostring(err))
+            if self:_auth_fingerprint() ~= job.auth_fingerprint then
+                log("info", "skip renewed auth write-back: parent auth changed during job")
+            else
+                local ok, err = pcall(function()
+                    self.settings:update_auth({
+                        cookies = outcome.auth.cookies,
+                        wr_ticket = outcome.auth.wr_ticket,
+                        wr_wrpa = outcome.auth.wr_wrpa,
+                    }, { replace_cookies = true })
+                end)
+                if not ok then
+                    log("warn", "persist renewed auth failed:", tostring(err))
+                end
             end
         end
         if type(outcome.book) == "table" then
