@@ -500,6 +500,15 @@ function ReadReport:_auth_fingerprint()
     return table.concat(parts, ";")
 end
 
+function ReadReport:_context_fingerprint(book_id)
+    local book = book_record(self.settings:get("books", {}), book_id) or {}
+    local parts = {}
+    for _i, field in ipairs(CONTEXT_FIELDS) do
+        parts[#parts + 1] = field .. "=" .. tostring(book[field])
+    end
+    return table.concat(parts, ";")
+end
+
 -- ------------------------------------------------------------------
 -- Subprocess job management (parent side)
 -- ------------------------------------------------------------------
@@ -531,6 +540,7 @@ function ReadReport:_start_job(book_id, allow_renewal, generation, task)
         started_at = self.now(),
         poll_interval = JOB_POLL_INITIAL_SECONDS,
         auth_fingerprint = self:_auth_fingerprint(),
+        context_fingerprint = self:_context_fingerprint(book_id),
     }
     job.poll = function()
         self:_poll_job(job, generation, task)
@@ -656,11 +666,15 @@ function ReadReport:_apply_job_outcome(job, outcome)
             end
         end
         if type(outcome.book) == "table" then
-            local ok, err = pcall(function()
-                self:_persist_context(book_id, outcome.book)
-            end)
-            if not ok then
-                log("warn", "persist report context failed:", tostring(err))
+            if self:_context_fingerprint(book_id) ~= job.context_fingerprint then
+                log("info", "skip report context write-back: parent record changed during job")
+            else
+                local ok, err = pcall(function()
+                    self:_persist_context(book_id, outcome.book)
+                end)
+                if not ok then
+                    log("warn", "persist report context failed:", tostring(err))
+                end
             end
         end
     end
