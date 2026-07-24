@@ -33,6 +33,11 @@ local defaults = {
         download_mp_images = false,
         download_underlines_and_thoughts = false,
         show_annotations = true,
+        -- When true, taps in the left/right edge zones never open thought popups
+        -- (and native #wrthought link follow is suppressed there too).
+        ignore_edge_thought_taps = true,
+        -- Fraction of screen width on each side treated as the page-turn edge zone.
+        edge_tap_ratio = 0.20,
         max_size_mb = 1024,
     },
     read_report = {
@@ -106,6 +111,14 @@ function Settings:new()
     end
     if cache.show_annotations == nil then
         cache.show_annotations = true
+        cache_changed = true
+    end
+    if cache.ignore_edge_thought_taps == nil then
+        cache.ignore_edge_thought_taps = true
+        cache_changed = true
+    end
+    if cache.edge_tap_ratio == nil then
+        cache.edge_tap_ratio = 0.20
         cache_changed = true
     end
     if cache.download_images ~= nil then
