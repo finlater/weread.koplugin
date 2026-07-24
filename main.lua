@@ -112,8 +112,10 @@ function WeReadPlugin:init()
         detect_book = function()
             return self:detectWeReadBook()
         end,
+        -- The report tick runs on the UI loop; use the link-state check here
+        -- because NetworkMgr:isOnline() does a blocking DNS lookup.
         is_online = function()
-            return self:isNetworkOnline()
+            return self:isNetworkConnected()
         end,
     }
     self:onDispatcherRegisterActions()
@@ -1190,6 +1192,23 @@ function WeReadPlugin:isNetworkOnline()
     return online == true
 end
 
+-- Non-blocking connectivity check (interface link state only). Unlike
+-- isNetworkOnline() it never resolves DNS, so it is safe on the UI loop.
+function WeReadPlugin:isNetworkConnected()
+    local ok, NetworkMgr = pcall(require, "ui/network/manager")
+    if not ok or not NetworkMgr or not NetworkMgr.isConnected then
+        return self:isNetworkOnline()
+    end
+    local ok_connected, connected = pcall(function()
+        return NetworkMgr:isConnected()
+    end)
+    if not ok_connected then
+        logger.warn(LOG_MODULE, "network link check failed:", log_error(connected))
+        return true
+    end
+    return connected == true
+end
+
 function WeReadPlugin:showOffline(label)
     self:closeBusy()
     logger.warn(LOG_MODULE, "network unavailable:", label)
@@ -1302,6 +1321,7 @@ function WeReadPlugin:confirmClearAccount()
         ok_text = _("Clear"),
         ok_callback = self:safeCallback(_("Clear"), function()
             self.qr_login:cancel()
+            self.read_report:stop("account_cleared")
             self.settings:reset_account()
             self:refreshLoginMenu()
             self:showInfo(_("WeRead account data cleared."))
