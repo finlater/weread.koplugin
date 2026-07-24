@@ -6,6 +6,7 @@
 --]] --
 
 local logger = require("logger")
+local Footnotes = require("lib.footnotes")
 
 local Annotations = {}
 
@@ -347,76 +348,103 @@ function Annotations.injectUnderlines(html, underlines, thought_reviews, chapter
 
     logger.info("weread annotations: html runes=", n, "underlines=", #ranges)
 
-    -- 预计算所有替换片段
-    local replacements = {}
-    local prevEnd = 0
+    local protected_spans = Footnotes.find_footnote_spans(html)
 
-    for _, ul in ipairs(ranges) do
-        local start_pos = ul.start
-        local end_pos = ul.end_pos
-
-        -- 边界检查
-        if start_pos < 0 or end_pos > n or start_pos >= end_pos then
-            goto continue
+    local function intersectingProtected(start_pos, end_pos)
+        local hits = {}
+        for _, prot in ipairs(protected_spans) do
+            if prot.start < end_pos and prot.end_pos > start_pos then
+                hits[#hits + 1] = {
+                    start = math.max(start_pos, prot.start),
+                    end_pos = math.min(end_pos, prot.end_pos),
+                }
+            end
         end
+        table.sort(hits, function(a, b) return a.start < b.start end)
+        return hits
+    end
 
-        -- 校正边界：确保 start 和 end 不落在 HTML 标签或实体内部
-        end_pos = snapEndToSafeBoundary(runes, start_pos, end_pos)
-        start_pos = snapStartToSafeBoundary(runes, start_pos, end_pos)
+    local function wrapRunesSlice(slice_start, slice_end, range_str, with_thought)
+        if slice_start >= slice_end then return {} end
 
-        -- 确保不重叠
-        if start_pos >= end_pos or start_pos < prevEnd then
-            goto continue
-        end
-
-        -- 提取范围内的内容并包裹下划线标签
         local inner = {}
-        for j = start_pos, end_pos - 1 do
+        for j = slice_start, slice_end - 1 do
             inner[#inner + 1] = runes[j]
         end
 
-        -- 使用 wrapTextSegments 处理跨标签边界
         local wrapped = wrapTextSegments(inner, "wr-underline")
+        if not with_thought then
+            return wrapped
+        end
 
-        -- 如果有想法数据，每个 wr-underline span 单独包裹 <a>（跨段可点击）
-        if thought_reviews and thought_reviews[ul.range_str] then
-            local underline_open = '<span class="wr-underline">'
-            local underline_close = '</span>'
-            local underline_close_with_ref = '<span class="wr-star">*</span></span>'
+        local underline_open = '<span class="wr-underline">'
+        local underline_close = '</span>'
+        local underline_close_with_ref = '<span class="wr-star">*</span></span>'
 
-            -- 星号注入到最后一个 underline span 末尾
-            local last_idx = #wrapped
-            if wrapped[last_idx] == underline_close then
-                wrapped[last_idx] = underline_close_with_ref
+        local last_idx = #wrapped
+        if wrapped[last_idx] == underline_close then
+            wrapped[last_idx] = underline_close_with_ref
+        end
+
+        local anchor_id = thoughtAnchorId(book_id, chapter_uid, range_str)
+        local href = "#" .. anchor_id
+        local open_a = '<a class="wr-thought-link" href="' .. htmlEscape(href) .. '">'
+        local open_a_with_id = '<a id="' .. htmlEscape(anchor_id)
+            .. '" class="wr-thought-link" href="' .. htmlEscape(href) .. '">'
+
+        local with_links = {}
+        local first_link = true
+        for _, item in ipairs(wrapped) do
+            if item == underline_open then
+                with_links[#with_links + 1] = first_link and open_a_with_id or open_a
+                first_link = false
+                with_links[#with_links + 1] = item
+            elseif item == underline_close or item == underline_close_with_ref then
+                with_links[#with_links + 1] = item
+                with_links[#with_links + 1] = '</a>'
+            else
+                with_links[#with_links + 1] = item
             end
+        end
+        return with_links
+    end
 
-            -- 内部锚点（非 noteref）：去掉 epub:type="noteref" 避免 crengine 走专用
-            -- 脚注弹窗路径（该路径无视 CSS pointer-events）。想法内容不再内嵌 EPUB，
-            -- 点击时由 main.lua 从缓存 JSON 现取。锚点已编码 book_id+chapter_uid+range。
-            local anchor_id = thoughtAnchorId(book_id, chapter_uid, ul.range_str)
-            local href = "#" .. anchor_id
-            local open_a = '<a class="wr-thought-link" href="' .. htmlEscape(href) .. '">'
-            -- 只第一个 <a> 带 id：拦截失败时 KOReader 跟随锚点最多跳回划线起点（兜底）。
-            local open_a_with_id = '<a id="' .. htmlEscape(anchor_id)
-                .. '" class="wr-thought-link" href="' .. htmlEscape(href) .. '">'
+    -- 预计算所有替换片段
+    local replacements = {}
+    local prevEnd = 1
 
-            -- wrapTextSegments 为每个文本段生成独立的 underline span；
-            -- 逐 span 包裹 <a> 可避免 </h1><p>、</p><p> 等块级边界导致 MuPDF 截断链接。
-            local with_links = {}
-            local first_link = true
-            for _, item in ipairs(wrapped) do
-                if item == underline_open then
-                    with_links[#with_links + 1] = first_link and open_a_with_id or open_a
-                    first_link = false
-                    with_links[#with_links + 1] = item
-                elseif item == underline_close or item == underline_close_with_ref then
-                    with_links[#with_links + 1] = item
-                    with_links[#with_links + 1] = '</a>'
-                else
-                    with_links[#with_links + 1] = item
+    local function processOne(ul)
+        local start_pos = ul.start
+        local end_pos = ul.end_pos
+
+        if start_pos < 1 or end_pos > n + 1 or start_pos >= end_pos then return end
+
+        end_pos = snapEndToSafeBoundary(runes, start_pos, end_pos)
+        start_pos = snapStartToSafeBoundary(runes, start_pos, end_pos)
+
+        if start_pos >= end_pos or start_pos < prevEnd then return end
+
+        local with_thought = thought_reviews and thought_reviews[ul.range_str] or false
+        local protected = intersectingProtected(start_pos, end_pos)
+        local wrapped = {}
+        local pos = start_pos
+
+        for _, prot in ipairs(protected) do
+            if prot.start > pos then
+                for _, item in ipairs(wrapRunesSlice(pos, prot.start, ul.range_str, with_thought)) do
+                    wrapped[#wrapped + 1] = item
                 end
             end
-            wrapped = with_links
+            for j = prot.start, prot.end_pos - 1 do
+                wrapped[#wrapped + 1] = runes[j]
+            end
+            pos = prot.end_pos
+        end
+
+        if pos < end_pos then
+            for _, item in ipairs(wrapRunesSlice(pos, end_pos, ul.range_str, with_thought)) do
+                wrapped[#wrapped + 1] = item
+            end
         end
 
         replacements[#replacements + 1] = {
@@ -425,8 +453,10 @@ function Annotations.injectUnderlines(html, underlines, thought_reviews, chapter
             content = wrapped,
         }
         prevEnd = end_pos
+    end
 
-        ::continue::
+    for _, ul in ipairs(ranges) do
+        processOne(ul)
     end
 
     if #replacements == 0 then
