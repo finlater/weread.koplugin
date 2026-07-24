@@ -1049,6 +1049,7 @@ local function apply_chapter_footnotes(client, settings, book, chapter, xhtml, c
 end
 
 local function apply_chapter_enrichments(client, settings, book, chapter, xhtml, css, state)
+    xhtml = Footnotes.normalize_markup(xhtml)
     xhtml, css = apply_chapter_annotations(client, settings, book, chapter, xhtml, css)
     xhtml, css = apply_chapter_footnotes(client, settings, book, chapter, xhtml, css, state)
     return xhtml, css
@@ -1089,6 +1090,9 @@ function Content.fetch_single_chapter_source(client, settings, book, chapter, st
     local xhtml = Content.fetch_chapter_xhtml(client, settings, book, chapter)
     if not state.css then
         state.css = Content.fetch_chapter_css(client, settings, book, chapter)
+    end
+    if book._content_format ~= "txt" then
+        xhtml = Footnotes.normalize_markup(xhtml)
     end
     return xhtml
 end
