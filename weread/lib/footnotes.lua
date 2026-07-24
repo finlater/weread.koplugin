@@ -169,12 +169,11 @@ local function num_from_link_context(link)
     if type(link) ~= "string" then return nil end
     local id = link:match('id="([^"]+)"')
     local fragment = href_fragment(link:match('href="([^"]+)"') or "")
-    for _, token in ipairs({ id, fragment }) do
+    for _, token in ipairs({ id or fragment, id and fragment }) do
         if token then
             local num = token:match("_(%d+)_")
                 or token:match("^(%d+)$")
                 or token:match("_(%d+)$")
-                or token:match("(%d+)$")
             if num then return num end
         end
     end
