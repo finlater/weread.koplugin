@@ -2602,12 +2602,9 @@ end
 -- anchor — a same-page jump / native link popup showing the underlined text)
 -- instead of turning the page.
 --
--- Simply returning nil from getLinkFromGes is not enough: when the user enables
--- "Allow larger tap area around links" or "Ignore external links", ReaderLink:onTap
--- still calls onGoToPageLink() and re-discovers the nearby #wrthought-* anchor.
--- We therefore also wrap onTap itself and return false for ignored thoughts,
+-- Wrap onTap itself and return false for ignored thoughts,
 -- so the event continues to propagate to the page-turn zone (honoring the user's
--- tap zones / RTL). Only our own anchors are affected.
+-- tap zones / RTL). Only own anchors are affected.
 function WeReadPlugin:_installLinkFilter()
     if not self.ui or not self.ui.link or self._orig_getLinkFromGes then
         return
@@ -2637,14 +2634,14 @@ function WeReadPlugin:_installLinkFilter()
     if not self._orig_onTap then
         self._orig_onTap = self.ui.link.onTap
         self.ui.link.onTap = function(link_self, arg, ges)
-            -- Re-use the filtered getLinkFromGes so the decision stays in one place.
-            local link = plugin.ui.link.getLinkFromGes(link_self, ges)
-            if link then
-                local href = plugin:_linkHref(link)
-                if type(href) == "string" and href:find("wrthought%-") then
-                    if plugin.settings:get("cache").show_annotations == false
-                        or isPageTurnEdgeTap(plugin, ges) then
-                        -- Skip native handling; let the event fall through to page-turn.
+            -- When we want to ignore thoughts (edge zone or annotations hidden),
+            -- detect the link with the *original* getter and suppress only own #wrthought anchors.
+            if plugin.settings:get("cache").show_annotations == false
+                or isPageTurnEdgeTap(plugin, ges) then
+                local link = plugin._orig_getLinkFromGes(link_self, ges)
+                if link then
+                    local href = plugin:_linkHref(link)
+                    if type(href) == "string" and href:find("wrthought%-") then
                         return false
                     end
                 end
