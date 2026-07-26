@@ -15,6 +15,7 @@ local Font = require("ui/font")
 local TextBoxWidget = require("ui/widget/textboxwidget")
 local TextViewer = require("ui/widget/textviewer")
 local UIManager = require("ui/uimanager")
+local logger = require("logger")
 
 local Annotations = require("weread.lib.annotations")
 local I18n = require("weread.lib.i18n")
@@ -94,19 +95,30 @@ local function buildDisplayPages(items, fits)
     return pages
 end
 
+-- KOReader exposes the text area as self.scroll_widget/self.box_widget only
+-- since upstream #15588 (2026-06). Released versions name it self.scroll_text_w
+-- and keep the TextBoxWidget in its .text_widget.
+function NativeThoughtPopup:_textWidgets()
+    local scroll_widget = self.scroll_widget or self.scroll_text_w
+    local box_widget = self.box_widget or (scroll_widget and scroll_widget.text_widget)
+    return scroll_widget, box_widget
+end
+
 function NativeThoughtPopup:_measureDisplayPages()
-    if not self.box_widget then
+    local _scroll_widget, box_widget = self:_textWidgets()
+    if not box_widget then
+        logger.warn("weread: thought popup text widget unavailable, keeping one item per page")
         return
     end
 
-    local visible_lines = self.box_widget:getVisLineCount()
+    local visible_lines = box_widget:getVisLineCount()
     local function fits(text)
         local measurement = TextBoxWidget:new{
             text = text,
             dialog = self,
-            face = self.box_widget.face,
-            fgcolor = self.box_widget.fgcolor,
-            width = self.box_widget.width,
+            face = box_widget.face,
+            fgcolor = box_widget.fgcolor,
+            width = box_widget.width,
             alignment = self.alignment,
             justified = self.justified,
             lang = self.lang,
@@ -123,6 +135,8 @@ function NativeThoughtPopup:_measureDisplayPages()
     local ok, pages = pcall(buildDisplayPages, self.items, fits)
     if ok and type(pages) == "table" and #pages > 0 then
         self.display_pages = pages
+    else
+        logger.warn("weread: thought popup measurement failed:", tostring(pages))
     end
 end
 
@@ -185,17 +199,20 @@ function NativeThoughtPopup:_buildButtons()
 end
 
 function NativeThoughtPopup:_replaceVisibleText()
-    if not (self.box_widget and self.box_widget.setText) then
+    local scroll_widget, box_widget = self:_textWidgets()
+    if not (box_widget and box_widget.setText) then
         return false
     end
-    self.box_widget.virtual_line_num = 1
-    if self.box_widget.text ~= self.text then
-        self.box_widget.charlist = nil
-        self.box_widget:setText(self.text)
+    box_widget.virtual_line_num = 1
+    if box_widget.text ~= self.text then
+        box_widget.charlist = nil
+        box_widget:setText(self.text)
     end
-    self.scroll_widget.text = self.text
-    if self.scroll_widget.resetScroll then
-        self.scroll_widget:resetScroll()
+    if scroll_widget then
+        scroll_widget.text = self.text
+        if scroll_widget.resetScroll then
+            scroll_widget:resetScroll()
+        end
     end
     return true
 end
@@ -269,8 +286,9 @@ function NativeThoughtPopup:changePage(delta)
     if not self:_replaceVisibleText() then
         -- Defensive fallback for an unusually old TextBoxWidget API.
         self:init(true)
-        if self.scroll_widget and self.scroll_widget.scrollToTop then
-            self.scroll_widget:scrollToTop()
+        local scroll_widget = self:_textWidgets()
+        if scroll_widget and scroll_widget.scrollToTop then
+            scroll_widget:scrollToTop()
         end
     end
 
