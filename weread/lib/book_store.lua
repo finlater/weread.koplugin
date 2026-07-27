@@ -47,39 +47,18 @@ local function dirname(path)
     end
 end
 
-local function looks_like_book_dir(dir, book_id)
-    if type(dir) ~= "string" or dir == "" then
-        return false
-    end
-    return dir:match("([^/]+)$") == basename_safe(book_id)
-end
-
-local function meta_root(settings)
-    local root = settings.meta_dir
-    if type(root) ~= "string" or root == "" then
-        root = (settings.data_dir or settings.cache_dir) .. "/meta"
-    end
-    return root
-end
-
 local function resolved_dir(settings, book_id, book)
     if type(book) == "table" and type(book.cache_dir) == "string" and book.cache_dir ~= "" then
         return book.cache_dir
     end
-    -- Legacy combined layout only: EPUB lived inside <root>/<book_id>/.
     local dir = type(book) == "table" and dirname(book.cached_file) or nil
-    if looks_like_book_dir(dir, book_id) then
-        return dir
-    end
-    if type(book) == "table" and type(book.cached_chapters) == "table" then
+    if not dir and type(book) == "table" and type(book.cached_chapters) == "table" then
         for _uid, path in pairs(book.cached_chapters) do
             dir = dirname(path)
-            if looks_like_book_dir(dir, book_id) then
-                return dir
-            end
+            if dir then break end
         end
     end
-    return meta_root(settings) .. "/" .. basename_safe(book_id)
+    return dir or (settings.cache_dir .. "/" .. basename_safe(book_id))
 end
 
 local function encode(value)

@@ -71,184 +71,18 @@ function M:showDownloadDirPicker(touchmenu_instance)
             if touchmenu_instance then
                 touchmenu_instance:updateItems()
             end
-            self:offerMoveContentToNewDir(old_dir, path)
+            self:offerMoveBooksToNewDir(old_dir, path)
         end,
     }
     UIManager:show(path_chooser)
 end
 
-function M:showMetaDirPicker(touchmenu_instance)
-    local current = self.settings:get_meta_dir()
-    local path_chooser = PathChooser:new{
-        select_directory = true,
-        select_file = false,
-        path = current,
-        onConfirm = function(path)
-            local ok, err = self:validateDownloadDir(path)
-            if not ok then
-                self:showInfo(T(_("Cannot use this directory: %1"), err))
-                return
-            end
-            local old_dir = self.settings:get_meta_dir()
-            self.settings:set_meta_dir(path)
-            logger.info(LOG_MODULE, "metadata directory changed:", path)
-            if touchmenu_instance then
-                touchmenu_instance:updateItems()
-            end
-            self:offerMoveMetaToNewDir(old_dir, path)
-        end,
-    }
-    UIManager:show(path_chooser)
-end
-
-local function normalize_root(path)
-    if type(path) ~= "string" or path == "" then
-        return nil
-    end
-    return path:gsub("/+$", "")
-end
-
-local function path_under_root(path, root)
-    root = normalize_root(root)
-    path = type(path) == "string" and path or nil
-    if not root or not path then
-        return false
-    end
-    if path == root then
-        return true
-    end
-    return path:sub(1, #root + 1) == root .. "/"
-end
-
--- After the book directory changes, offer to move flat EPUB/chapter files.
--- Sidecar metadata stays in meta_dir and is not moved here.
-function M:offerMoveContentToNewDir(old_dir, new_dir)
-    old_dir = normalize_root(old_dir)
-    new_dir = normalize_root(new_dir)
+-- After the download directory changes, offer to move already-cached books from
+-- their old locations into the new directory. Without this, old files stay behind
+-- as orphans (still reachable via the stored paths, but not under the new root).
+function M:offerMoveBooksToNewDir(old_dir, new_dir)
     if old_dir == new_dir then
-        self:offerScanNewDir(new_dir, T(_("Book directory set to:\n%1"), new_dir))
-        return
-    end
-    local books = self.settings:get("books", {})
-    local movable = {}
-    local function maybe_add(book_id, src)
-        if type(src) ~= "string" or src == "" then
-            return
-        end
-        if not path_under_root(src, old_dir) then
-            return
-        end
-        local name = src:match("[^/]+$")
-        if not name then
-            return
-        end
-        local dst = new_dir .. "/" .. name
-        if src ~= dst then
-            table.insert(movable, { book_id = book_id, src = src, dst = dst, kind = "file" })
-        end
-    end
-    for book_id, book in pairs(books) do
-        if type(book) == "table" then
-            maybe_add(book_id, book.cached_file)
-            if type(book.cached_chapters) == "table" then
-                for _uid, chapter_path in pairs(book.cached_chapters) do
-                    maybe_add(book_id, chapter_path)
-                end
-            end
-        end
-    end
-    if #movable == 0 then
-        self:offerScanNewDir(new_dir, T(_("Book directory set to:\n%1"), new_dir))
-        return
-    end
-    UIManager:show(ConfirmBox:new{
-        text = T(_("Book directory changed. Move %1 downloaded file(s) to the new location?"), tostring(#movable)),
-        ok_text = _("Move"),
-        ok_callback = function()
-            self:moveContentFilesToNewDir(movable, new_dir)
-        end,
-        cancel_text = _("Keep"),
-        cancel_callback = function()
-            self:offerScanNewDir(new_dir, T(_("Book directory set to:\n%1\nExisting downloads stay in the old location."), new_dir))
-        end,
-    })
-end
-
-function M:moveContentFilesToNewDir(movable, new_dir)
-    self:showBusy(_("Moving downloaded books..."))
-    UIManager:scheduleIn(0.1, function()
-        local books = self.settings:get("books", {})
-        local moved, skipped, failed = 0, 0, 0
-        local remap = {}
-        for _i, m in ipairs(movable) do
-            local ok, reason = self:moveContentFile(m.src, m.dst)
-            if ok then
-                remap[m.src] = m.dst
-                moved = moved + 1
-            elseif reason == "target_exists" then
-                skipped = skipped + 1
-                logger.warn(LOG_MODULE, "skip move, target exists:", m.dst)
-            else
-                failed = failed + 1
-                logger.err(LOG_MODULE, "move book file failed:", m.src, "->", m.dst)
-            end
-        end
-        for _book_id, book in pairs(books) do
-            if type(book) == "table" then
-                if type(book.cached_file) == "string" and remap[book.cached_file] then
-                    book.cached_file = remap[book.cached_file]
-                end
-                if type(book.cached_chapters) == "table" then
-                    for uid, path in pairs(book.cached_chapters) do
-                        if remap[path] then
-                            book.cached_chapters[uid] = remap[path]
-                        end
-                    end
-                end
-            end
-        end
-        self.settings:set("books", books)
-        self.settings:flush()
-        self:closeBusy()
-        local message
-        if skipped == 0 and failed == 0 then
-            message = T(_("Moved %1 file(s) to:\n%2"), tostring(moved), new_dir)
-        else
-            message = T(_("Moved %1 file(s). %2 skipped (target already exists), %3 failed. These stay in the old location."), tostring(moved), tostring(skipped), tostring(failed))
-        end
-        self:offerScanNewDir(new_dir, message)
-    end)
-end
-
-function M:moveContentFile(src, dst)
-    if src == dst then
-        return true
-    end
-    local lfs = require("libs/libkoreader-lfs")
-    local src_attr = lfs.attributes(src)
-    if not src_attr or src_attr.mode ~= "file" then
-        return false, "missing"
-    end
-    if lfs.attributes(dst) then
-        return false, "target_exists"
-    end
-    local parent = dst:match("^(.*)/[^/]+$")
-    if parent then
-        os.execute("mkdir -p " .. string.format("%q", parent))
-    end
-    local status = os.execute("mv -f " .. string.format("%q", src) .. " " .. string.format("%q", dst))
-    if status == true or status == 0 then
-        return true
-    end
-    return false, "move_failed"
-end
-
--- After the metadata directory changes, offer to move per-book sidecar folders.
-function M:offerMoveMetaToNewDir(old_dir, new_dir)
-    old_dir = normalize_root(old_dir)
-    new_dir = normalize_root(new_dir)
-    if old_dir == new_dir then
-        self:showInfo(T(_("Metadata directory set to:\n%1"), new_dir))
+        self:offerScanNewDir(new_dir, T(_("Download directory set to:\n%1"), new_dir))
         return
     end
     local lfs = require("libs/libkoreader-lfs")
@@ -256,8 +90,8 @@ function M:offerMoveMetaToNewDir(old_dir, new_dir)
     local movable = {}
     for book_id, book in pairs(books) do
         local src = Content.book_resolved_dir(self.settings, book_id, book)
-        local dst = Content.book_meta_dir(self.settings, book_id)
-        if src ~= dst and path_under_root(src, old_dir) then
+        local dst = Content.book_cache_dir(self.settings, book_id)
+        if src ~= dst then
             local attr = lfs.attributes(src)
             if attr and attr.mode == "directory" then
                 table.insert(movable, { book_id = book_id, src = src, dst = dst })
@@ -265,24 +99,24 @@ function M:offerMoveMetaToNewDir(old_dir, new_dir)
         end
     end
     if #movable == 0 then
-        self:showInfo(T(_("Metadata directory set to:\n%1"), new_dir))
+        self:offerScanNewDir(new_dir, T(_("Download directory set to:\n%1"), new_dir))
         return
     end
     UIManager:show(ConfirmBox:new{
-        text = T(_("Metadata directory changed. Move %1 book metadata folder(s) to the new location?"), tostring(#movable)),
+        text = T(_("Download directory changed. Move %1 cached book(s) to the new location?"), tostring(#movable)),
         ok_text = _("Move"),
         ok_callback = function()
-            self:moveMetaDirsToNewDir(movable, new_dir)
+            self:moveBooksToNewDir(movable, new_dir)
         end,
         cancel_text = _("Keep"),
         cancel_callback = function()
-            self:showInfo(T(_("Metadata directory set to:\n%1\nExisting metadata stays in the old location."), new_dir))
+            self:offerScanNewDir(new_dir, T(_("Download directory set to:\n%1\nExisting downloads stay in the old location."), new_dir))
         end,
     })
 end
 
-function M:moveMetaDirsToNewDir(movable, new_dir)
-    self:showBusy(_("Moving book metadata..."))
+function M:moveBooksToNewDir(movable, new_dir)
+    self:showBusy(_("Moving cached books..."))
     UIManager:scheduleIn(0.1, function()
         local books = self.settings:get("books", {})
         local moved, skipped, failed = 0, 0, 0
@@ -292,28 +126,36 @@ function M:moveMetaDirsToNewDir(movable, new_dir)
                 local book = books[m.book_id]
                 if book then
                     book.cache_dir = m.dst
+                    book.cached_file = self:remapCachedPath(book.cached_file, m.dst)
+                    if type(book.cached_chapters) == "table" then
+                        for uid, path in pairs(book.cached_chapters) do
+                            book.cached_chapters[uid] = self:remapCachedPath(path, m.dst)
+                        end
+                    end
                 end
                 moved = moved + 1
             elseif reason == "target_exists" then
                 skipped = skipped + 1
-                logger.warn(LOG_MODULE, "skip meta move, target exists:", m.dst)
+                logger.warn(LOG_MODULE, "skip move, target exists:", m.dst)
             else
                 failed = failed + 1
-                logger.err(LOG_MODULE, "move book meta failed:", m.src, "->", m.dst)
+                logger.err(LOG_MODULE, "move book cache failed:", m.src, "->", m.dst)
             end
         end
         self.settings:set("books", books)
         self.settings:flush()
         self:closeBusy()
+        local message
         if skipped == 0 and failed == 0 then
-            self:showInfo(T(_("Moved %1 metadata folder(s) to:\n%2"), tostring(moved), new_dir))
+            message = T(_("Moved %1 book(s) to:\n%2"), tostring(moved), new_dir)
         else
-            self:showInfo(T(_("Moved %1 metadata folder(s). %2 skipped (target already exists), %3 failed. These stay in the old location."), tostring(moved), tostring(skipped), tostring(failed)))
+            message = T(_("Moved %1 book(s). %2 skipped (target already exists), %3 failed. These stay in the old location."), tostring(moved), tostring(skipped), tostring(failed))
         end
+        self:offerScanNewDir(new_dir, message)
     end)
 end
 
--- Move one sidecar directory to dst. Uses `mv`, which (unlike os.rename) handles
+-- Move one book directory to dst. Uses `mv`, which (unlike os.rename) handles
 -- moves across filesystems, e.g. internal storage to an SD card. Returns
 -- true on success, or false plus a reason ("target_exists" / "move_failed").
 function M:moveBookDir(src, dst)
@@ -336,6 +178,19 @@ function M:moveBookDir(src, dst)
         return true
     end
     return false, "move_failed"
+end
+
+-- Rewrite a stored absolute file path to sit under the new book directory,
+-- keeping the original filename.
+function M:remapCachedPath(path, dst)
+    if type(path) ~= "string" then
+        return path
+    end
+    local name = path:match("[^/]+$")
+    if not name then
+        return path
+    end
+    return dst .. "/" .. name
 end
 
 local SHELF_SORT_OPTIONS = {
@@ -552,49 +407,12 @@ function M:showCacheManagement()
         return size, file_count
     end
 
-    local function file_size(path)
-        if type(path) ~= "string" or path == "" then
-            return 0
-        end
-        local attr = lfs.attributes(path)
-        if attr and attr.mode == "file" then
-            return attr.size or 0
-        end
-        return 0
-    end
-
-    local function add_cache_entry(book_id, book)
-        local book_dir = Content.book_resolved_dir(self.settings, book_id, book)
-        local key = book_dir or book_id
-        if seen_dirs[key] then
+    local function add_cache_entry(book_id, title, book_dir)
+        if seen_dirs[book_dir] then
             return
         end
-        seen_dirs[key] = true
+        seen_dirs[book_dir] = true
         local size, file_count = directory_stats(book_dir)
-        -- Flat EPUB/chapter files live outside the sidecar directory.
-        local content_paths = {}
-        if type(book) == "table" then
-            if type(book.cached_file) == "string" then
-                content_paths[book.cached_file] = true
-            end
-            if type(book.cached_chapters) == "table" then
-                for _uid, chapter_path in pairs(book.cached_chapters) do
-                    if type(chapter_path) == "string" then
-                        content_paths[chapter_path] = true
-                    end
-                end
-            end
-        end
-        local meta_norm = type(book_dir) == "string" and book_dir:gsub("/+$", "") or nil
-        for path in pairs(content_paths) do
-            if not (meta_norm and (path == meta_norm or path:sub(1, #meta_norm + 1) == meta_norm .. "/")) then
-                local sz = file_size(path)
-                if sz > 0 or file_exists(path) then
-                    size = size + sz
-                    file_count = file_count + 1
-                end
-            end
-        end
         if file_count == 0 then
             return
         end
@@ -605,7 +423,7 @@ function M:showCacheManagement()
         end
         table.insert(entries, {
             book_id = book_id,
-            title = (book and book.title) or book_id,
+            title = title or book_id,
             size = size,
             file_count = file_count,
             is_mp = is_mp,
@@ -613,10 +431,10 @@ function M:showCacheManagement()
     end
 
     -- Only list plugin-owned entries tracked in the books table. Scanning the
-    -- filesystem would list unrelated files when the book directory is a user
-    -- library, and deleting one would remove non-WeRead content.
+    -- filesystem would list unrelated subfolders when cache_dir is a user-selected
+    -- library directory, and deleting one would rm -rf a non-WeRead folder.
     for book_id, book in pairs(books) do
-        add_cache_entry(book_id, book)
+        add_cache_entry(book_id, book.title, Content.book_resolved_dir(self.settings, book_id, book))
     end
 
     table.sort(entries, function(a, b)
@@ -745,9 +563,6 @@ function M:confirmScanLocalCache()
             return
         end
         local added, updated = self:scanLocalCache(self.settings.cache_dir, allowed)
-        local added_meta, updated_meta = self:scanLocalCache(self.settings.meta_dir, allowed)
-        added = added + added_meta
-        updated = updated + updated_meta
         self:closeBusy()
         self:refreshCacheManagement(T(_("Scan complete. %1 added, %2 updated."),
             tostring(added), tostring(updated)))
@@ -814,7 +629,8 @@ end
 
 function M:clearBookCache(book_id)
     local books = self.settings:get("books", {})
-    Content.remove_book_files(self.settings, book_id, books[book_id])
+    local cache_dir = Content.book_resolved_dir(self.settings, book_id, books[book_id])
+    os.execute("rm -rf " .. string.format("%q", cache_dir))
     if books[book_id] then
         books[book_id] = nil
         self.settings:set("books", books)
@@ -824,12 +640,13 @@ function M:clearBookCache(book_id)
 end
 
 function M:clearAllMPCache()
-    -- Delete each MP book's sidecar/content files rather than scanning only the
-    -- current roots, and only touch plugin-owned entries tracked in books.
+    -- Delete each MP book's real directory (which may sit under an old download
+    -- root) rather than scanning only the current cache_dir, and only touch
+    -- plugin-owned entries tracked in the books table.
     local books = self.settings:get("books", {})
     for book_id, book in pairs(books) do
         if WeRead.is_mp_book(book_id) then
-            Content.remove_book_files(self.settings, book_id, book)
+            os.execute("rm -rf " .. string.format("%q", Content.book_resolved_dir(self.settings, book_id, book)))
             books[book_id] = nil
         end
     end
@@ -841,7 +658,7 @@ end
 function M:clearAllCache()
     local books = self.settings:get("books", {})
     for book_id, book in pairs(books) do
-        Content.remove_book_files(self.settings, book_id, book)
+        os.execute("rm -rf " .. string.format("%q", Content.book_resolved_dir(self.settings, book_id, book)))
     end
     self.settings:set("books", {})
     self.settings:flush()

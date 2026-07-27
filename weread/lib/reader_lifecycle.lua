@@ -152,23 +152,11 @@ function M:detectWeReadBook()
         end
     end
 
-    -- Legacy nested layout only: <download>/<book_id>/file.epub
-    -- Flat library files are matched above via cached_file equality.
+    -- Require a path boundary after the cache directory.
     local prefix = self.settings.cache_dir:gsub("/+$", "") .. "/"
     if file:sub(1, #prefix) == prefix then
         local rest = file:sub(#prefix + 1)
-        local nested_id = rest:match("^([^/]+)/")
-        if nested_id then
-            return nested_id
-        end
-    end
-    local meta_root = self.settings.meta_dir
-    if type(meta_root) == "string" and meta_root ~= "" then
-        local meta_prefix = meta_root:gsub("/+$", "") .. "/"
-        if file:sub(1, #meta_prefix) == meta_prefix then
-            local rest = file:sub(#meta_prefix + 1)
-            return rest:match("^([^/]+)")
-        end
+        return rest:match("^([^/]+)")
     end
     return nil
 end

@@ -185,20 +185,11 @@ function M:getSettingsMenuItems()
                     },
                     {
                         text_func = function()
-                            return T(_("Book directory: %1"), BD.dirpath(self.settings:get_download_dir()))
+                            return T(_("Download directory: %1"), BD.dirpath(self.settings:get_download_dir()))
                         end,
                         keep_menu_open = true,
-                        callback = self:safeCallback(_("Book directory"), function(touchmenu_instance)
+                        callback = self:safeCallback(_("Download directory"), function(touchmenu_instance)
                             self:showDownloadDirPicker(touchmenu_instance)
-                        end),
-                    },
-                    {
-                        text_func = function()
-                            return T(_("Metadata directory: %1"), BD.dirpath(self.settings:get_meta_dir()))
-                        end,
-                        keep_menu_open = true,
-                        callback = self:safeCallback(_("Metadata directory"), function(touchmenu_instance)
-                            self:showMetaDirPicker(touchmenu_instance)
                         end),
                     },
                 }
