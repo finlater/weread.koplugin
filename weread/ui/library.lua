@@ -104,6 +104,13 @@ function M:showShelfSyncFailure(err)
 end
 
 function M:refreshShelf()
+    -- Check connectivity before tearing down the shelf menus: runOnlineTask
+    -- would bail out on its own offline check and leave the user with no
+    -- shelf UI at all.
+    if not self:isNetworkOnline() then
+        self:showOffline(_("Bookshelf"))
+        return
+    end
     if self.shelf_menu then
         UIManager:close(self.shelf_menu)
         self.shelf_menu = nil

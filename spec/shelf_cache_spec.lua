@@ -13,6 +13,7 @@ end
 -- survives a reopen, like the real file-backed implementation.
 local files = {}
 local broken_paths = {}
+local readonly_paths = {}
 
 local Store = {}
 Store.__index = Store
@@ -27,6 +28,9 @@ function Store:saveSetting(key, value)
 end
 
 function Store:flush()
+    if readonly_paths[self.path] then
+        error("write failed: " .. self.path)
+    end
     files[self.path] = self.data
 end
 
@@ -96,6 +100,14 @@ expect(ShelfCache.load(fake_settings("/other", "vid-1")) == nil,
 -- clear() drops the cache.
 ShelfCache.clear(settings)
 expect(ShelfCache.load(settings) == nil, "load after clear must return nil")
+
+-- A store that fails to write must degrade silently: the caller holds a
+-- freshly fetched shelf and must still be able to present it.
+readonly_paths["/readonly/shelf_cache.lua"] = true
+local readonly = fake_settings("/readonly", "vid-1")
+local save_ok, save_result = pcall(ShelfCache.save, readonly, books, 1)
+expect(save_ok, "save on an unwritable store must not raise")
+expect(save_result == false, "failed save must report false")
 
 -- A store that fails to open must degrade to "no cache", not raise.
 broken_paths["/broken/shelf_cache.lua"] = true

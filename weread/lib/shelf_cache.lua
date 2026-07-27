@@ -44,18 +44,23 @@ function ShelfCache.load(settings)
     }
 end
 
+-- Best-effort: a failed write (e.g. full or read-only filesystem) must never
+-- fail the caller, who typically holds a freshly fetched shelf to present.
 function ShelfCache.save(settings, books, synced_at)
     if type(books) ~= "table" then
-        return
+        return false
     end
     local store = open_store(settings)
     if not store then
-        return
+        return false
     end
-    store:saveSetting("books", books)
-    store:saveSetting("synced_at", synced_at)
-    store:saveSetting("user_vid", account_vid(settings))
-    store:flush()
+    local ok = pcall(function()
+        store:saveSetting("books", books)
+        store:saveSetting("synced_at", synced_at)
+        store:saveSetting("user_vid", account_vid(settings))
+        store:flush()
+    end)
+    return ok
 end
 
 function ShelfCache.clear(settings)
