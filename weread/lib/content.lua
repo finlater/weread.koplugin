@@ -45,43 +45,139 @@ local function basename_safe(value)
     return value
 end
 
+local function filename_safe(value)
+    value = tostring(value or ""):gsub("[%z%c/\\:%*%?\"<>|]", "_")
+    value = value:gsub("^%s+", ""):gsub("%s+$", "")
+    value = value:gsub("%s+", " ")
+    if value == "" then
+        value = "weread"
+    end
+    return value
+end
+
 -- Directory name a book is stored under (sanitized book id). Exposed so the
 -- local-cache scanner can match on-disk directory names against shelf book ids.
 function Content.book_dir_name(book_id)
     return basename_safe(book_id)
 end
 
-function Content.book_cache_dir(settings, book_id)
-    return settings.cache_dir .. "/" .. Content.book_dir_name(book_id)
+-- Flat library root where EPUB content files are written (no per-book folder).
+function Content.book_content_dir(settings)
+    return settings.cache_dir
 end
 
--- Resolve where a book's files actually live. The current settings.cache_dir may
--- differ from where a book was downloaded (the user changed it since), so prefer
--- concrete evidence of the real location: an explicit book.cache_dir (set when any
--- file — chapter or MP article — is written), then the directory of a stored
--- cached_file/chapter path, and only as a last resort the path recomputed under
--- the current root. This keeps deletion, stats and moves on the real files instead
--- of orphaning them. MP article-only books have no cached_file, so book.cache_dir
--- is the only thing that pins them down.
+-- Per-book sidecar root: thoughts.db, catalog.json, metadata.json, MP html, etc.
+function Content.book_meta_dir(settings, book_id)
+    local root = settings.meta_dir
+    if type(root) ~= "string" or root == "" then
+        root = (settings.data_dir or settings.cache_dir) .. "/meta"
+    end
+    return root .. "/" .. Content.book_dir_name(book_id)
+end
+
+-- Compatibility alias: "cache dir" now means the plugin-owned sidecar directory,
+-- not the flat EPUB library root.
+function Content.book_cache_dir(settings, book_id)
+    return Content.book_meta_dir(settings, book_id)
+end
+
+local function path_dirname(path)
+    if type(path) == "string" then
+        return path:match("^(.*)/[^/]+$")
+    end
+end
+
+local function looks_like_book_dir(dir, book_id)
+    if type(dir) ~= "string" or dir == "" then
+        return false
+    end
+    return dir:match("([^/]+)$") == Content.book_dir_name(book_id)
+end
+
+-- Resolve the book's sidecar directory (thoughts/catalog/metadata/MP articles).
+-- Prefer an explicit book.cache_dir. For legacy combined layouts (EPUB lived
+-- inside <download>/<book_id>/), fall back to the parent of cached_file only when
+-- that parent is named after the book id. Never treat the flat library root as a
+-- per-book directory — that would put thoughts.db next to every EPUB.
 function Content.book_resolved_dir(settings, book_id, book)
     if book and type(book.cache_dir) == "string" and book.cache_dir ~= "" then
         return book.cache_dir
     end
-    local function dirname(path)
-        if type(path) == "string" then
-            return path:match("^(.*)/[^/]+$")
-        end
+    local dir = book and path_dirname(book.cached_file)
+    if looks_like_book_dir(dir, book_id) then
+        return dir
     end
-    local dir = book and dirname(book.cached_file)
-    if not dir and book and type(book.cached_chapters) == "table" then
+    if book and type(book.cached_chapters) == "table" then
         for _i, chapter_path in pairs(book.cached_chapters) do
-            dir = dirname(chapter_path)
-            if dir then
-                break
+            dir = path_dirname(chapter_path)
+            if looks_like_book_dir(dir, book_id) then
+                return dir
             end
         end
     end
-    return dir or Content.book_cache_dir(settings, book_id)
+    return Content.book_meta_dir(settings, book_id)
+end
+
+-- Choose a flat EPUB path under the library root. Prefer a readable title-based
+-- name; if that file already exists and is not this book's current cached_file,
+-- disambiguate with the book id so two same-titled books never clobber each other.
+function Content.book_content_epub_path(settings, book, suffix)
+    local content_dir = Content.book_content_dir(settings)
+    local book_id = book and (book.book_id or book.bookId) or "weread"
+    local book_title = (book and book.title) or "WeRead"
+    local label = book_title
+    if suffix and suffix ~= "" and suffix ~= "book" then
+        label = book_title .. " - " .. suffix
+    end
+    local preferred_name = filename_safe(label) .. ".epub"
+    local preferred = content_dir .. "/" .. preferred_name
+    local current = book and book.cached_file
+    if type(current) == "string" and current == preferred then
+        return preferred
+    end
+    local existing = io.open(preferred, "rb")
+    if existing then
+        existing:close()
+        if type(current) ~= "string" or current ~= preferred then
+            return content_dir .. "/" .. filename_safe(label .. " [" .. tostring(book_id) .. "]") .. ".epub"
+        end
+    end
+    return preferred
+end
+
+-- Delete plugin-owned files for one book: sidecar directory plus any flat content
+-- files recorded on the book. Never rm -rf the library/meta roots themselves.
+function Content.remove_book_files(settings, book_id, book)
+    local meta_dir = Content.book_resolved_dir(settings, book_id, book)
+    local download_root = type(settings.cache_dir) == "string" and settings.cache_dir:gsub("/+$", "") or nil
+    local meta_root = type(settings.meta_dir) == "string" and settings.meta_dir:gsub("/+$", "") or nil
+    local meta_norm = type(meta_dir) == "string" and meta_dir:gsub("/+$", "") or nil
+
+    if meta_norm and meta_norm ~= "" and meta_norm ~= download_root and meta_norm ~= meta_root then
+        os.execute("rm -rf " .. string.format("%q", meta_norm))
+    end
+
+    local function maybe_remove_file(path)
+        if type(path) ~= "string" or path == "" then
+            return
+        end
+        if meta_norm and (path == meta_norm or path:sub(1, #meta_norm + 1) == meta_norm .. "/") then
+            return
+        end
+        if path == download_root or path == meta_root then
+            return
+        end
+        os.remove(path)
+    end
+
+    if type(book) == "table" then
+        maybe_remove_file(book.cached_file)
+        if type(book.cached_chapters) == "table" then
+            for _uid, chapter_path in pairs(book.cached_chapters) do
+                maybe_remove_file(chapter_path)
+            end
+        end
+    end
 end
 
 function Content.catalog_cache_path(settings, book)
@@ -158,16 +254,6 @@ function Content.load_catalog_cache(client, settings, book)
     end
     book.chapters = chapters
     return chapters
-end
-
-local function filename_safe(value)
-    value = tostring(value or ""):gsub("[%z%c/\\:%*%?\"<>|]", "_")
-    value = value:gsub("^%s+", ""):gsub("%s+$", "")
-    value = value:gsub("%s+", " ")
-    if value == "" then
-        value = "weread"
-    end
-    return value
 end
 
 local function item_id(prefix, value)
@@ -549,11 +635,13 @@ end
 
 function Content.save_chapter_epub(settings, book, chapter, xhtml, assets, css)
     local book_id = book.book_id or book.bookId
-    local dir = Content.book_resolved_dir(settings, book_id, book)
-    os.execute("mkdir -p " .. string.format("%q", dir))
-    book.cache_dir = dir
-    local book_title = book.title or "WeRead"
-    local path = dir .. "/" .. filename_safe(book_title .. " - " .. (chapter.title or tostring(chapter.chapterUid or "chapter"))) .. ".epub"
+    -- Sidecar dir for catalog/thoughts/metadata; EPUB itself goes flat in the library root.
+    local meta_dir = Content.book_meta_dir(settings, book_id)
+    os.execute("mkdir -p " .. string.format("%q", meta_dir))
+    os.execute("mkdir -p " .. string.format("%q", Content.book_content_dir(settings)))
+    book.cache_dir = meta_dir
+    local chapter_label = chapter.title or tostring(chapter.chapterUid or "chapter")
+    local path = Content.book_content_epub_path(settings, book, chapter_label)
     local title = chapter.title or book.title or "WeRead"
     local author = book.author or "WeRead"
     local manifest_assets = {}
@@ -621,11 +709,13 @@ end
 
 function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix, assets, css, cover_data)
     local book_id = book.book_id or book.bookId
-    local dir = Content.book_resolved_dir(settings, book_id, book)
-    os.execute("mkdir -p " .. string.format("%q", dir))
-    book.cache_dir = dir
+    -- Sidecar dir for catalog/thoughts/metadata; EPUB itself goes flat in the library root.
+    local meta_dir = Content.book_meta_dir(settings, book_id)
+    os.execute("mkdir -p " .. string.format("%q", meta_dir))
+    os.execute("mkdir -p " .. string.format("%q", Content.book_content_dir(settings)))
+    book.cache_dir = meta_dir
     local book_title = book.title or "WeRead"
-    local path = dir .. "/" .. filename_safe(book_title .. " - " .. (suffix or "book")) .. ".epub"
+    local path = Content.book_content_epub_path(settings, book, suffix or "book")
     local author = book.author or "WeRead"
     local manifest_items = {
         [[<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>]],
@@ -1399,7 +1489,8 @@ end
 
 function Content.save_mp_article_html(settings, book, article, body_html)
     local book_id = book.book_id or book.bookId
-    local dir = Content.book_resolved_dir(settings, book_id, book)
+    -- MP articles stay in the sidecar tree so the flat library only holds EPUBs.
+    local dir = Content.book_meta_dir(settings, book_id)
     -- Pin the real directory on the record so later lookups, moves and cleanup
     -- can find these files after the download directory changes.
     book.cache_dir = dir
