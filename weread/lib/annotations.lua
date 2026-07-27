@@ -6,7 +6,7 @@
 --]] --
 
 local logger = require("logger")
-local Footnotes = require("lib.footnotes")
+local Footnotes = require("weread.lib.footnotes")
 
 local Annotations = {}
 
