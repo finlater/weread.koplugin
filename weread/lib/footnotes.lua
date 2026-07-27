@@ -130,7 +130,9 @@ local function is_trivial_footnote_text(text)
     if type(text) ~= "string" or text == "" then
         return true
     end
-    return text:match("^%[%d+%]$") ~= nil or text:match("^%(%d+%)$") ~= nil
+    return text:match("^%[%d+%]$") ~= nil
+        or text:match("^%(%d+%)$") ~= nil
+        or text:match("^（%d+）$") ~= nil
 end
 
 local function cleanup_footnote_text(text)
@@ -138,10 +140,13 @@ local function cleanup_footnote_text(text)
     if text == "" then return "" end
     text = text:gsub("^%[%d+%]%s*", "")
     text = text:gsub("^%(%d+%)%s*", "")
+    text = text:gsub("^（%d+）%s*", "")
+    text = text:gsub("^　+", "")
     text = text:gsub("^%*%s*", "")
     return text:match("^%s*(.-)%s*$") or ""
 end
 
+--- 从脚注链接 inner HTML 提取编号（[N] / (N) / 全角（N），兼容 super/sup/text-sup 等）。
 local function extract_footnote_num(inner)
     if type(inner) ~= "string" then return nil end
     local text = strip_tags(inner)
@@ -150,6 +155,8 @@ local function extract_footnote_num(inner)
         or text:match("%[(%d+)%]")
         or text:match("^%((%d+)%)$")
         or text:match("%((%d+)%)")
+        or text:match("^（(%d+)）$")
+        or text:match("（(%d+)）")
 end
 
 local function link_inner_html(link)
@@ -178,6 +185,42 @@ local function num_from_link_context(link)
         end
     end
     return nil
+end
+
+local function has_footnote_reference_cue(link)
+    if type(link) ~= "string" then return false end
+    return link:find("text-sup", 1, true) ~= nil
+        or link:find("reader_footer_note", 1, true) ~= nil
+        or link:find('class="super"', 1, true) ~= nil
+        or link:find('class="super ', 1, true) ~= nil
+        or link:find("<sup", 1, true) ~= nil
+end
+
+--- 互链定义端：与正文引用成对；优先看引用样式，其次看是否为段首回链。
+-- normalize_markup 可能去掉 text-sup，因此不能仅靠样式判断。
+local function is_reciprocal_definition_link(link, reciprocal, html)
+    if type(link) ~= "string" or type(reciprocal) ~= "table" then
+        return false
+    end
+    local id = link:match('id="([^"]+)"')
+    local target = href_fragment(link:match('href="([^"]+)"') or "")
+    if not id or not target or reciprocal[id] ~= target then
+        return false
+    end
+    if has_footnote_reference_cue(link) then
+        return false
+    end
+    if type(html) == "string" and html ~= "" then
+        local esc = escape_pattern(id)
+        if html:find('<p[^>]*>%s*<a[^>]-id="' .. esc .. '"', 1) then
+            return true
+        end
+        local partner = html:match('<a[^>]-id="' .. escape_pattern(target) .. '"[^>]*>.-</a>')
+        if partner and has_footnote_reference_cue(partner) then
+            return true
+        end
+    end
+    return false
 end
 
 local function footnote_num_from_link(link)
@@ -348,25 +391,35 @@ local function replace_sup_paren_with_span_bracket(html)
     return html:gsub("<sup>%((%d+)%)%</sup>", "<span>[%1]</span>")
 end
 
+--- 将单个脚注 <a> 内部的 (N) / （N） / reader_footer_note 转为 <span>[N]</span>。
 local function normalize_footnote_link_tag(a_tag)
     if type(a_tag) ~= "string" then return a_tag end
+    local open = a_tag:match("^(<a%s+[^>]*>)")
+    if not open then return a_tag end
 
     if a_tag:find("reader_footer_note", 1, true) then
         local num = footnote_num_from_link(a_tag) or "1"
-        local open = a_tag:match("^(<a%s+[^>]*>)")
-        if open then
-            return open .. "<span>[" .. num .. "]</span></a>"
-        end
+        return open .. "<span>[" .. num .. "]</span></a>"
     end
 
-    if a_tag:find("<sup", 1, true) and a_tag:find("%(%d+%)", 1, false) then
-        local num = a_tag:match("<span[^>]*>%((%d+)%)</span>")
+    local num = extract_footnote_num(link_inner_html(a_tag))
+    if num and has_footnote_reference_cue(a_tag) then
+        if a_tag:find("text-sup", 1, true) then
+            return open .. '<span class="text-sup">[' .. num .. "]</span></a>"
+        end
+        if a_tag:find('class="super"', 1, true) or a_tag:find('class="super ', 1, true) then
+            return open .. '<span class="super">[' .. num .. "]</span></a>"
+        end
+        return open .. "<span>[" .. num .. "]</span></a>"
+    end
+
+    if a_tag:find("<sup", 1, true) and (a_tag:find("%(%d+%)", 1, false) or a_tag:find("（%d+）", 1, false)) then
+        local n = a_tag:match("<span[^>]*>%((%d+)%)</span>")
             or a_tag:match("<sup[^>]*>%((%d+)%)</sup>")
-        if num then
-            local open = a_tag:match("^(<a%s+[^>]*>)")
-            if open then
-                return open .. "<span>[" .. num .. "]</span></a>"
-            end
+            or a_tag:match("<span[^>]*>（(%d+)）</span>")
+            or a_tag:match("<sup[^>]*>（(%d+)）</sup>")
+        if n then
+            return open .. "<span>[" .. n .. "]</span></a>"
         end
         return replace_sup_paren_with_span_bracket(a_tag)
     end
@@ -487,7 +540,7 @@ local function extract_fn_content_body(html, anchor)
     body = body:gsub("^(%s*<a[^>]->.-</a>%s*)", function(prefix)
         if stripped then return prefix end
         local label = strip_tags(prefix)
-        if label:match("^%[%d+%]$") or label:match("^%(%d+%)$") then
+        if label:match("^%[%d+%]$") or label:match("^%(%d+%)$") or label:match("^（%d+）$") then
             stripped = true
             return ""
         end
@@ -669,19 +722,24 @@ function Footnotes.collect_footnote_refs(html)
         return refs
     end
 
+    local reciprocal = discover_reciprocal_anchors(html)
     local masked = mask_protected_blocks(html)
 
     for link in masked:gmatch(TEXT_FOOTNOTE_LINK_SCAN_RE) do
-        local parsed = parse_footnote_reference_link(link)
-        if parsed then
-            add_footnote_ref(refs, seen, parsed.anchor, parsed.num, parsed.file, parsed.href)
+        if not is_reciprocal_definition_link(link, reciprocal, html) then
+            local parsed = parse_footnote_reference_link(link)
+            if parsed then
+                add_footnote_ref(refs, seen, parsed.anchor, parsed.num, parsed.file, parsed.href)
+            end
         end
     end
 
     for link in masked:gmatch(LOCAL_HASH_LINK_SCAN_RE) do
-        local parsed = is_publisher_footnote_link(link) and parse_footnote_reference_link(link)
-        if parsed then
-            add_footnote_ref(refs, seen, parsed.anchor, parsed.num, nil, parsed.href)
+        if not is_reciprocal_definition_link(link, reciprocal, html) then
+            local parsed = is_publisher_footnote_link(link) and parse_footnote_reference_link(link)
+            if parsed then
+                add_footnote_ref(refs, seen, parsed.anchor, parsed.num, nil, parsed.href)
+            end
         end
     end
 
@@ -964,15 +1022,18 @@ function Footnotes.convert_footnote_refs(html, anchor_texts, fn_offset)
         )
     end
 
+    local reciprocal = discover_reciprocal_anchors(html)
     local masked, protected_blocks = mask_protected_blocks(html)
     masked = strip_empty_marker_anchors(masked)
     local result = masked:gsub(TEXT_FOOTNOTE_LINK_SCAN_RE, function(link)
+        if is_reciprocal_definition_link(link, reciprocal, html) then return link end
         local parsed = parse_footnote_reference_link(link)
         if not parsed then return link end
         return replace_footnote_link(parsed.anchor, parsed.num)
     end)
     result = result:gsub(LOCAL_HASH_LINK_SCAN_RE, function(link)
         if link:find('epub:type="noteref"', 1, false) or link:find('href="#wt_', 1, false) then return link end
+        if is_reciprocal_definition_link(link, reciprocal, html) then return link end
         local parsed = parse_footnote_reference_link(link)
         if not parsed then return link end
         return replace_footnote_link(parsed.anchor, parsed.num)
@@ -1010,6 +1071,8 @@ function Footnotes.strip_consumed_footnote_blocks(html, cross_notes)
         body = body:gsub("<p[^>]-class=\"fnContent[^\"]*\"[^>]->.-#" .. esc .. "\".-</p>%s*", "")
         body = body:gsub("<p[^>]-class=\"note\"[^>]->.-id=\"" .. esc .. "\".-</p>%s*", "")
         body = body:gsub("<p[^>]-class=\"note\"[^>]->.-#" .. esc .. "\".-</p>%s*", "")
+        body = body:gsub("<p[^>]-class=\"content\"[^>]*>%s*<a[^>]-id=\"" .. esc .. "\"[^>]*>.-</a>.-</p>%s*", "")
+        body = body:gsub("<p[^>]-class=\"content\"[^>]*>%s*<a[^>]-href=\"#" .. esc .. "\"[^>]*>.-</a>.-</p>%s*", "")
         return body
     end
 
