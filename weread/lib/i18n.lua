@@ -277,7 +277,6 @@ local zh = {
     ["Auto: %1"] = "自动：%1",
     ["Auto-associate with WeRead book"] = "自动关联微信读书书籍",
     ["Manually set report book"] = "手动设置上报书籍",
-    ["Current book is not from WeRead, reading time not reported"] = "当前书籍非微信读书书籍，不上报阅读时间",
     ["WeRead: Reached end of chapter"] = "微信读书：已阅读到末尾",
     ["Next chapter"] = "下一章",
     ["Close book"] = "关闭书籍",
