@@ -370,6 +370,14 @@ function M:shelfToolbarItems(with_filters, refresh)
             end),
         })
     end
+    local synced_at = self.shelf_synced_at
+    table.insert(items, {
+        text = _("Refresh bookshelf"),
+        mandatory = (synced_at and synced_at > 0) and os.date("%Y-%m-%d %H:%M", synced_at) or "",
+        callback = self:safeCallback(_("Refresh bookshelf"), function()
+            self:refreshShelf()
+        end),
+    })
     items[#items].separator = true -- divide the toolbar rows from the book list
     return items
 end

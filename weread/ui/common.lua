@@ -7,6 +7,7 @@ local Menu = require("ui/widget/menu")
 local UIManager = require("ui/uimanager")
 
 local PluginUtil = require("weread.lib.plugin_util")
+local ShelfCache = require("weread.lib.shelf_cache")
 local _ = PluginUtil.tr
 local T = PluginUtil.T
 local LOG_MODULE = PluginUtil.LOG_MODULE
@@ -230,6 +231,7 @@ function M:confirmClearAccount()
             self.qr_login:cancel()
             self.read_report:stop("account_cleared")
             self.settings:reset_account()
+            ShelfCache.clear(self.settings)
             self:refreshLoginMenu()
             self:showInfo(_("WeRead account data cleared."))
         end),

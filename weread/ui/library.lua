@@ -12,6 +12,7 @@ local UIManager = require("ui/uimanager")
 local WeRead = require("weread.lib.protocol")
 
 local PluginUtil = require("weread.lib.plugin_util")
+local ShelfCache = require("weread.lib.shelf_cache")
 local _ = PluginUtil.tr
 local T = PluginUtil.T
 local LOG_MODULE = PluginUtil.LOG_MODULE
@@ -21,10 +22,22 @@ local file_exists = PluginUtil.file_exists
 
 local M = {}
 
-function M:showBookshelf()
+function M:showBookshelf(force_sync)
     if not self:requireLogin(true, true) then
         return
     end
+    if not force_sync then
+        local cached = ShelfCache.load(self.settings)
+        if cached then
+            self:applyShelfBooks(cached.books, cached.synced_at)
+            self:presentShelf()
+            return
+        end
+    end
+    self:syncBookshelf()
+end
+
+function M:syncBookshelf()
     self:showBusy(_("Loading bookshelf..."))
     self:runOnlineTask(_("Bookshelf"), function()
         local ok, result = pcall(function()
@@ -33,29 +46,77 @@ function M:showBookshelf()
         if not ok then
             self:closeBusy()
             logger.err(LOG_MODULE, "load bookshelf failed:", log_error(result))
-            self:showInfo(T(_("Load bookshelf failed:\n%1"), display_error(result)))
+            self:showShelfSyncFailure(result)
             return
         end
         local all_books = result.books or {}
-        local shelf = self.settings:get("shelf")
-        self.shelf_filters = { reading = shelf.filter_reading, download = shelf.filter_download }
-        self.shelf_regular = {}
-        self.shelf_mp = {}
-        for _i, book in ipairs(all_books) do
-            if WeRead.is_mp_book(book.bookId) then
-                table.insert(self.shelf_mp, book)
-            else
-                table.insert(self.shelf_regular, book)
-            end
-        end
-        self.shelf_books = self.shelf_regular
+        local synced_at = os.time()
+        ShelfCache.save(self.settings, all_books, synced_at)
+        self:applyShelfBooks(all_books, synced_at)
         self:closeBusy()
-        if #self.shelf_mp > 0 then
-            self:showShelfTabs()
-        else
-            self:showShelfPage()
-        end
+        self:presentShelf()
     end)
+end
+
+function M:applyShelfBooks(all_books, synced_at)
+    local shelf = self.settings:get("shelf")
+    self.shelf_filters = { reading = shelf.filter_reading, download = shelf.filter_download }
+    self.shelf_regular = {}
+    self.shelf_mp = {}
+    for _i, book in ipairs(all_books) do
+        if WeRead.is_mp_book(book.bookId) then
+            table.insert(self.shelf_mp, book)
+        else
+            table.insert(self.shelf_regular, book)
+        end
+    end
+    self.shelf_books = self.shelf_regular
+    self.shelf_synced_at = synced_at
+end
+
+function M:presentShelf()
+    if #self.shelf_mp > 0 then
+        self:showShelfTabs()
+    else
+        self:showShelfPage()
+    end
+end
+
+function M:showShelfSyncFailure(err)
+    local cached = ShelfCache.load(self.settings)
+    if cached then
+        self:applyShelfBooks(cached.books, cached.synced_at)
+        self:presentShelf()
+        self:showTransientInfo(_("Sync failed; showing the cached bookshelf."), 3)
+        return
+    end
+    if WeRead.is_auth_error(err) then
+        self:showInfo(T(_("Load bookshelf failed:\n%1"), display_error(err)))
+        return
+    end
+    UIManager:show(ConfirmBox:new{
+        text = T(_("Load bookshelf failed:\n%1\n\nYour login looks valid, so this may be a temporary WeRead server issue. You can still find and read books via search."), display_error(err)),
+        ok_text = _("Search"),
+        ok_callback = self:safeCallback(_("Search"), function()
+            self:showSearch()
+        end),
+    })
+end
+
+function M:refreshShelf()
+    if self.shelf_menu then
+        UIManager:close(self.shelf_menu)
+        self.shelf_menu = nil
+    end
+    if self.shelf_mp_menu then
+        UIManager:close(self.shelf_mp_menu)
+        self.shelf_mp_menu = nil
+    end
+    if self.shelf_tabs_menu then
+        UIManager:close(self.shelf_tabs_menu)
+        self.shelf_tabs_menu = nil
+    end
+    self:showBookshelf(true)
 end
 
 local function sortBooks(books, sort_order)
@@ -426,7 +487,7 @@ function M:showShelfTabs()
             end),
         },
     }
-    self:showList(_("WeRead Bookshelf"), items, _("Your WeRead shelf is empty."))
+    self.shelf_tabs_menu = self:showList(_("WeRead Bookshelf"), items, _("Your WeRead shelf is empty."))
 end
 
 function M:showMPShelfPage()
@@ -452,6 +513,7 @@ function M:showMPShelfPage()
         return items
     end
     menu = self:showList(_("Public Accounts"), buildItems(), _("No items."))
+    self.shelf_mp_menu = menu
 end
 
 function M:showMPAccount(book)

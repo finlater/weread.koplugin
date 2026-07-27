@@ -278,6 +278,18 @@ function WeRead.mp_reader_url(book_id)
     return "https://weread.qq.com/web/mp/reader/" .. WeRead.e(book_id)
 end
 
+--- Classify an error produced by client.lua's http_error as a credential
+-- problem (re-login can help) vs. anything else (transient or server-side,
+-- where re-login is a dead end). Matches the gateway's observed auth
+-- signatures only: HTTP 401 or errcode -2010 ("user does not exist").
+function WeRead.is_auth_error(err)
+    local text = tostring(err or "")
+    if text:find("HTTP 401", 1, true) then
+        return true
+    end
+    return text:match("error_code=%-2010%f[%D]") ~= nil
+end
+
 --- Upgrade WeRead CDN cover URLs to the higher-resolution t9 token.
 function WeRead.normalize_cover_url(url)
     if type(url) ~= "string" or url == "" then
