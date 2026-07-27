@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "_meta.lua"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional tag override (e.g. v0.5.1). Leave empty to read _meta.lua."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            RAW="${{ github.event.inputs.tag }}"
+          else
+            RAW="$(sed -nE 's/.*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' _meta.lua | head -n1)"
+          fi
+          RAW="${RAW#v}"
+          if [[ ! "$RAW" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
+            echo "Invalid version: $RAW" >&2
+            exit 1
+          fi
+          TAG="v${RAW}"
+          echo "version=$RAW" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if tag already exists
+        id: existing
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.version.outputs.tag }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${TAG} already exists, skipping release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build plugin package
+        if: steps.existing.outputs.exists != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          STAGE="weread.koplugin"
+          rm -rf build "$STAGE" "weread.koplugin-v${VERSION}.zip"
+          mkdir -p build
+          rsync -a \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            --exclude 'build/' \
+            --exclude 'spec/' \
+            --exclude 'scripts/' \
+            --exclude 'docs/' \
+            --exclude 'CLAUDE.md' \
+            --exclude 'CONTRIBUTING.md' \
+            --exclude '.gitignore' \
+            --exclude '*.zip' \
+            ./ "build/${STAGE}/"
+          (
+            cd build
+            zip -r "../weread.koplugin-v${VERSION}.zip" "$STAGE"
+          )
+          ls -lh "weread.koplugin-v${VERSION}.zip"
+
+      - name: Create release
+        if: steps.existing.outputs.exists != 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: WeRead KOReader Plugin ${{ steps.version.outputs.tag }}
+          generate_release_notes: true
+          files: weread.koplugin-v${{ steps.version.outputs.version }}.zip
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

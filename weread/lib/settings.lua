@@ -51,6 +51,20 @@ local defaults = {
     advanced = {
         developer_logs = false,
     },
+    update = {
+        -- auto: prefer GitHub release, fall back to branch zipball
+        channel = "auto",
+        branch = "main",
+        -- gh-proxy.com | ghfast.top | runn.i.ng | direct | custom
+        proxy_id = "gh-proxy.com",
+        custom_proxy = "",
+        check_on_start = false,
+        last_check = 0,
+        last_remote_version = "",
+        last_remote_source = "",
+        installed_version = "",
+        installed_source = "",
+    },
     shelf = {
         sort_order = "time_desc",
     },

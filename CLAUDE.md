@@ -32,6 +32,8 @@ weread/lib/reader_state.lua   Web Reader session and position extraction
 weread/lib/settings.lua       Settings persistence via KOReader LuaSettings
 weread/lib/protocol.lua       WeRead protocol utilities (encoding, signing, URL helpers)
 weread/ui/menu.lua            Main menu and settings menu composition
+weread/ui/update.lua          Plugin self-update menu and install UI flow
+weread/lib/updater.lua        GitHub release/branch update client with proxy fallback
 weread/ui/common.lua          Shared dialog, network-task, and account UI helpers
 weread/ui/cache.lua           Cache settings, directory selection, scan, and cleanup flows
 weread/ui/library.lua         Bookshelf, book, chapter, public-account, and search flows

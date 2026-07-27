@@ -61,6 +61,17 @@
 - 书籍元数据、阅读上下文和公众号文章列表分别保存在书籍目录的 `metadata.json`、`reading_state.json` 和 `articles.json`；`weread.lua` 只保留缓存路径索引
 - 每本书的想法按划线范围保存在书籍目录的 `thoughts.db`，点击时只查询当前划线对应的记录
 
+**插件更新**
+
+- 菜单内一键检查/下载/安装更新，无需电脑重新拷贝插件
+- 默认通过 `gh-proxy.com` 加速访问 GitHub（可选 `ghfast.top`、`runn.i.ng` 或直连）
+- 更新通道：
+  - **自动**：优先 GitHub Release，没有正式版时回退到 `main` 分支 zipball
+  - **正式版**：只使用 Release
+  - **开发分支**：跟踪 `main`
+- 可选「启动时检查更新」（默认关闭，且 12 小时内最多检查一次）
+- 用户设置与书籍缓存不在插件目录内，更新不会清掉登录态和已下载内容
+
 ## TODO
 
 - [ ] 按需缓存章节, 支持一次性缓存多个章节
@@ -71,6 +82,16 @@
 ## 安装
 
 > ⚠️ 请使用**较新版本**的 KOReader，过旧的版本可能导致插件无法加载或启动失败（表现为「工具」菜单下找不到「微信读书」）。已知 `2024.11` 会出问题，`2026.3` 可正常使用；建议升级到最新版。详见 [#14](https://github.com/finlater/weread.koplugin/issues/14)。
+
+### 方式一：Release 包（推荐）
+
+1. 打开 [Releases](https://github.com/rollingshmily/weread.koplugin/releases) 下载最新 `weread.koplugin-v*.zip`。
+2. 国内网络可在链接前加代理前缀，例如：
+   - `https://gh-proxy.com/https://github.com/rollingshmily/weread.koplugin/releases/download/v0.5.1/weread.koplugin-v0.5.1.zip`
+   - `https://ghfast.top/https://github.com/rollingshmily/weread.koplugin/releases/download/v0.5.1/weread.koplugin-v0.5.1.zip`
+3. 解压后把 `weread.koplugin/` 目录放到 KOReader 的 `plugins` 目录。
+
+### 方式二：手动复制源码目录
 
 将插件目录复制到 KOReader 的 plugins 目录：
 
@@ -83,6 +104,16 @@ koreader/plugins/weread.koplugin/
 ```
 工具 → 微信读书
 ```
+
+### 后续在线更新
+
+安装完成后，在设备上打开：
+
+```
+工具 → 微信读书 → 插件更新 → 检查更新
+```
+
+默认使用 `gh-proxy.com` 拉取 GitHub 资源。如果某个代理不可用，可在同一菜单切换到 `ghfast.top` / `runn.i.ng` / 直连；检查与下载时也会自动尝试备用代理。
 
 ## 登录与认证
 
@@ -133,6 +164,11 @@ koreader/plugins/weread.koplugin/
 │       ├── 账号状态
 │       ├── 立即续期 Cookie
 │       └── 清除账号数据
+├── 插件更新
+│   ├── 检查更新
+│   ├── 更新通道（自动 / 正式版 / 开发分支）
+│   ├── GitHub 代理（gh-proxy.com / ghfast.top / runn.i.ng / 直连）
+│   └── 启动时检查更新（默认关闭）
 └── 关于
 ```
 

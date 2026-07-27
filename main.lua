@@ -17,10 +17,29 @@ local Settings = require("weread.lib.settings")
 local LOG_MODULE = PluginUtil.LOG_MODULE
 local _ = PluginUtil.tr
 
+local function read_plugin_version()
+    local info = debug.getinfo(1, "S")
+    local source = info and info.source or ""
+    local dir = source:match("^@(.*/)[^/]+$")
+    if dir then
+        local file = io.open(dir .. "_meta.lua", "rb")
+        if file then
+            local body = file:read("*a") or ""
+            file:close()
+            local version = body:match('[Vv]ersion%s*=%s*"([^"]+)"')
+                or body:match("[Vv]ersion%s*=%s*'([^']+)'")
+            if version and version ~= "" then
+                return version
+            end
+        end
+    end
+    return "0.5.0"
+end
+
 local WeReadPlugin = WidgetContainer:extend{
     name = "weread",
     is_doc_only = false,
-    version = "0.1.1",
+    version = read_plugin_version(),
 }
 
 function WeReadPlugin:init()
@@ -133,11 +152,15 @@ function WeReadPlugin:init()
     end
     self._reader_session_gen = 0
     logger.info(LOG_MODULE, "initialized:", "version=", self.version)
+    if self.maybeCheckPluginUpdateOnStart then
+        self:maybeCheckPluginUpdateOnStart()
+    end
 end
 
 Mixin.apply(WeReadPlugin, {
     (require("weread.ui.common")),
     (require("weread.ui.menu")),
+    (require("weread.ui.update")),
     (require("weread.ui.cache")),
     (require("weread.ui.read_report")),
     (require("weread.ui.library")),
