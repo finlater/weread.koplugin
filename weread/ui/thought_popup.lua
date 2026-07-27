@@ -15,7 +15,7 @@ local Font = require("ui/font")
 local TextBoxWidget = require("ui/widget/textboxwidget")
 local TextViewer = require("ui/widget/textviewer")
 local UIManager = require("ui/uimanager")
-local logger = require("logger")
+local logger = require("weread.lib.logger")
 
 local Annotations = require("weread.lib.annotations")
 local I18n = require("weread.lib.i18n")
@@ -105,9 +105,9 @@ function NativeThoughtPopup:_textWidgets()
 end
 
 function NativeThoughtPopup:_measureDisplayPages()
-    local _scroll_widget, box_widget = self:_textWidgets()
+    local _, box_widget = self:_textWidgets()
     if not box_widget then
-        logger.warn("weread: thought popup text widget unavailable, keeping one item per page")
+        logger.warn("thought popup text widget unavailable, keeping one item per page")
         return
     end
 
@@ -136,7 +136,7 @@ function NativeThoughtPopup:_measureDisplayPages()
     if ok and type(pages) == "table" and #pages > 0 then
         self.display_pages = pages
     else
-        logger.warn("weread: thought popup measurement failed:", tostring(pages))
+        logger.warn("thought popup measurement failed:", tostring(pages))
     end
 end
 

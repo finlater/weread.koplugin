@@ -2,7 +2,7 @@ local Cookie = require("weread.lib.cookie")
 local Device = require("device")
 local I18n = require("weread.lib.i18n")
 local InputDialog = require("ui/widget/inputdialog")
-local logger = require("logger")
+local logger = require("weread.lib.logger").scoped("QRLogin")
 local QRMessage = require("ui/widget/qrmessage")
 local T = require("ffi/util").template
 local UIManager = require("ui/uimanager")
@@ -12,7 +12,6 @@ local function _(text)
     return I18n.tr(text)
 end
 
-local LOG_MODULE = "[WeRead][QRLogin]"
 local BASE_URL = "https://weread.qq.com"
 local SKILLS_PAGE_URL = BASE_URL .. "/r/weread-skills"
 local LOGIN_UID_URL = BASE_URL .. "/api/auth/getLoginUid"
@@ -107,7 +106,6 @@ function QRLogin:_request_json(url, opts, stage)
         local vid_header = header_value(request_headers, "x-vid")
         local skey_header = header_value(request_headers, "x-skey")
         logger.warn(
-            LOG_MODULE,
             stage, "rejected:", "HTTP", tostring(code),
             "cookie_bytes=", tostring(#tostring(cookie_header or "")),
             "x_vid_bytes=", tostring(#tostring(vid_header or "")),
@@ -115,7 +113,12 @@ function QRLogin:_request_json(url, opts, stage)
         )
         error(stage .. " failed: HTTP " .. tostring(code))
     end
-    local data = self.client:json_decode(text)
+    local data = self.client:decode_http_json(text, {
+        method = opts.method or "GET",
+        url = url,
+        code = code,
+        headers = headers,
+    })
     if type(data) ~= "table" then
         error("WeRead returned an invalid JSON response")
     end
@@ -219,7 +222,7 @@ function QRLogin:_authenticated_get(url, cookies, web_login_vid, access_token, s
         if not retryable or attempt == 3 then
             error(data)
         end
-        logger.warn(LOG_MODULE, stage, "temporarily unauthorized; retrying:", tostring(attempt))
+        logger.warn(stage, "temporarily unauthorized; retrying:", tostring(attempt))
         sleep_seconds(0.5)
     end
 end
@@ -336,7 +339,7 @@ function QRLogin:start()
             return
         end
         if not ok then
-            logger.err(LOG_MODULE, "get login UID failed:", error_text(uid_or_error))
+            logger.err("get login UID failed:", error_text(uid_or_error))
             self.host:showInfo(T(_("QR login failed:\n%1"), error_text(uid_or_error)))
             return
         end
@@ -408,7 +411,7 @@ function QRLogin:_poll(uid, generation, otp)
         end
         self:_close_qr_dialog(true)
         self:cancel()
-        logger.err(LOG_MODULE, "login polling failed:", error_text(result))
+            logger.err("login polling failed:", error_text(result))
         self.host:showInfo(T(_("QR login failed:\n%1"), error_text(result)))
         return
     end
@@ -491,7 +494,7 @@ function QRLogin:_show_otp(uid, generation, error_message)
                                 if is_timeout_error(result) then
                                     self:_show_otp(uid, generation, _("Verification timed out. Please try again."))
                                 else
-                                    logger.err(LOG_MODULE, "OTP verification failed:", error_text(result))
+                                    logger.err("OTP verification failed:", error_text(result))
                                     self:cancel()
                                     self.host:showInfo(T(_("QR login failed:\n%1"), error_text(result)))
                                 end
@@ -532,7 +535,7 @@ function QRLogin:_complete(login_result, generation)
             return
         end
         if not ok then
-            logger.err(LOG_MODULE, "complete login failed:", error_text(account_or_error))
+            logger.err("complete login failed:", error_text(account_or_error))
             self:cancel()
             self.host:showInfo(T(_("QR login failed:\n%1"), error_text(account_or_error)))
             return
@@ -542,7 +545,7 @@ function QRLogin:_complete(login_result, generation)
         if type(account_name) ~= "string" or account_name == "" then
             account_name = _("Unknown account")
         end
-        logger.info(LOG_MODULE, "login completed")
+        logger.info("login completed")
         self.host:refreshLoginMenu()
         self.host:showInfo(T(
             _("WeRead login successful.\n\nAccount: %1\nCookie: %2\nOfficial API key: %3"),

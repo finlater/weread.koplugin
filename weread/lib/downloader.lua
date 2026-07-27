@@ -15,7 +15,7 @@ local ConfirmBox = require("ui/widget/confirmbox")
 local Device = require("device")
 local PluginShare = require("pluginshare")
 local UIManager = require("ui/uimanager")
-local logger = require("logger")
+local logger = require("weread.lib.logger")
 local time = require("ui/time")
 local T = require("ffi/util").template
 
@@ -24,8 +24,6 @@ local DownloadDialog = require("weread.ui.download_dialog")
 local I18n = require("weread.lib.i18n")
 local Thoughts = require("weread.lib.thoughts")
 local WeRead = require("weread.lib.protocol")
-
-local LOG_MODULE = "[WeRead]"
 
 local function _(text)
     return I18n.tr(text)
@@ -118,7 +116,7 @@ function Downloader:_notifyCompletion(dl, ok, value)
     if type(dl.on_complete) ~= "function" then return end
     local called, err = pcall(dl.on_complete, ok == true, value)
     if not called then
-        logger.warn(LOG_MODULE, "download completion callback failed:",
+        logger.warn("download completion callback failed:",
             log_error(err))
     end
 end
@@ -134,7 +132,7 @@ function Downloader:_scheduleGuarded(dl, step_fn, delay)
                 dl.progress_dialog:close()
                 dl.progress_dialog = nil
             end
-            logger.err(LOG_MODULE, "download step failed:", log_error(err))
+            logger.err("download step failed:", log_error(err))
             self:_notifyCompletion(dl, false, err)
             self.show_info(T(_("Download failed:\n%1"), display_error(err)))
         end
@@ -156,7 +154,7 @@ function Downloader:start(book, chapters, suffix, options)
             Content.ensure_reader_state(self.client, book)
         end)
         if not ok_init then
-            logger.err(LOG_MODULE, "initialize book download failed:", log_error(err_init))
+            logger.err("initialize book download failed:", log_error(err_init))
             if type(options.on_complete) == "function" then
                 pcall(options.on_complete, false, err_init)
             end
@@ -224,7 +222,7 @@ end
 
 function Downloader:_perf(dl, stage, started, ...)
     local elapsed = tonumber(time.now() - started) / 1000
-    logger.info(LOG_MODULE, "download_perf", "stage=", stage,
+    logger.info("download_perf", "stage=", stage,
         "ms=", string.format("%.1f", elapsed),
         "chapter=", tostring(dl.index) .. "/" .. tostring(dl.total), ...)
 end
@@ -233,7 +231,7 @@ function Downloader:_failChapter(dl, err)
     local chapter = dl.chapters[dl.index]
     local uid = tostring(chapter and chapter.chapterUid or dl.index)
     table.insert(dl.failed, uid)
-    logger.warn(LOG_MODULE, "chapter download failed:",
+    logger.warn("chapter download failed:",
         "index=", tostring(dl.index) .. "/" .. tostring(dl.total),
         "chapter_uid=", uid, "error=", log_error(err))
     dl.current = nil
@@ -358,7 +356,7 @@ function Downloader:_annotationBatch(dl)
             return
         end
         dl.annotation_failed_batches = dl.annotation_failed_batches + 1
-        logger.warn(LOG_MODULE, "thought batch skipped:",
+        logger.warn("thought batch skipped:",
             "batch=", tostring(batch_index) .. "/" .. tostring(batch_total),
             "error=", log_error(err or "unknown"))
     elseif result and type(result.reviews) == "table" then
@@ -385,7 +383,7 @@ function Downloader:_startAnnotations(dl)
     self:_perf(dl, "underlines", started, "ok=", tostring(ok),
         "ranges=", tostring(#(ranges or {})))
     if not ok or type(underlines) ~= "table" then
-        logger.warn(LOG_MODULE, "skip chapter annotations:", log_error(err or "no data"))
+        logger.warn("skip chapter annotations:", log_error(err or "no data"))
         self:_finishChapter(dl)
         return
     end
@@ -418,7 +416,7 @@ function Downloader:_step(dl)
                 dl.progress_dialog = nil
             end
             self:_releaseStandby(dl)
-            logger.err(LOG_MODULE, "book download failed: no chapters downloaded")
+            logger.err("book download failed: no chapters downloaded")
             self:_notifyCompletion(dl, false, "no_chapters_downloaded")
             self.show_info(_("No chapters were downloaded."))
             return
@@ -467,20 +465,19 @@ function Downloader:_step(dl)
         end
         self.refresh_shelf()
         if not ok then
-            logger.err(LOG_MODULE, "save downloaded book failed:", log_error(path))
+            logger.err("save downloaded book failed:", log_error(path))
             self:_notifyCompletion(dl, false, path)
             self.show_info(T(_("Download failed:\n%1"), display_error(path)))
             return
         end
         if #dl.failed > 0 then
             logger.warn(
-                LOG_MODULE,
                 "book download completed with skipped chapters:",
                 "success=", tostring(#dl.selected),
                 "failed=", tostring(#dl.failed)
             )
         else
-            logger.info(LOG_MODULE, "book download completed:", "chapters=", tostring(#dl.selected))
+            logger.info("book download completed:", "chapters=", tostring(#dl.selected))
         end
         local completion_text
         if #dl.failed > 0 then

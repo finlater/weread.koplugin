@@ -1,12 +1,10 @@
 local PositionMapper = require("weread.lib.position_mapper")
 
-local ok_logger, logger = pcall(require, "logger")
-if not ok_logger then logger = nil end
+local logger = require("weread.lib.logger").scoped("ProgressSync")
 
 local ProgressSync = {}
 ProgressSync.__index = ProgressSync
 
-local LOG_MODULE = "[WeRead][ProgressSync]"
 local OPEN_DELAY_SECONDS = 0.6
 local RESUME_RECHECK_SECONDS = 5 * 60
 local BUSY_RETRY_SECONDS = 2
@@ -15,8 +13,8 @@ local SAME_THRESHOLD_PERCENT = 2
 local SOURCE_CONFLICT_THRESHOLD_PERCENT = 2
 
 local function log(level, ...)
-    if logger and type(logger[level]) == "function" then
-        logger[level](LOG_MODULE, ...)
+    if type(logger[level]) == "function" then
+        logger[level](...)
     end
 end
 

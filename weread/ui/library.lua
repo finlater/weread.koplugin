@@ -5,7 +5,7 @@ local ConfirmBox = require("ui/widget/confirmbox")
 local Content = require("weread.lib.content")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
-local logger = require("logger")
+local logger = require("weread.lib.logger")
 local ProgressbarDialog = require("ui/widget/progressbardialog")
 local TextViewer = require("ui/widget/textviewer")
 local UIManager = require("ui/uimanager")
@@ -14,7 +14,6 @@ local WeRead = require("weread.lib.protocol")
 local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
 local T = PluginUtil.T
-local LOG_MODULE = PluginUtil.LOG_MODULE
 local log_error = PluginUtil.log_error
 local display_error = PluginUtil.display_error
 local file_exists = PluginUtil.file_exists
@@ -28,15 +27,21 @@ function M:showBookshelf()
     self:showBusy(_("Loading bookshelf..."))
     self:runOnlineTask(_("Bookshelf"), function()
         local ok, result = pcall(function()
-            return self.client:gateway("/shelf/sync", {})
+            return self.client:get_shelf()
         end)
         if not ok then
             self:closeBusy()
-            logger.err(LOG_MODULE, "load bookshelf failed:", log_error(result))
-            self:showInfo(T(_("Load bookshelf failed:\n%1"), display_error(result)))
+            logger.err("load bookshelf failed:", log_error(result))
+            self:showInfo(T(
+                _("Load bookshelf failed:\n%1\n\nIf other account features still work, use Search to find and download books."),
+                display_error(result)
+            ))
             return
         end
-        local all_books = result.books or {}
+        local all_books = type(result) == "table"
+            and type(result.books) == "table"
+            and result.books
+            or {}
         local shelf = self.settings:get("shelf")
         self.shelf_filters = { reading = shelf.filter_reading, download = shelf.filter_download }
         self.shelf_regular = {}
@@ -145,7 +150,7 @@ function M:refreshShelfCacheIndicators()
     if self.shelf_menu and self._shelf_refresh then
         local ok, err = pcall(self._shelf_refresh)
         if not ok then
-            logger.warn(LOG_MODULE, "refresh shelf cache indicators failed:", log_error(err))
+            logger.warn("refresh shelf cache indicators failed:", log_error(err))
         end
     end
 end
@@ -196,7 +201,7 @@ function M:showBookRecord(book)
         end)
         self:closeBusy()
         if not ok then
-            logger.err(LOG_MODULE, "load book info failed:", log_error(err))
+            logger.err("load book info failed:", log_error(err))
             self:showInfo(T(_("%1 failed:\n%2"), _("Book info"), display_error(err)))
             return
         end
@@ -396,7 +401,7 @@ function M:showBookReviews(book)
             end)
             self:closeBusy()
             if not ok then
-                logger.err(LOG_MODULE, "load book reviews failed:", log_error(result))
+                logger.err("load book reviews failed:", log_error(result))
                 self:showInfo(T(_("%1 failed:\n%2"), _("Book reviews"), display_error(result)))
                 return
             end
@@ -502,7 +507,7 @@ function M:fetchMPArticles(book)
         end
         local ok, result, err_code = pcall(request_articles)
         if ok and not result and (err_code == -2041 or err_code == -2012) then
-            logger.info(LOG_MODULE, "MP credentials rejected; renewing before retry")
+            logger.info("MP credentials rejected; renewing before retry")
             local renew_ok = pcall(function()
                 return self.client:renew_cookie()
             end)
@@ -512,17 +517,17 @@ function M:fetchMPArticles(book)
         end
         self:closeBusy()
         if not ok then
-            logger.err(LOG_MODULE, "load MP articles failed:", log_error(result))
+            logger.err("load MP articles failed:", log_error(result))
             self:showInfo(T(_("Load articles failed:\n%1"), display_error(result)))
             return
         end
         if not result and (err_code == -2041 or err_code == -2012) then
-            logger.warn(LOG_MODULE, "load MP articles rejected, error_code:", tostring(err_code))
+            logger.warn("load MP articles rejected, error_code:", tostring(err_code))
             self:showInfo(_("WeRead could not refresh the public-account credential. Please scan the QR code again."))
             return
         end
         if not result then
-            logger.warn(LOG_MODULE, "load MP articles failed, error_code:", tostring(err_code))
+            logger.warn("load MP articles failed, error_code:", tostring(err_code))
             self:showInfo(T(_("Load articles failed:\n%1"), "errCode " .. tostring(err_code)))
             return
         end
@@ -610,12 +615,11 @@ function M:downloadMPArticleAndRead(book, article)
             self:closeBusy()
         end
         if not ok then
-            logger.err(LOG_MODULE, "download MP article failed:", log_error(path_or_err))
+            logger.err("download MP article failed:", log_error(path_or_err))
             self:showInfo(T(_("Download failed:\n%1"), display_error(path_or_err)))
             return
         end
         logger.info(
-            LOG_MODULE,
             "MP article downloaded:",
             "images=", self.settings:get("cache").download_mp_images and "embedded" or "removed"
         )
@@ -657,14 +661,14 @@ function M:loadChapters(book, callback, force_refresh)
         end)
         self:closeBusy()
         if not ok then
-            logger.err(LOG_MODULE, "load chapters failed:", log_error(chapters_or_err))
+            logger.err("load chapters failed:", log_error(chapters_or_err))
             self:showInfo(T(_("Load chapters failed:\n%1"), display_error(chapters_or_err)))
             return
         end
         local cache_ok, cache_err = Content.save_catalog_cache(
             self.client, self.settings, book, chapters_or_err)
         if not cache_ok then
-            logger.warn(LOG_MODULE, "save chapter catalog cache failed:", log_error(cache_err))
+            logger.warn("save chapter catalog cache failed:", log_error(cache_err))
         end
         local books = self.settings:get("books", {})
         local book_id = book.book_id or book.bookId
@@ -885,7 +889,7 @@ function M:searchWithUI(keyword)
             })
         end)
         if not ok then
-            logger.err(LOG_MODULE, "search failed:", log_error(result))
+            logger.err("search failed:", log_error(result))
             self:showInfo(T(_("Search failed:\n%1"), display_error(result)))
             return
         end

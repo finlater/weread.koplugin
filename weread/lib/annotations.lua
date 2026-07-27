@@ -5,7 +5,7 @@
 划线 range 格式：如 "383-415"，表示 HTML 字符串的 rune 索引（包含所有标签）。
 --]] --
 
-local logger = require("logger")
+local logger = require("weread.lib.logger")
 
 local Annotations = {}
 
@@ -299,7 +299,7 @@ function Annotations.injectUnderlines(html, underlines, thought_reviews, chapter
     local original_html = html
     html = stripLeadingBOM(html)
     if html ~= original_html then
-        logger.info("weread annotations: stripped BOM")
+        logger.info("annotations: stripped BOM")
     end
 
     -- 解析所有 range
@@ -329,7 +329,7 @@ function Annotations.injectUnderlines(html, underlines, thought_reviews, chapter
     local runes = toRunes(html)
     local n = #runes
 
-    logger.info("weread annotations: html runes=", n, "underlines=", #ranges)
+    logger.info("annotations: html runes=", n, "underlines=", #ranges)
 
     -- 预计算所有替换片段
     local replacements = {}
@@ -474,7 +474,7 @@ function Annotations.process(html, chapter_underlines, thought_reviews, book_id)
         end
     end
 
-    logger.info("weread annotations: processing", #underlines, "underlines",
+    logger.info("annotations: processing", #underlines, "underlines",
         thought_map and ("thoughts on " .. #underlines) or "")
 
     local processed = Annotations.injectUnderlines(html, underlines, thought_map,

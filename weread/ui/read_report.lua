@@ -1,5 +1,5 @@
 -- Reading-report settings, target selection, and statistics UI.
-local logger = require("logger")
+local logger = require("weread.lib.logger")
 local Menu = require("ui/widget/menu")
 local ReadStats = require("weread.lib.read_stats")
 local ReadStatsView = require("weread.ui.read_stats_view")
@@ -9,7 +9,6 @@ local WeRead = require("weread.lib.protocol")
 local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
 local T = PluginUtil.T
-local LOG_MODULE = PluginUtil.LOG_MODULE
 local log_error = PluginUtil.log_error
 local display_error = PluginUtil.display_error
 
@@ -146,16 +145,19 @@ function M:showReadReportBookPicker()
     self:showBusy(_("Loading bookshelf..."))
     self:runOnlineTask(_("Bookshelf"), function()
         local ok, result = pcall(function()
-            return self.client:gateway("/shelf/sync", {})
+            return self.client:get_shelf()
         end)
         if not ok then
             self:closeBusy()
-            logger.err(LOG_MODULE, "load report bookshelf failed:", log_error(result))
+            logger.err("load report bookshelf failed:", log_error(result))
             self:showInfo(T(_("Load bookshelf failed:\n%1"), display_error(result)))
             return
         end
         self:closeBusy()
-        local all_books = result.books or {}
+        local all_books = type(result) == "table"
+            and type(result.books) == "table"
+            and result.books
+            or {}
         local items = {}
         for i, book in ipairs(all_books) do
             if not WeRead.is_mp_book(book.bookId) then
@@ -212,7 +214,7 @@ function M:loadReadStats(mode, base_time, old_view)
         end)
         self:closeBusy()
         if not ok then
-            logger.err(LOG_MODULE, "load reading statistics failed:", log_error(data))
+            logger.err("load reading statistics failed:", log_error(data))
             self:showInfo(T(_("%1 failed:\n%2"), _("Reading statistics"), display_error(data)))
             return
         end

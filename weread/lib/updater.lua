@@ -4,13 +4,12 @@
 local DataStorage = require("datastorage")
 local http = require("socket.http")
 local lfs = require("libs/libkoreader-lfs")
-local logger = require("logger")
+local logger = require("weread.lib.logger")
 local ltn12 = require("ltn12")
 local socketutil = require("socketutil")
 local util = require("util")
 
 local PluginUtil = require("weread.lib.plugin_util")
-local LOG_MODULE = PluginUtil.LOG_MODULE
 
 local ok_archiver, Archiver = pcall(require, "ffi/archiver")
 if not ok_archiver then
@@ -516,9 +515,9 @@ function Updater:http_get_with_proxies(raw_url, opts)
         local label = entry.label or entry.id or entry.url or "proxy"
         if not url then
             errors[#errors + 1] = string.format("%s => skip (%s)", label, tostring(wrap_err))
-            logger.warn(LOG_MODULE, "updater GET skip:", label, wrap_err)
+            logger.warn("updater GET skip:", label, wrap_err)
         else
-            logger.info(LOG_MODULE, "updater GET", url)
+            logger.info("updater GET", url)
             local body, err = self:http_get(url, opts)
             if body then
                 return body, nil, {
@@ -529,7 +528,7 @@ function Updater:http_get_with_proxies(raw_url, opts)
                 }
             end
             errors[#errors + 1] = string.format("%s => %s", label, tostring(err))
-            logger.warn(LOG_MODULE, "updater GET failed:", url, err)
+            logger.warn("updater GET failed:", url, err)
         end
     end
     return nil, table.concat(errors, "; ")
@@ -548,9 +547,9 @@ function Updater:download_to_file(raw_url, local_path, opts)
         local label = entry.label or entry.id or entry.url or "proxy"
         if not url then
             errors[#errors + 1] = string.format("%s => skip (%s)", label, tostring(wrap_err))
-            logger.warn(LOG_MODULE, "updater download skip:", label, wrap_err)
+            logger.warn("updater download skip:", label, wrap_err)
         else
-            logger.info(LOG_MODULE, "updater download", url)
+            logger.info("updater download", url)
 
             local file, open_err = io.open(local_path, "wb")
             if not file then
@@ -963,7 +962,7 @@ function Updater:install_archive(zip_path)
         local renamed, rename_err = os.rename(target_dir, backup_dir)
         if not renamed then
             -- Fallback: copy file-by-file backup then wipe target.
-            logger.warn(LOG_MODULE, "updater rename backup failed:", rename_err)
+            logger.warn("updater rename backup failed:", rename_err)
             remove_path(backup_dir)
             ensure_dir(backup_dir)
             local function mirror(src, dest)

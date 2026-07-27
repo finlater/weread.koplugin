@@ -7,7 +7,7 @@ Each pageReview is stored as one row. Tapping an underline performs a single
 indexed lookup by (chapter_uid, range), without decoding JSON or rendering HTML.
 --]]--
 
-local logger = require("logger")
+local logger = require("weread.lib.logger")
 
 local ThoughtDB = {}
 
@@ -42,7 +42,7 @@ function ThoughtDB.open(book_dir)
 
     local SQ3 = getSQ3()
     if not SQ3 then
-        logger.warn("weread: thought_db lua-ljsqlite3 unavailable")
+        logger.warn("thought_db lua-ljsqlite3 unavailable")
         return nil
     end
 
@@ -52,7 +52,7 @@ function ThoughtDB.open(book_dir)
 
     local ok, db = pcall(SQ3.open, db_path)
     if not ok or not db then
-        logger.warn("weread: thought_db open failed:", db_path, db)
+        logger.warn("thought_db open failed:", db_path, db)
         return nil
     end
 
@@ -76,12 +76,12 @@ function ThoughtDB.open(book_dir)
         ]])
     end)
     if not schema_ok then
-        logger.warn("weread: thought_db schema init failed:", db_path, schema_err)
+        logger.warn("thought_db schema init failed:", db_path, schema_err)
         pcall(function() db:close() end)
         return nil
     end
 
-    logger.info("weread: thought_db opened", db_path)
+    logger.info("thought_db opened", db_path)
     return db
 end
 
@@ -184,12 +184,12 @@ function ThoughtDB.putReviews(db, chapter_uid, reviews)
         if transaction_open then
             pcall(function() db:exec("ROLLBACK") end)
         end
-        logger.warn("weread: thought_db chapter write failed:",
+        logger.warn("thought_db chapter write failed:",
             "chapter_uid=", tostring(chapter_uid), "error=", tostring(err))
         return false
     end
 
-    logger.info("weread: thought_db written chapter_uid=", chapter_uid,
+    logger.info("thought_db written chapter_uid=", chapter_uid,
         " ranges=", #reviews)
     return true
 end

@@ -1,4 +1,5 @@
 local ltn12 = require("ltn12")
+local logger = require("weread.lib.logger")
 local socketutil = require("socketutil")
 local http = require("socket.http")
 local Cookie = require("weread.lib.cookie")
@@ -74,9 +75,43 @@ local function deepcopy(value)
     return out
 end
 
+local function table_summary(value)
+    if type(value) ~= "table" then
+        return type(value)
+    end
+    local count = 0
+    for _key in pairs(value) do
+        count = count + 1
+    end
+    return "table(" .. tostring(count) .. ")"
+end
+
+local function log_error(err)
+    local text = tostring(err):gsub("[%c]+", " ")
+    if #text > 500 then
+        return text:sub(1, 500) .. "..."
+    end
+    return text
+end
+
+local function log_response(label, context, text)
+    context = context or {}
+    text = text or ""
+    logger.err(
+        label,
+        "method=", tostring(context.method or "unknown"),
+        "url=", tostring(context.url or "unknown"),
+        "api=", tostring(context.api_name or "unknown"),
+        "status=", tostring(context.code or "unknown"),
+        "content_type=", tostring(header_value(context.headers, "content-type") or "unknown"),
+        "body_bytes=", tostring(#text),
+        "response_body=", text
+    )
+end
+
 local function merge_req_opts(default_opts, user_opts)
     default_opts = default_opts or {}
-    if not user_opts then 
+    if not user_opts then
         return deepcopy(default_opts)
     end
     local result = deepcopy(default_opts)
@@ -93,9 +128,9 @@ local function merge_req_opts(default_opts, user_opts)
                 result.headers[hk] = deepcopy(hv)
             end
         else
-            result[k] = deepcopy(v) 
+            result[k] = deepcopy(v)
         end
-    end 
+    end
     return result
 end
 
@@ -169,6 +204,25 @@ function Client:json_decode(text)
     return json:decode(text)
 end
 
+function Client:decode_http_json(text, context)
+    local ok, data = pcall(self.json_decode, self, text)
+    if not ok then
+        log_response("HTTP JSON decode failed:", context, text)
+        error(data, 0)
+    end
+
+    if type(data) == "table" then
+        local err_code = data.errCode or data.errcode
+        local failed_succ = data.succ ~= nil
+            and data.succ ~= true
+            and tonumber(data.succ) ~= 1
+        if (err_code ~= nil and tonumber(err_code) ~= 0) or failed_succ then
+            log_response("API response reported an error:", context, text)
+        end
+    end
+    return data
+end
+
 function Client:request(opts)
     opts = opts or {}
     local body = opts.body
@@ -182,8 +236,8 @@ function Client:request(opts)
     if is_handle_cookie then
         local cookies = self.settings:get("cookies", {})
         local cookie_header = Cookie.to_header(cookies)
-        if cookie_header ~= "" then 
-            headers["Cookie"] = cookie_header 
+        if cookie_header ~= "" then
+            headers["Cookie"] = cookie_header
         end
     end
 
@@ -215,10 +269,19 @@ function Client:request(opts)
     -- Redirects are handled explicitly by request_follow so credentials can be
     -- rebuilt for every destination instead of being copied across origins.
     req_opts.redirect = false
+    local diagnostic_api = req_opts.diagnostic_api
+    req_opts.diagnostic_api = nil
 
     local results = { pcall(http.request, req_opts) }
     socketutil:reset_timeout()
     if not results[1] then
+        logger.err(
+            "HTTP transport failed:",
+            "method=", tostring(req_opts.method),
+            "url=", tostring(req_opts.url),
+            "api=", tostring(diagnostic_api or "unknown"),
+            "error=", tostring(results[2])
+        )
         error(results[2])
     end
     local _, raw_code, resp_headers, status = results[2], results[3], results[4], results[5]
@@ -234,7 +297,26 @@ function Client:request(opts)
         end
     end
 
-    return response, tonumber(raw_code), resp_headers or {}, status
+    local code = tonumber(raw_code)
+    if code and code >= 400 then
+        log_response("HTTP response failed:", {
+            method = req_opts.method,
+            url = req_opts.url,
+            api_name = diagnostic_api,
+            code = code,
+            headers = resp_headers,
+        }, type(response) == "string" and response or "")
+    elseif not code then
+        log_response("HTTP response unavailable:", {
+            method = req_opts.method,
+            url = req_opts.url,
+            api_name = diagnostic_api,
+            code = status or raw_code,
+            headers = resp_headers,
+        }, type(response) == "string" and response or "")
+    end
+
+    return response, code, resp_headers or {}, status
 end
 
 function Client:request_follow(opts, max_redirects)
@@ -291,7 +373,13 @@ function Client:post_json(url, data, opts)
         }})
     local text, code, resp_headers = self:request(req_opts)
     if code and code >= 200 and code < 300 then
-        return self:json_decode(text), code, resp_headers
+        return self:decode_http_json(text, {
+            method = "POST",
+            url = url,
+            api_name = opts.diagnostic_api,
+            code = code,
+            headers = resp_headers,
+        }), code, resp_headers
     end
     error(http_error(self, code, text, resp_headers))
 end
@@ -391,18 +479,57 @@ function Client:gateway(api_name, params)
     local payload = merge_req_opts({
         api_name = api_name,
         skill_version = (params and params.skill_version) or WeRead.SKILL_VERSION
-    }, params) 
-    
+    }, params)
+
     local api_key = self.settings:get("api_key", "")
     if api_key == "" then
         error("WeRead API key is not configured")
     end
     return self:post_json("https://i.weread.qq.com/api/agent/gateway", payload, {
+        diagnostic_api = api_name,
         skip_cookie = true,
         headers = {
             ["Authorization"] = "Bearer " .. api_key,
         },
     })
+end
+
+function Client:get_shelf()
+    logger.info(
+        "shelf sync request:",
+        "api=/shelf/sync",
+        "skill_version=", WeRead.SKILL_VERSION,
+        "auth=api_key",
+        "cookies=skipped",
+        "params=none"
+    )
+    local ok, result, code, headers = pcall(
+        self.gateway,
+        self,
+        "/shelf/sync",
+        {}
+    )
+    if not ok then
+        logger.err(
+            "shelf sync failed:",
+            "api=/shelf/sync",
+            "skill_version=", WeRead.SKILL_VERSION,
+            "error=", log_error(result)
+        )
+        error(result, 0)
+    end
+
+    logger.info(
+        "shelf sync completed:",
+        "api=/shelf/sync",
+        "http_status=", tostring(code or "unknown"),
+        "response=", table_summary(result),
+        "books=", table_summary(type(result) == "table" and result.books or nil),
+        "archive=", table_summary(type(result) == "table" and result.archive or nil),
+        "albums=", table_summary(type(result) == "table" and result.albums or nil),
+        "mp=", table_summary(type(result) == "table" and result.mp or nil)
+    )
+    return result, code, headers
 end
 
 function Client:get_book_info(book_id)
@@ -425,11 +552,16 @@ function Client:get_web_progress(book_id)
     local url = "https://weread.qq.com/web/book/getProgress?bookId="
         .. WeRead.urlencode(book_id)
         .. "&_=" .. tostring(os.time() * 1000)
-    local text = self:get_text(url, {
+    local text, code, headers = self:get_text(url, {
         accept = "application/json, text/plain, */*",
         referer = WeRead.reader_url(book_id),
     })
-    return self:json_decode(text)
+    return self:decode_http_json(text, {
+        method = "GET",
+        url = url,
+        code = code,
+        headers = headers,
+    })
 end
 
 -- Reading statistics detail.
@@ -460,7 +592,7 @@ function Client:get_mp_articles(book_id, max_idx, count, wr_ticket)
     if wr_ticket and wr_ticket ~= "" then
         custom_headers["x-wr-ticket"] = wr_ticket
     end
-    
+
     local wrpa = self.settings:get("wr_wrpa", "")
     if wrpa ~= "" then
         custom_headers["x-wrpa-0"] = wrpa
@@ -473,7 +605,12 @@ function Client:get_mp_articles(book_id, max_idx, count, wr_ticket)
     })
 
     if code and code >= 200 and code < 300 then
-        local data = self:json_decode(text)
+        local data = self:decode_http_json(text, {
+            method = "GET",
+            url = url,
+            code = code,
+            headers = resp_headers,
+        })
         if data.errCode and data.errCode ~= 0 then
             return nil, data.errCode
         end
@@ -485,7 +622,7 @@ end
 function Client:get_mp_content(review_id, opts)
     opts = opts or {}
     local url = "https://weread.qq.com/web/mp/content?reviewId=" .. WeRead.urlencode(review_id)
-    
+
     local custom_headers = {
         ["Accept"] = "text/html,application/xhtml+xml,*/*",
         ["Referer"] = opts.referer or "https://weread.qq.com/",
@@ -493,7 +630,7 @@ function Client:get_mp_content(review_id, opts)
     if not opts.skip_mp_auth_headers then
         local wr_ticket = self.settings:get("wr_ticket", "")
         if wr_ticket ~= "" then custom_headers["x-wr-ticket"] = wr_ticket end
-        
+
         local wrpa = self.settings:get("wr_wrpa", "")
         if wrpa ~= "" then custom_headers["x-wrpa-0"] = wrpa end
     end

@@ -2,13 +2,12 @@
 local ButtonDialog = require("ui/widget/buttondialog")
 local ConfirmBox = require("ui/widget/confirmbox")
 local UIManager = require("ui/uimanager")
-local logger = require("logger")
+local logger = require("weread.lib.logger")
 
 local PluginUtil = require("weread.lib.plugin_util")
 local Updater = require("weread.lib.updater")
 local _ = PluginUtil.tr
 local T = PluginUtil.T
-local LOG_MODULE = PluginUtil.LOG_MODULE
 
 local M = {}
 
@@ -215,14 +214,14 @@ function M:checkPluginUpdate(opts)
         self:closeBusy()
 
         if result.error and not result.download_url then
-            logger.warn(LOG_MODULE, "update check failed:", result.error)
+            logger.warn("update check failed:", result.error)
             self:showInfo(T(_("Update check failed:\n%1"), result.error))
             return
         end
 
         if not result.has_update then
             if opts.silent_up_to_date then
-                logger.info(LOG_MODULE, "plugin up to date:", result.local_version)
+                logger.info("plugin up to date:", result.local_version)
                 return
             end
             local text = T(
@@ -295,7 +294,7 @@ function M:performPluginUpdate(check_result, opts)
         local ok, info_or_err = updater:perform_update(check_result, opts)
         self:closeBusy()
         if not ok then
-            logger.err(LOG_MODULE, "plugin update failed:", info_or_err)
+            logger.err("plugin update failed:", info_or_err)
             self:showInfo(T(_("Plugin update failed:\n%1"), tostring(info_or_err)))
             return
         end

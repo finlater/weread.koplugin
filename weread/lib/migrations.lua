@@ -1,9 +1,8 @@
 local Content = require("weread.lib.content")
-local logger = require("logger")
+local logger = require("weread.lib.logger")
 local lfs = require("libs/libkoreader-lfs")
 
 local PluginUtil = require("weread.lib.plugin_util")
-local LOG_MODULE = PluginUtil.LOG_MODULE
 local log_error = PluginUtil.log_error
 
 local Migrations = {}
@@ -133,7 +132,7 @@ local function repair_flat_layout_cache_dirs(settings, books)
                         end
                     end
                     repaired = repaired + 1
-                    logger.info(LOG_MODULE, "repaired book cache_dir:",
+                    logger.info("repaired book cache_dir:",
                         "book_id=", tostring(book_id),
                         "from=", tostring(current),
                         "to=", best.dir)
@@ -168,7 +167,7 @@ function Migrations.run(settings, client)
     if ok_repair then
         repaired = tonumber(repair_or_err) or 0
     else
-        logger.warn(LOG_MODULE, "flat-layout cache_dir repair failed:",
+        logger.warn("flat-layout cache_dir repair failed:",
             log_error(repair_or_err))
     end
 
@@ -181,12 +180,12 @@ function Migrations.run(settings, client)
         settings:flush()
     end)
     if ok then
-        logger.info(LOG_MODULE, "legacy per-book data migrated:",
+        logger.info("legacy per-book data migrated:",
             "catalogs=", tostring(migrated),
             "catalog_failures=", tostring(failed),
             "cache_dir_repaired=", tostring(repaired))
     else
-        logger.err(LOG_MODULE, "legacy per-book data migration failed:",
+        logger.err("legacy per-book data migration failed:",
             log_error(err))
     end
 end

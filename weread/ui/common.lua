@@ -2,14 +2,13 @@
 local BD = require("ui/bidi")
 local ConfirmBox = require("ui/widget/confirmbox")
 local InfoMessage = require("ui/widget/infomessage")
-local logger = require("logger")
+local logger = require("weread.lib.logger")
 local Menu = require("ui/widget/menu")
 local UIManager = require("ui/uimanager")
 
 local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
 local T = PluginUtil.T
-local LOG_MODULE = PluginUtil.LOG_MODULE
 local log_error = PluginUtil.log_error
 local display_error = PluginUtil.display_error
 local unpack_args = PluginUtil.unpack_args
@@ -24,7 +23,7 @@ function M:safeCallback(label, callback)
         end, debug.traceback)
         if not ok then
             self:closeBusy()
-            logger.err(LOG_MODULE, "action failed:", label, log_error(err))
+            logger.err("action failed:", label, log_error(err))
             self:showInfo(T(_("%1 failed:\n%2"), label, display_error(err)))
         end
     end
@@ -67,7 +66,7 @@ function M:refreshUI()
             UIManager:forceRePaint()
         end)
         if not ok then
-            logger.warn(LOG_MODULE, "forceRePaint failed:", log_error(err))
+            logger.warn("forceRePaint failed:", log_error(err))
         end
     end
 end
@@ -79,7 +78,7 @@ function M:showInputDialog(dialog)
             dialog:onShowKeyboard()
         end)
         if not ok then
-            logger.warn(LOG_MODULE, "failed to show keyboard:", log_error(err))
+            logger.warn("failed to show keyboard:", log_error(err))
         end
     end
 end
@@ -93,7 +92,7 @@ function M:isNetworkOnline()
         return NetworkMgr:isOnline()
     end)
     if not ok_online then
-        logger.warn(LOG_MODULE, "network status check failed:", log_error(online))
+        logger.warn("network status check failed:", log_error(online))
         return true
     end
     return online == true
@@ -110,7 +109,7 @@ function M:isNetworkConnected()
         return NetworkMgr:isConnected()
     end)
     if not ok_connected then
-        logger.warn(LOG_MODULE, "network link check failed:", log_error(connected))
+        logger.warn("network link check failed:", log_error(connected))
         return true
     end
     return connected == true
@@ -118,7 +117,7 @@ end
 
 function M:showOffline(label)
     self:closeBusy()
-    logger.warn(LOG_MODULE, "network unavailable:", label)
+    logger.warn("network unavailable:", label)
     self:showInfo(T(_("%1 failed:\n%2"), label, _("No network connection. Please connect Wi-Fi and try again.")))
 end
 
@@ -131,7 +130,7 @@ function M:runOnlineTask(label, callback, delay)
         local ok, err = xpcall(callback, debug.traceback)
         if not ok then
             self:closeBusy()
-            logger.err(LOG_MODULE, "network task failed:", label, log_error(err))
+            logger.err("network task failed:", label, log_error(err))
             self:showInfo(T(_("%1 failed:\n%2"), label, display_error(err)))
         end
     end)
@@ -144,7 +143,7 @@ function M:runNetworkAction(label, action)
         if ok then
             self:showInfo(result or label)
         else
-            logger.err(LOG_MODULE, "network action failed:", label, log_error(result))
+            logger.err("network action failed:", label, log_error(result))
             self:showInfo(T(_("%1 failed:\n%2"), label, display_error(result)))
         end
     end)
@@ -185,7 +184,7 @@ function M:refreshLoginMenu()
             menu:updateItems()
         end)
         if not ok then
-            logger.warn(LOG_MODULE, "refresh login menu failed:", log_error(err))
+            logger.warn("refresh login menu failed:", log_error(err))
         end
     end
     self:refreshUI()
@@ -197,7 +196,7 @@ function M:renewCookieWithUI()
     end
     self:runNetworkAction(_("Renew cookie"), function()
         self.client:renew_cookie()
-        logger.info(LOG_MODULE, "cookie renewed")
+        logger.info("cookie renewed")
         return _("WeRead cookie renewed.")
     end)
 end

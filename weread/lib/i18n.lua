@@ -88,6 +88,7 @@ local zh = {
     ["Clear"] = "清除",
     ["WeRead account data cleared."] = "微信读书账号数据已清除。",
     ["Load bookshelf failed:\n%1"] = "加载书架失败：\n%1",
+    ["Load bookshelf failed:\n%1\n\nIf other account features still work, use Search to find and download books."] = "加载书架失败：\n%1\n\n如果其他账号功能仍然正常，可以使用“搜索”查找并下载书籍。",
     ["Untitled"] = "未命名",
     ["Done"] = "已读完",
     ["WeRead Bookshelf"] = "微信读书书架",

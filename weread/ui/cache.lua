@@ -2,7 +2,7 @@
 local ButtonDialog = require("ui/widget/buttondialog")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Content = require("weread.lib.content")
-local logger = require("logger")
+local logger = require("weread.lib.logger")
 local PathChooser = require("ui/widget/pathchooser")
 local Scan = require("weread.lib.scan")
 local UIManager = require("ui/uimanager")
@@ -11,7 +11,6 @@ local WeRead = require("weread.lib.protocol")
 local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
 local T = PluginUtil.T
-local LOG_MODULE = PluginUtil.LOG_MODULE
 local log_error = PluginUtil.log_error
 local display_error = PluginUtil.display_error
 local file_exists = PluginUtil.file_exists
@@ -24,7 +23,6 @@ function M:setMPImageDownload(enabled)
     self.settings:set("cache", cache)
     self.settings:flush()
     logger.info(
-        LOG_MODULE,
         "image download setting changed:",
         "target=mp",
         "enabled=", tostring(cache.download_mp_images)
@@ -67,7 +65,7 @@ function M:showDownloadDirPicker(touchmenu_instance)
             end
             local old_dir = self.settings:get_download_dir()
             self.settings:set_download_dir(path)
-            logger.info(LOG_MODULE, "download directory changed:", path)
+            logger.info("download directory changed:", path)
             if touchmenu_instance then
                 touchmenu_instance:updateItems()
             end
@@ -91,7 +89,7 @@ function M:showMetaDirPicker(touchmenu_instance)
             end
             local old_dir = self.settings:get_meta_dir()
             self.settings:set_meta_dir(path)
-            logger.info(LOG_MODULE, "metadata directory changed:", path)
+            logger.info("metadata directory changed:", path)
             if touchmenu_instance then
                 touchmenu_instance:updateItems()
             end
@@ -187,10 +185,10 @@ function M:moveContentFilesToNewDir(movable, new_dir)
                 moved = moved + 1
             elseif reason == "target_exists" then
                 skipped = skipped + 1
-                logger.warn(LOG_MODULE, "skip move, target exists:", m.dst)
+                logger.warn("skip move, target exists:", m.dst)
             else
                 failed = failed + 1
-                logger.err(LOG_MODULE, "move book file failed:", m.src, "->", m.dst)
+                logger.err("move book file failed:", m.src, "->", m.dst)
             end
         end
         for _book_id, book in pairs(books) do
@@ -296,10 +294,10 @@ function M:moveMetaDirsToNewDir(movable, new_dir)
                 moved = moved + 1
             elseif reason == "target_exists" then
                 skipped = skipped + 1
-                logger.warn(LOG_MODULE, "skip meta move, target exists:", m.dst)
+                logger.warn("skip meta move, target exists:", m.dst)
             else
                 failed = failed + 1
-                logger.err(LOG_MODULE, "move book meta failed:", m.src, "->", m.dst)
+                logger.err("move book meta failed:", m.src, "->", m.dst)
             end
         end
         self.settings:set("books", books)
@@ -714,9 +712,13 @@ end
 -- Build the set of importable directory names from the user's WeRead shelf.
 -- Must be called from an online context; raises on API failure.
 function M:fetchShelfAllowedMap()
-    local result = self.client:gateway("/shelf/sync", {})
+    local result = self.client:get_shelf()
     local allowed = {}
-    for _i, book in ipairs(result and result.books or {}) do
+    local books = type(result) == "table"
+        and type(result.books) == "table"
+        and result.books
+        or {}
+    for _i, book in ipairs(books) do
         if book.bookId then
             allowed[Content.book_dir_name(book.bookId)] = {
                 book_id = book.bookId,
@@ -740,7 +742,7 @@ function M:confirmScanLocalCache()
         end)
         if not ok then
             self:closeBusy()
-            logger.err(LOG_MODULE, "scan shelf fetch failed:", log_error(allowed))
+            logger.err("scan shelf fetch failed:", log_error(allowed))
             self:showInfo(T(_("%1 failed:\n%2"), _("Scan and match local books"), display_error(allowed)))
             return
         end
@@ -771,7 +773,7 @@ function M:offerScanNewDir(new_dir, base_message)
             return self:fetchShelfAllowedMap()
         end)
         if not ok then
-            logger.warn(LOG_MODULE, "skip scan, shelf fetch failed:", log_error(allowed))
+            logger.warn("skip scan, shelf fetch failed:", log_error(allowed))
             self:showInfo(base_message)
             return
         end

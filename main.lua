@@ -1,5 +1,5 @@
 local Event = require("ui/event")
-local logger = require("logger")
+local logger = require("weread.lib.logger")
 local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 
@@ -14,7 +14,6 @@ local QRLogin = require("weread.lib.qr_login")
 local ReadReport = require("weread.lib.read_report")
 local Settings = require("weread.lib.settings")
 
-local LOG_MODULE = PluginUtil.LOG_MODULE
 local _ = PluginUtil.tr
 
 local function read_plugin_version()
@@ -151,7 +150,7 @@ function WeReadPlugin:init()
         self.read_report:maybe_start("plugin_start")
     end
     self._reader_session_gen = 0
-    logger.info(LOG_MODULE, "initialized:", "version=", self.version)
+    logger.info("initialized:", "version=", self.version)
     if self.maybeCheckPluginUpdateOnStart then
         self:maybeCheckPluginUpdateOnStart()
     end

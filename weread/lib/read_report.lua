@@ -1,17 +1,13 @@
 local Content = require("weread.lib.content")
 local WeRead = require("weread.lib.protocol")
 
-local ok_logger, logger = pcall(require, "logger")
-if not ok_logger then
-    logger = nil
-end
+local logger = require("weread.lib.logger").scoped("ReadReport")
 
 local ok_ffiutil, ffiutil = pcall(require, "ffi/util")
 if not ok_ffiutil then
     ffiutil = nil
 end
 
-local LOG_MODULE = "[WeRead][ReadReport]"
 local DEFAULT_INTERVAL_SECONDS = 30
 local MIN_INTERVAL_SECONDS = 10
 local CONTEXT_TTL_SECONDS = 15 * 60
@@ -34,8 +30,8 @@ local ReadReport = {}
 ReadReport.__index = ReadReport
 
 local function log(level, ...)
-    if logger and type(logger[level]) == "function" then
-        logger[level](LOG_MODULE, ...)
+    if type(logger[level]) == "function" then
+        logger[level](...)
     end
 end
 

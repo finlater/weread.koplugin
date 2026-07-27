@@ -1,19 +1,9 @@
 local Annotations = require("weread.lib.annotations")
 
-local ok_logger, logger = pcall(require, "logger")
-if not ok_logger then
-    logger = nil
-end
-
-local LOG_MODULE = "[WeRead]"
+local logger = require("weread.lib.logger")
 
 local Thoughts = {}
 
-local function log_info(...)
-    if logger then
-        logger.info(LOG_MODULE, ...)
-    end
-end
 
 function Thoughts.collect_ranges(underlines_data)
     local ranges = {}
@@ -88,6 +78,9 @@ function Thoughts.apply(client, settings, book_id, chapter_uid, xhtml)
     end
     if not book_id or not chapter_uid then
         return xhtml, ""
+    end
+    local function log_info(...)
+        logger.info(...)
     end
 
     local ok_ul, ul_data, ranges, err_ul = Thoughts.fetch_underlines(

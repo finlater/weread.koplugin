@@ -4,7 +4,7 @@ local ButtonDialog = require("ui/widget/buttondialog")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Dispatcher = require("dispatcher")
 local InfoMessage = require("ui/widget/infomessage")
-local logger = require("logger")
+local logger = require("weread.lib.logger")
 local UIManager = require("ui/uimanager")
 local ThoughtPopup = require("weread.ui.thought_popup")
 local WeRead = require("weread.lib.protocol")
@@ -12,7 +12,6 @@ local WeRead = require("weread.lib.protocol")
 local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
 local T = PluginUtil.T
-local LOG_MODULE = PluginUtil.LOG_MODULE
 
 local M = {}
 
@@ -147,7 +146,6 @@ function M:getMainMenuItems()
                 self.settings:set("cache", cache)
                 self.settings:flush()
                 logger.info(
-                    LOG_MODULE,
                     "annotation visibility changed:",
                     "show=", tostring(cache.show_annotations)
                 )
@@ -264,7 +262,6 @@ function M:getSettingsMenuItems()
                             self.settings:set("cache", cache)
                             self.settings:flush()
                             logger.info(
-                                LOG_MODULE,
                                 "image download setting changed:",
                                 "target=book",
                                 "enabled=", tostring(cache.download_book_images)
@@ -309,7 +306,7 @@ function M:getSettingsMenuItems()
                                 cache.download_underlines_and_thoughts = false
                                 self.settings:set("cache", cache)
                                 self.settings:flush()
-                                logger.info(LOG_MODULE,
+                                logger.info(
                                     "underlines/thoughts download setting changed:", "enabled=", "false")
                                 touchmenu_instance:updateItems()
                                 return
@@ -321,7 +318,7 @@ function M:getSettingsMenuItems()
                                     cache.download_underlines_and_thoughts = true
                                     self.settings:set("cache", cache)
                                     self.settings:flush()
-                                    logger.info(LOG_MODULE,
+                                    logger.info(
                                         "underlines/thoughts download setting changed:", "enabled=", "true")
                                     touchmenu_instance:updateItems()
                                 end),
@@ -348,7 +345,6 @@ function M:getSettingsMenuItems()
                             self.settings:set("cache", cache)
                             self.settings:flush()
                             logger.info(
-                                LOG_MODULE,
                                 "ignore_edge_thought_taps changed:",
                                 "enabled=", tostring(cache.ignore_edge_thought_taps)
                             )
@@ -425,7 +421,7 @@ function M:showEdgeTapRatioPicker(touchmenu_instance)
                     cache.edge_tap_ratio = ratio
                     self.settings:set("cache", cache)
                     self.settings:flush()
-                    logger.info(LOG_MODULE, "edge_tap_ratio changed:", "ratio=", tostring(ratio))
+                    logger.info("edge_tap_ratio changed:", "ratio=", tostring(ratio))
                     if touchmenu_instance then
                         touchmenu_instance:updateItems()
                     end

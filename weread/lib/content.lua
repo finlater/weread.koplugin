@@ -3,11 +3,7 @@ local ReaderState = require("weread.lib.reader_state")
 local WeRead = require("weread.lib.protocol")
 local Thoughts = require("weread.lib.thoughts")
 local bit = require("bit")
-local ok_logger, logger = pcall(require, "logger")
-if not ok_logger then
-    logger = nil
-end
-local LOG_MODULE = "[WeRead]"
+local logger = require("weread.lib.logger")
 
 local Content = {}
 
@@ -295,9 +291,7 @@ function Content.load_catalog_cache(client, settings, book)
         return client:json_decode(encoded)
     end)
     if not ok or type(decoded) ~= "table" then
-        if logger then
-            logger.warn(LOG_MODULE, "ignore invalid catalog cache:", path)
-        end
+        logger.warn("ignore invalid catalog cache:", path)
         return nil
     end
     local chapters = decoded.chapters
@@ -1650,9 +1644,7 @@ function Content.fetch_mp_article_html(client, settings, book, article, opts)
 
     fetch_candidates("")
     if not html or html:match("^%s*$") then
-        if logger then
-            logger.info(LOG_MODULE, "MP content empty, renewing cookie before retry")
-        end
+        logger.info("MP content empty, renewing cookie before retry")
         local renew_ok = pcall(function()
             return client:renew_cookie()
         end)
@@ -1678,19 +1670,16 @@ function Content.fetch_mp_article_html(client, settings, book, article, opts)
     local body = Content.extract_mp_body(html)
     if not body then
         local empty_response = not html or html:match("^%s*$") ~= nil
-        if logger then
-            logger.warn(
-                LOG_MODULE,
-                "could not extract MP article body:",
-                "reason=", empty_response and "empty_response" or "missing_body",
-                "candidate_count=", tostring(#candidate_ids),
-                "used_candidate=", used_review_id and "yes" or "no",
-                "html_length=", tostring(meta and meta.length or #(html or "")),
-                "content_type=", tostring(meta and meta.content_type or ""),
-                "attempts=", table.concat(attempts, ","),
-                "has_source_url=", source_url ~= "" and "yes" or "no"
-            )
-        end
+        logger.warn(
+            "could not extract MP article body:",
+            "reason=", empty_response and "empty_response" or "missing_body",
+            "candidate_count=", tostring(#candidate_ids),
+            "used_candidate=", used_review_id and "yes" or "no",
+            "html_length=", tostring(meta and meta.length or #(html or "")),
+            "content_type=", tostring(meta and meta.content_type or ""),
+            "attempts=", table.concat(attempts, ","),
+            "has_source_url=", source_url ~= "" and "yes" or "no"
+        )
         if empty_response then
             error("Article content response is empty. See KOReader log for details.", 0)
         end

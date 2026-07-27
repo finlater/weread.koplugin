@@ -3,7 +3,7 @@ local Annotations = require("weread.lib.annotations")
 local Content = require("weread.lib.content")
 local DownloadDialog = require("weread.ui.download_dialog")
 local Event = require("ui/event")
-local logger = require("logger")
+local logger = require("weread.lib.logger")
 local ThoughtDB = require("weread.lib.thought_db")
 local ThoughtPopup = require("weread.ui.thought_popup")
 local time = require("ui/time")
@@ -12,7 +12,6 @@ local UIManager = require("ui/uimanager")
 local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
 local T = PluginUtil.T
-local LOG_MODULE = PluginUtil.LOG_MODULE
 local log_error = PluginUtil.log_error
 local display_error = PluginUtil.display_error
 local thought_perf = PluginUtil.thought_perf
@@ -44,7 +43,7 @@ function M:onReadSettings()
     end
     local typeset = self.ui.typeset
     if not typeset or not typeset.css then
-        logger.warn(LOG_MODULE, "onReadSettings: typeset stylesheet unavailable")
+        logger.warn("onReadSettings: typeset stylesheet unavailable")
         return
     end
     local tweaks = ""
@@ -56,7 +55,7 @@ function M:onReadSettings()
         self.ui.document:setStyleSheet(typeset.css, tweaks .. "\n" .. ANNOTATION_HIDE_CSS)
     end)
     if not ok then
-        logger.warn(LOG_MODULE, "initial annotation visibility failed:", err)
+        logger.warn("initial annotation visibility failed:", err)
     end
 end
 
@@ -72,7 +71,7 @@ function M:applyAnnotationVisibility()
     end
     local typeset = self.ui.typeset
     if not typeset or not typeset.css then
-        logger.warn(LOG_MODULE, "applyAnnotationVisibility: typeset stylesheet unavailable")
+        logger.warn("applyAnnotationVisibility: typeset stylesheet unavailable")
         return
     end
     local show = self.settings:get("cache").show_annotations ~= false
@@ -89,7 +88,7 @@ function M:applyAnnotationVisibility()
         self.ui:handleEvent(Event:new("UpdatePos"))
     end)
     if not ok then
-        logger.warn(LOG_MODULE, "applyAnnotationVisibility failed:", err)
+        logger.warn("applyAnnotationVisibility failed:", err)
     end
 end
 
@@ -307,7 +306,7 @@ function M:_showThoughtPopup(pages, link, session_gen, tap_started)
         "pages=", tostring(#pages))
 
     if not ok then
-        logger.warn(LOG_MODULE, "thought popup failed:", popup)
+        logger.warn("thought popup failed:", popup)
         self._thought_popup_open = nil
         self:_clearThoughtHighlight(document)
         return
@@ -387,7 +386,7 @@ function M:_parseThoughtHref(href)
     local book_id, chapter_uid, start_pos, end_pos =
         anchor:match("^wrthought%-([^%-]+)%-([^%-]+)%-(%d+)%-(%d+)$")
     if not (book_id and chapter_uid and start_pos and end_pos) then
-        logger.warn(LOG_MODULE, "unparseable thought anchor:", anchor)
+        logger.warn("unparseable thought anchor:", anchor)
         return nil
     end
     return {
@@ -594,7 +593,7 @@ function M:_downloadMissingThought(info, href, link, tap_started)
             return
         end
         finish_request()
-        logger.warn(LOG_MODULE, "thought repair failed:",
+        logger.warn("thought repair failed:",
             "href=", href, "error=", log_error(err or "unknown"))
         self:showInfo(T(_("%1 failed:\n%2"), label, display_error(err or "unknown")))
     end
@@ -704,7 +703,7 @@ function M:_downloadMissingThought(info, href, link, tap_started)
                 return
             end
             request.failed_requests = request.failed_requests + 1
-            logger.warn(LOG_MODULE, "thought repair batch skipped after retries:",
+            logger.warn("thought repair batch skipped after retries:",
                 "chapter_uid=", tostring(request.chapter.chapterUid),
                 "batch=", tostring(request.batch_index),
                 "error=", log_error(err or "unknown"))
@@ -735,7 +734,7 @@ function M:_downloadMissingThought(info, href, link, tap_started)
             "ok=", tostring(ok))
         if not ok or type(underlines) ~= "table" then
             request.failed_requests = request.failed_requests + 1
-            logger.warn(LOG_MODULE, "thought repair chapter skipped:",
+            logger.warn("thought repair chapter skipped:",
                 "chapter_uid=", tostring(request.chapter.chapterUid),
                 "error=", log_error(err or "unknown"))
             request.progress_dialog:reportProgress(request.chapter_index)
