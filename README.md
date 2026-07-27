@@ -108,9 +108,9 @@
 
 1. 打开 [Releases](https://github.com/rollingshmily/weread.koplugin/releases) 下载最新 `weread.koplugin-v*.zip`。
 2. 国内网络可在链接前加代理前缀，例如：
-   - `https://runn.i.ng/rollingshmily/weread.koplugin/releases/download/v0.5.4/weread.koplugin-v0.5.4.zip`（[ghspeedup.com](https://ghspeedup.com/)）
-   - `https://gh-proxy.com/https://github.com/rollingshmily/weread.koplugin/releases/download/v0.5.4/weread.koplugin-v0.5.4.zip`
-   - `https://ghfast.top/https://github.com/rollingshmily/weread.koplugin/releases/download/v0.5.4/weread.koplugin-v0.5.4.zip`
+   - `https://runn.i.ng/rollingshmily/weread.koplugin/releases/download/v0.5.6/weread.koplugin-v0.5.6.zip`（[ghspeedup.com](https://ghspeedup.com/)）
+   - `https://gh-proxy.com/https://github.com/rollingshmily/weread.koplugin/releases/download/v0.5.6/weread.koplugin-v0.5.6.zip`
+   - `https://ghfast.top/https://github.com/rollingshmily/weread.koplugin/releases/download/v0.5.6/weread.koplugin-v0.5.6.zip`
 3. 解压后把 `weread.koplugin/` 目录放到 KOReader 的 `plugins` 目录。
 
 ### 方式二：手动复制源码目录
