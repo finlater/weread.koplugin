@@ -1,8 +1,7 @@
 # WeRead KOReader Plugin（二开版）
 
 > **本仓库说明**：这是基于原作者 **[finlater/weread.koplugin](https://github.com/finlater/weread.koplugin)** 的二次开发分支，**不是**上游官方仓库。  
-> 核心阅读、登录、同步、统计、缓存布局等能力均来自原项目；本仓库在其之上增加了**国内可访问的在线更新**、**自动 Release 发版**等改动。  
-> 曾短暂试验过「扁平 EPUB + 独立 metadata 目录」，因与原作者版缓存不兼容已在 **v0.5.3** 回退，恢复原作者同款「每本书一个目录」布局。  
+> 核心阅读、登录、同步、统计等能力均来自原项目；本仓库在其之上增加了**国内可访问的在线更新**、**自动 Release 发版**，以及 **v0.5.4 起的扁平 EPUB + 独立元数据目录**布局。  
 > 请优先给原作者点 Star / 提上游问题：https://github.com/finlater/weread.koplugin
 
 > **免责声明**：本项目仅供个人学习和技术研究使用，不得用于商业用途。使用本项目所产生的一切后果（包括但不限于账号封禁、数据丢失等）由使用者自行承担，项目作者与二开维护者概不负责。请遵守微信读书的用户协议和相关法律法规。
@@ -17,8 +16,9 @@
 | **国内 GitHub 代理** | 默认 [ghspeedup.com](https://ghspeedup.com/)（worker: `runn.i.ng` 路径模式）；备用 `gh-proxy.com`、`ghfast.top`、直连；失败自动换备用 |
 | **更新通道** | 自动（优先 Release，否则 `main`）/ 仅正式版 / 仅开发分支；可选启动时检查（默认关，12 小时节流） |
 | **自动 Release** | 修改 `_meta.lua` 的 `version` 并推送 `main` 后，GitHub Actions 自动打 tag 并上传 `weread.koplugin-v*.zip` |
-| **登录与缓存隔离** | 登录态在 `settings/weread.lua`，书籍缓存默认在 `weread/cache/`（仍是原作者同款「每本书一个目录」布局），**不在** `plugins/`；覆盖/在线更新插件不会清掉扫码登录和已下载内容 |
-| **从原作者版平滑迁移** | 与上游共用同一配置文件与字段（`AUTH_SCHEMA_VERSION = 1`）；只替换 `plugins/weread.koplugin/` 即可继承原登录态 |
+| **扁平书库 + 独立元数据** | 图书目录只放平铺 EPUB；想法/目录/metadata/公众号 HTML 进可配置的元数据目录（按 `bookId` 分夹）。默认元数据在 KOReader 数据目录 `weread/meta/`，不进书库 |
+| **登录与缓存隔离** | 登录态在 `settings/weread.lua`，下载与元数据默认都不在 `plugins/`；覆盖/在线更新插件不会清掉扫码登录和已下载内容 |
+| **从原作者版平滑迁移** | 与上游共用同一配置文件与字段（`AUTH_SCHEMA_VERSION = 1`）；旧「每书一目录」仍可识别；损坏的空 metadata 路径会在启动时尝试修复 |
 
 > 上游原有功能（书架、EPUB/公众号下载、进度同步、阅读时长上报、划线想法、阅读统计等）保持兼容；下列「功能」章节描述的是完整能力集（含上游能力 + 本仓库增量）。
 
@@ -76,11 +76,11 @@
 - 书架支持多种排序方式（最后阅读时间、书名、默认顺序）与筛选（已读完/未读完、已下载/未下载，两组可组合）
 - 书籍详情页展示作者、出版社、出版时间、评分、字数、阅读进度等信息，并可按需查看推荐书评和最新书评
 - EPUB 自动嵌入封面图片
-- 缓存管理：查看/清理单本或全部缓存，并可扫描本地缓存目录导入手动放入的书籍与公众号文章（需联网，仅导入与微信读书书架 ID 匹配的目录）
-- 自定义下载目录：可指定书籍/文章的保存位置（默认 `<KOReader 数据目录>/weread/cache`）
-- 每本书的目录保存在 `<缓存目录>/<书籍 ID>/catalog.json`；旧版 `weread.lua` 中的目录会在启动时自动迁移
-- 书籍元数据、阅读上下文和公众号文章列表分别保存在书籍目录的 `metadata.json`、`reading_state.json` 和 `articles.json`；`weread.lua` 只保留缓存路径索引
-- 每本书的想法按划线范围保存在书籍目录的 `thoughts.db`，点击时只查询当前划线对应的记录
+- 缓存管理：查看/清理单本或全部缓存；可分别设置**图书目录**与**元数据目录**；扫描本地缓存时会同时看这两个根（需联网，仅导入与微信读书书架 ID 匹配的目录）
+- 图书目录：新下载的 EPUB **平铺**保存（默认 `<KOReader 数据目录>/weread/cache`，可改到你的书库根目录）
+- 元数据目录：`catalog.json` / `metadata.json` / `reading_state.json` / `articles.json` / `thoughts.db` / 公众号 HTML 按 `<元数据目录>/<书籍 ID>/` 存放（默认 `<KOReader 数据目录>/weread/meta`）
+- `weread.lua` 只保留路径索引（`cache_dir`、`cached_file` 等）；打开书时 sidecar 写元数据目录，不再在书库根下冒空的 `bookId` 文件夹
+- 旧版「每书一目录」布局仍兼容；启动时会尝试把指到空壳 metadata 路径的 `cache_dir` 修回有内容的位置
 
 **插件更新**
 
@@ -108,9 +108,9 @@
 
 1. 打开 [Releases](https://github.com/rollingshmily/weread.koplugin/releases) 下载最新 `weread.koplugin-v*.zip`。
 2. 国内网络可在链接前加代理前缀，例如：
-   - `https://runn.i.ng/rollingshmily/weread.koplugin/releases/download/v0.5.3/weread.koplugin-v0.5.3.zip`（[ghspeedup.com](https://ghspeedup.com/)）
-   - `https://gh-proxy.com/https://github.com/rollingshmily/weread.koplugin/releases/download/v0.5.3/weread.koplugin-v0.5.3.zip`
-   - `https://ghfast.top/https://github.com/rollingshmily/weread.koplugin/releases/download/v0.5.3/weread.koplugin-v0.5.3.zip`
+   - `https://runn.i.ng/rollingshmily/weread.koplugin/releases/download/v0.5.4/weread.koplugin-v0.5.4.zip`（[ghspeedup.com](https://ghspeedup.com/)）
+   - `https://gh-proxy.com/https://github.com/rollingshmily/weread.koplugin/releases/download/v0.5.4/weread.koplugin-v0.5.4.zip`
+   - `https://ghfast.top/https://github.com/rollingshmily/weread.koplugin/releases/download/v0.5.4/weread.koplugin-v0.5.4.zip`
 3. 解压后把 `weread.koplugin/` 目录放到 KOReader 的 `plugins` 目录。
 
 ### 方式二：手动复制源码目录

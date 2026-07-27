@@ -213,12 +213,13 @@ function M:showAccountStatus()
     local cookie_status = self.settings:is_cookie_configured() and _("configured") or _("missing")
     local api_status = self.settings:is_api_configured() and _("configured") or _("missing")
     self:showInfo(T(
-        _("Account: %1\nLogin method: %2\nCookie: %3\nOfficial API key: %4\nDownload directory:\n%5"),
+        _("Account: %1\nLogin method: %2\nCookie: %3\nOfficial API key: %4\nBook directory:\n%5\nMetadata directory:\n%6"),
         account_name,
         login_method,
         cookie_status,
         api_status,
-        BD.dirpath(self.settings.cache_dir)
+        BD.dirpath(self.settings.cache_dir),
+        BD.dirpath(self.settings.meta_dir)
     ))
 end
 

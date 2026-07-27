@@ -47,18 +47,66 @@ local function dirname(path)
     end
 end
 
-local function resolved_dir(settings, book_id, book)
-    if type(book) == "table" and type(book.cache_dir) == "string" and book.cache_dir ~= "" then
-        return book.cache_dir
+local function meta_root(settings)
+    local root = settings.meta_dir
+    if type(root) ~= "string" or root == "" then
+        root = (settings.data_dir or settings.cache_dir) .. "/meta"
     end
-    local dir = type(book) == "table" and dirname(book.cached_file) or nil
-    if not dir and type(book) == "table" and type(book.cached_chapters) == "table" then
-        for _uid, path in pairs(book.cached_chapters) do
-            dir = dirname(path)
-            if dir then break end
+    return tostring(root):gsub("/+$", "")
+end
+
+local function looks_like_book_id_dir(dir, book_id)
+    if type(dir) ~= "string" or dir == "" then
+        return false
+    end
+    return dir:match("([^/]+)$") == basename_safe(book_id)
+end
+
+local function file_exists(path)
+    if type(path) ~= "string" or path == "" then
+        return false
+    end
+    local f = io.open(path, "rb")
+    if not f then
+        return false
+    end
+    f:close()
+    return true
+end
+
+local function dir_has_sidecar(dir)
+    return file_exists(dir .. "/catalog.json")
+        or file_exists(dir .. "/thoughts.db")
+        or file_exists(dir .. "/metadata.json")
+        or file_exists(dir .. "/reading_state.json")
+        or file_exists(dir .. "/articles.json")
+end
+
+-- Sidecar directory only. Never derive from flat EPUB parent directory.
+local function resolved_dir(settings, book_id, book)
+    local canonical = meta_root(settings) .. "/" .. basename_safe(book_id)
+    if type(book) == "table" and type(book.cache_dir) == "string" and book.cache_dir ~= "" then
+        local pinned = book.cache_dir:gsub("/+$", "")
+        -- Canonical meta path, or a real sidecar tree. Ignore empty leftover
+        -- bookId folders under the library root so open/save cannot keep
+        -- writing metadata.json into the book library.
+        if pinned == canonical or dir_has_sidecar(pinned) then
+            return pinned
         end
     end
-    return dir or (settings.cache_dir .. "/" .. basename_safe(book_id))
+    local dir = type(book) == "table" and dirname(book.cached_file) or nil
+    if looks_like_book_id_dir(dir, book_id) and dir_has_sidecar(dir) then
+        return dir
+    end
+    if type(book) == "table" and type(book.cached_chapters) == "table" then
+        for _uid, path in pairs(book.cached_chapters) do
+            dir = dirname(path)
+            if looks_like_book_id_dir(dir, book_id) and dir_has_sidecar(dir) then
+                return dir
+            end
+        end
+    end
+    return canonical
 end
 
 local function encode(value)
@@ -164,14 +212,34 @@ function BookStore.save(settings, book_id, book)
     else
         os.remove(dir .. "/articles.json")
     end
-    return true, { cache_dir = dir }
+    local index = { cache_dir = dir }
+    if type(book.cached_file) == "string" and book.cached_file ~= "" then
+        index.cached_file = book.cached_file
+    end
+    if type(book.cached_chapters) == "table" then
+        index.cached_chapters = book.cached_chapters
+    end
+    if type(book.title) == "string" and book.title ~= "" then
+        index.title = book.title
+    end
+    if type(book.author) == "string" and book.author ~= "" then
+        index.author = book.author
+    end
+    return true, index
 end
 
 function BookStore.is_minimal_index(books)
+    local allowed = {
+        cache_dir = true,
+        cached_file = true,
+        cached_chapters = true,
+        title = true,
+        author = true,
+    }
     for _book_id, record in pairs(books or {}) do
         if type(record) ~= "table" then return false end
         for key in pairs(record) do
-            if key ~= "cache_dir" then return false end
+            if not allowed[key] then return false end
         end
     end
     return true

@@ -142,21 +142,55 @@ function M:detectWeReadBook()
         return nil
     end
     local books = self.settings:get("books", {})
+
+    -- 1) Exact content-file index match (flat library title.epub etc.)
+    for book_id, book in pairs(books) do
+        if type(book) == "table" then
+            if file == book.cached_file then
+                return book_id
+            end
+            if type(book.cached_chapters) == "table" then
+                for _uid, chapter_path in pairs(book.cached_chapters) do
+                    if chapter_path == file then
+                        return book_id
+                    end
+                end
+            end
+        end
+    end
+
+    -- 2) Legacy/nested content still living under a bookId sidecar/content dir.
     for book_id, book in pairs(books) do
         if type(book) == "table" then
             local dir = Content.book_resolved_dir(
                 self.settings, book_id, book):gsub("/+$", "") .. "/"
-            if file == book.cached_file or file:sub(1, #dir) == dir then
+            if file:sub(1, #dir) == dir then
                 return book_id
             end
         end
     end
 
-    -- Require a path boundary after the cache directory.
+    -- 3) Legacy path layout only: <download>/<book_id>/file.epub
     local prefix = self.settings.cache_dir:gsub("/+$", "") .. "/"
     if file:sub(1, #prefix) == prefix then
         local rest = file:sub(#prefix + 1)
-        return rest:match("^([^/]+)")
+        local nested_id = rest:match("^([^/]+)/")
+        if nested_id and books[nested_id] then
+            return nested_id
+        end
+        if nested_id then
+            return nested_id
+        end
+    end
+
+    -- 4) Opened a file under metadata tree (rare; MP html etc.)
+    local meta_root = self.settings.meta_dir
+    if type(meta_root) == "string" and meta_root ~= "" then
+        local meta_prefix = meta_root:gsub("/+$", "") .. "/"
+        if file:sub(1, #meta_prefix) == meta_prefix then
+            local rest = file:sub(#meta_prefix + 1)
+            return rest:match("^([^/]+)")
+        end
     end
     return nil
 end

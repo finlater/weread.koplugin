@@ -69,7 +69,11 @@ local defaults = {
         sort_order = "time_desc",
     },
     download_dir = "",
+    -- Sidecar root for thoughts.db / catalog / metadata / MP articles.
+    -- Kept separate from download_dir so EPUB files can sit flat in the library.
+    meta_dir = "",
 }
+
 
 local function deepcopy(value)
     if type(value) ~= "table" then
@@ -102,12 +106,24 @@ function Settings:new()
     local obj = {
         data_dir = data_dir,
         default_cache_dir = data_dir .. "/cache",
+        -- Default metadata lives under KOReader data, NOT under the book library.
+        default_meta_dir = data_dir .. "/meta",
         settings_file = DataStorage:getSettingsDir() .. "/weread.lua",
     }
     obj.store = LuaSettings:open(obj.settings_file)
+    -- cache_dir / download_dir: flat EPUB library root (e.g. /mnt/base-us/books)
     local download_dir = obj.store:readSetting("download_dir", "")
     obj.cache_dir = (type(download_dir) == "string" and download_dir ~= "") and download_dir or obj.default_cache_dir
     ensure_dir(obj.cache_dir)
+    -- meta_dir: per-bookId sidecar folders (thoughts/catalog/metadata/MP html)
+    local meta_dir = obj.store:readSetting("meta_dir", "")
+    obj.meta_dir = (type(meta_dir) == "string" and meta_dir ~= "") and meta_dir or obj.default_meta_dir
+    -- Guard: never default metadata into the book library root.
+    if obj.meta_dir == obj.cache_dir then
+        obj.meta_dir = obj.default_meta_dir
+        obj.store:saveSetting("meta_dir", "")
+    end
+    ensure_dir(obj.meta_dir)
     local cache = obj.store:readSetting("cache", deepcopy(defaults.cache))
     local cache_changed = false
     if cache.download_book_images == nil then
@@ -279,9 +295,36 @@ function Settings:set_download_dir(path)
         self:set("download_dir", path)
         self.cache_dir = path
     end
+    -- Keep metadata out of the book library if user points both to the same place.
+    if self.meta_dir == self.cache_dir then
+        self.meta_dir = self.default_meta_dir
+        self:set("meta_dir", "")
+        ensure_dir(self.meta_dir)
+    end
     self:flush()
     ensure_dir(self.cache_dir)
     return self.cache_dir
+end
+
+function Settings:get_meta_dir()
+    return self.meta_dir
+end
+
+-- Pass nil or "" to reset to the default metadata directory.
+function Settings:set_meta_dir(path)
+    if type(path) ~= "string" or path == "" then
+        self:set("meta_dir", "")
+        self.meta_dir = self.default_meta_dir
+    else
+        if path == self.cache_dir then
+            error("metadata directory must not be the same as the book directory")
+        end
+        self:set("meta_dir", path)
+        self.meta_dir = path
+    end
+    self:flush()
+    ensure_dir(self.meta_dir)
+    return self.meta_dir
 end
 
 function Settings:reset_account()

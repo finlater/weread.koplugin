@@ -61,7 +61,10 @@ local function repair_flat_layout_cache_dirs(settings, books)
     local download_root = settings.cache_dir
     local candidates_root = {
         download_root,
+        settings.meta_dir,
+        settings.default_meta_dir,
         settings.default_cache_dir,
+        settings.data_dir and (settings.data_dir .. "/meta") or nil,
         settings.data_dir and (settings.data_dir .. "/cache") or nil,
     }
 

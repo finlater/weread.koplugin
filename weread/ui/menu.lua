@@ -99,20 +99,10 @@ function M:getMainMenuItems()
             end,
         },
         {
-            text = _("Plugin update"),
-            sub_item_table_func = function()
-                return self:getUpdateMenuItems()
-            end,
-        },
-        {
             text = T(_("About (v%1)"), self.version),
             callback = function()
-                local version = self.version
-                if self.getUpdater then
-                    version = self:getUpdater():get_local_version() or version
-                end
                 UIManager:show(InfoMessage:new{
-                    text = T(_("WeRead Plugin v%1\n\nDisclaimer: This project is for personal learning and technical research only, not for commercial use. All consequences arising from the use of this project (including but not limited to account bans, data loss, etc.) are borne by the user. The project author assumes no responsibility. Please comply with WeRead's user agreement and applicable laws and regulations.\n\nhttps://github.com/rollingshmily/weread.koplugin"), version),
+                    text = T(_("WeRead Plugin v%1\n\nDisclaimer: This project is for personal learning and technical research only, not for commercial use. All consequences arising from the use of this project (including but not limited to account bans, data loss, etc.) are borne by the user. The project author assumes no responsibility. Please comply with WeRead's user agreement and applicable laws and regulations.\n\nhttps://github.com/finlater/weread.koplugin"), self.version),
                 })
             end,
         },
@@ -185,11 +175,20 @@ function M:getSettingsMenuItems()
                     },
                     {
                         text_func = function()
-                            return T(_("Download directory: %1"), BD.dirpath(self.settings:get_download_dir()))
+                            return T(_("Book directory: %1"), BD.dirpath(self.settings:get_download_dir()))
                         end,
                         keep_menu_open = true,
-                        callback = self:safeCallback(_("Download directory"), function(touchmenu_instance)
+                        callback = self:safeCallback(_("Book directory"), function(touchmenu_instance)
                             self:showDownloadDirPicker(touchmenu_instance)
+                        end),
+                    },
+                    {
+                        text_func = function()
+                            return T(_("Metadata directory: %1"), BD.dirpath(self.settings:get_meta_dir()))
+                        end,
+                        keep_menu_open = true,
+                        callback = self:safeCallback(_("Metadata directory"), function(touchmenu_instance)
+                            self:showMetaDirPicker(touchmenu_instance)
                         end),
                     },
                 }
