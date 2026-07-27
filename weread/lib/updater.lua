@@ -26,12 +26,34 @@ Updater.DEFAULT_BRANCH = "main"
 Updater.PLUGIN_DIRNAME = "weread.koplugin"
 Updater.USER_AGENT = "KOReader-WeRead-Updater"
 
--- Built-in proxies. Prefix style: proxy .. "/" .. absolute_https_url
+-- Built-in proxies.
+-- style="prefix": proxy .. "/" .. absolute_https_url  (gh-proxy.com / ghfast.top)
+-- style="path":   proxy .. github_or_raw_pathname     (ghspeedup.com worker = runn.i.ng)
 Updater.PROXY_PRESETS = {
-    { id = "gh-proxy.com", label = "gh-proxy.com", url = "https://gh-proxy.com" },
-    { id = "ghfast.top", label = "ghfast.top", url = "https://ghfast.top" },
-    { id = "runn.i.ng", label = "runn.i.ng", url = "https://runn.i.ng" },
-    { id = "direct", label = "Direct (no proxy)", url = "" },
+    {
+        id = "ghspeedup.com",
+        label = "ghspeedup.com",
+        url = "https://runn.i.ng",
+        style = "path",
+    },
+    {
+        id = "gh-proxy.com",
+        label = "gh-proxy.com",
+        url = "https://gh-proxy.com",
+        style = "prefix",
+    },
+    {
+        id = "ghfast.top",
+        label = "ghfast.top",
+        url = "https://ghfast.top",
+        style = "prefix",
+    },
+    {
+        id = "direct",
+        label = "Direct (no proxy)",
+        url = "",
+        style = "direct",
+    },
 }
 
 local DEFAULT_UPDATE = {
@@ -39,8 +61,8 @@ local DEFAULT_UPDATE = {
     -- auto: prefer latest GitHub release; fall back to branch zipball when missing
     channel = "auto",
     branch = Updater.DEFAULT_BRANCH,
-    -- empty string = try presets in order until one works
-    proxy_id = "gh-proxy.com",
+    -- default to ghspeedup.com (runn.i.ng worker); fallbacks still tried automatically
+    proxy_id = "ghspeedup.com",
     custom_proxy = "",
     check_on_start = false,
     last_check = 0,
@@ -49,6 +71,15 @@ local DEFAULT_UPDATE = {
     installed_version = "",
     installed_source = "",
 }
+
+local function normalize_proxy_id(proxy_id)
+    proxy_id = tostring(proxy_id or "")
+    -- migrate old preset id from v0.5.1
+    if proxy_id == "runn.i.ng" then
+        return "ghspeedup.com"
+    end
+    return proxy_id
+end
 
 local function deepcopy(value)
     if type(value) ~= "table" then
@@ -197,8 +228,10 @@ function Updater:get_config()
     if type(cfg.branch) ~= "string" or cfg.branch == "" then
         cfg.branch = Updater.DEFAULT_BRANCH
     end
-    if type(cfg.proxy_id) ~= "string" then
-        cfg.proxy_id = "gh-proxy.com"
+    if type(cfg.proxy_id) ~= "string" or cfg.proxy_id == "" then
+        cfg.proxy_id = "ghspeedup.com"
+    else
+        cfg.proxy_id = normalize_proxy_id(cfg.proxy_id)
     end
     if type(cfg.custom_proxy) ~= "string" then
         cfg.custom_proxy = ""
@@ -227,6 +260,7 @@ function Updater:update_config(patch)
 end
 
 function Updater.proxy_label(proxy_id, custom_proxy)
+    proxy_id = normalize_proxy_id(proxy_id)
     if proxy_id == "custom" then
         local url = trim(custom_proxy)
         if url == "" then
@@ -239,54 +273,158 @@ function Updater.proxy_label(proxy_id, custom_proxy)
             return item.label
         end
     end
-    return proxy_id or "gh-proxy.com"
+    return proxy_id or "ghspeedup.com"
+end
+
+function Updater.lookup_proxy_preset(proxy_id_or_url)
+    local key = normalize_proxy_id(proxy_id_or_url)
+    for _i, item in ipairs(Updater.PROXY_PRESETS) do
+        if item.id == key or item.url == key then
+            return item
+        end
+    end
+    return nil
+end
+
+function Updater:resolve_proxy_entry(cfg)
+    cfg = cfg or self:get_config()
+    if cfg.proxy_id == "custom" then
+        return {
+            id = "custom",
+            label = Updater.proxy_label("custom", cfg.custom_proxy),
+            url = trim(cfg.custom_proxy),
+            -- custom defaults to classic full-URL prefix style
+            style = "prefix",
+        }
+    end
+    local preset = Updater.lookup_proxy_preset(cfg.proxy_id)
+    if preset then
+        return preset
+    end
+    return Updater.lookup_proxy_preset("ghspeedup.com")
 end
 
 function Updater:resolve_proxy_base(cfg)
-    cfg = cfg or self:get_config()
-    if cfg.proxy_id == "custom" then
-        return trim(cfg.custom_proxy)
-    end
-    for _i, item in ipairs(Updater.PROXY_PRESETS) do
-        if item.id == cfg.proxy_id then
-            return item.url or ""
-        end
-    end
-    return "https://gh-proxy.com"
+    local entry = self:resolve_proxy_entry(cfg)
+    return entry and entry.url or "https://runn.i.ng"
 end
 
 function Updater:proxy_candidates(cfg)
     cfg = cfg or self:get_config()
-    local preferred = self:resolve_proxy_base(cfg)
+    local preferred = self:resolve_proxy_entry(cfg)
     local seen = {}
     local list = {}
-    local function push(base)
-        base = trim(base)
-        -- normalize trailing slash
-        base = base:gsub("/+$", "")
-        local key = base
+    local function push(entry)
+        if type(entry) ~= "table" then
+            return
+        end
+        local base = trim(entry.url or ""):gsub("/+$", "")
+        local style = entry.style or (base == "" and "direct" or "prefix")
+        local key = style .. "|" .. base
         if seen[key] then
             return
         end
         seen[key] = true
-        list[#list + 1] = base
+        list[#list + 1] = {
+            id = entry.id or base,
+            label = entry.label or base,
+            url = base,
+            style = style,
+        }
     end
     push(preferred)
-    -- Fallbacks for China networks when the selected proxy is down.
-    push("https://gh-proxy.com")
-    push("https://ghfast.top")
-    push("https://runn.i.ng")
-    push("") -- direct last
+    -- Fallbacks when the selected proxy cannot serve a given URL type.
+    for _i, item in ipairs(Updater.PROXY_PRESETS) do
+        push(item)
+    end
     return list
 end
 
-function Updater.wrap_proxy(proxy_base, raw_url)
+-- Convert GitHub / raw.githubusercontent URLs into ghspeedup path-style targets.
+-- Frontend site: https://ghspeedup.com  Worker: https://runn.i.ng
+-- Examples:
+--   https://github.com/o/r/releases/download/v1/a.zip
+--     -> https://runn.i.ng/o/r/releases/download/v1/a.zip
+--   https://raw.githubusercontent.com/o/r/main/_meta.lua
+--     -> https://runn.i.ng/o/r/main/_meta.lua
+--   https://github.com/o/r/archive/refs/heads/main.zip
+--     -> https://runn.i.ng/o/r/archive/refs/heads/main.zip
+function Updater.to_path_style_url(proxy_base, raw_url)
+    proxy_base = trim(proxy_base):gsub("/+$", "")
     raw_url = tostring(raw_url or "")
-    proxy_base = trim(proxy_base)
     if proxy_base == "" then
         return raw_url
     end
-    proxy_base = proxy_base:gsub("/+$", "")
+
+    local host, rest = raw_url:match("^https?://([^/]+)(/.*)$")
+    if not host then
+        return nil, "unsupported url for path-style proxy"
+    end
+    host = host:lower()
+    local path, query = rest, ""
+    local qpos = rest:find("?", 1, true)
+    if qpos then
+        path = rest:sub(1, qpos - 1)
+        query = rest:sub(qpos)
+    end
+    if path == "" then
+        path = "/"
+    end
+
+    local allowed = {
+        ["github.com"] = true,
+        ["www.github.com"] = true,
+        ["raw.githubusercontent.com"] = true,
+        ["media.githubusercontent.com"] = true,
+        ["codeload.github.com"] = true,
+    }
+    if not allowed[host] then
+        -- api.github.com and other hosts are not served by ghspeedup path worker
+        return nil, "host not supported by path-style proxy: " .. host
+    end
+
+    -- codeload.github.com/<owner>/<repo>/zip/refs/heads/<branch>
+    -- map to /<owner>/<repo>/archive/refs/heads/<branch>.zip
+    if host == "codeload.github.com" then
+        local owner, repo, kind, rest = path:match([[^/([^/]+)/([^/]+)/(zip|tar%.gz)/(.*)$]])
+        if owner and repo and rest then
+            local ext = (kind == "zip") and ".zip" or ".tar.gz"
+            path = string.format("/%s/%s/archive/%s%s", owner, repo, rest, ext)
+        end
+    end
+
+    return proxy_base .. path .. query
+end
+
+function Updater.wrap_proxy(proxy_or_entry, raw_url)
+    raw_url = tostring(raw_url or "")
+    local entry
+    if type(proxy_or_entry) == "table" then
+        entry = proxy_or_entry
+    else
+        local base = trim(proxy_or_entry)
+        entry = Updater.lookup_proxy_preset(base) or {
+            url = base,
+            style = (base == "" and "direct" or "prefix"),
+        }
+    end
+
+    local proxy_base = trim(entry.url or ""):gsub("/+$", "")
+    local style = entry.style or (proxy_base == "" and "direct" or "prefix")
+
+    if style == "direct" or proxy_base == "" then
+        return raw_url
+    end
+
+    if style == "path" then
+        local path_url, err = Updater.to_path_style_url(proxy_base, raw_url)
+        if not path_url then
+            return nil, err
+        end
+        return path_url
+    end
+
+    -- prefix style
     if raw_url:sub(1, #proxy_base + 1) == proxy_base .. "/" then
         return raw_url
     end
@@ -373,18 +511,26 @@ end
 
 function Updater:http_get_with_proxies(raw_url, opts)
     local errors = {}
-    for _i, proxy_base in ipairs(self:proxy_candidates()) do
-        local url = Updater.wrap_proxy(proxy_base, raw_url)
-        logger.info(LOG_MODULE, "updater GET", url)
-        local body, err = self:http_get(url, opts)
-        if body then
-            return body, nil, {
-                proxy = proxy_base,
-                url = url,
-            }
+    for _i, entry in ipairs(self:proxy_candidates()) do
+        local url, wrap_err = Updater.wrap_proxy(entry, raw_url)
+        local label = entry.label or entry.id or entry.url or "proxy"
+        if not url then
+            errors[#errors + 1] = string.format("%s => skip (%s)", label, tostring(wrap_err))
+            logger.warn(LOG_MODULE, "updater GET skip:", label, wrap_err)
+        else
+            logger.info(LOG_MODULE, "updater GET", url)
+            local body, err = self:http_get(url, opts)
+            if body then
+                return body, nil, {
+                    proxy = entry.url or "",
+                    proxy_id = entry.id,
+                    style = entry.style,
+                    url = url,
+                }
+            end
+            errors[#errors + 1] = string.format("%s => %s", label, tostring(err))
+            logger.warn(LOG_MODULE, "updater GET failed:", url, err)
         end
-        errors[#errors + 1] = string.format("%s => %s", proxy_base == "" and "direct" or proxy_base, tostring(err))
-        logger.warn(LOG_MODULE, "updater GET failed:", url, err)
     end
     return nil, table.concat(errors, "; ")
 end
@@ -397,54 +543,62 @@ function Updater:download_to_file(raw_url, local_path, opts)
     end
 
     local errors = {}
-    for _i, proxy_base in ipairs(self:proxy_candidates()) do
-        local url = Updater.wrap_proxy(proxy_base, raw_url)
-        logger.info(LOG_MODULE, "updater download", url)
-
-        local file, open_err = io.open(local_path, "wb")
-        if not file then
-            return false, open_err or "failed to open file for writing"
-        end
-
-        socketutil:set_timeout(
-            opts.block_timeout or socketutil.FILE_BLOCK_TIMEOUT or 30,
-            opts.total_timeout or socketutil.FILE_TOTAL_TIMEOUT or 300
-        )
-        local ok, code, headers, status = pcall(function()
-            local _, resp_code, resp_headers, resp_status = http.request{
-                url = url,
-                method = "GET",
-                redirect = true,
-                sink = socketutil.file_sink(file),
-                headers = {
-                    ["User-Agent"] = Updater.USER_AGENT,
-                    ["Accept"] = "application/zip, application/octet-stream, */*",
-                },
-            }
-            return resp_code, resp_headers, resp_status
-        end)
-        socketutil:reset_timeout()
-        pcall(function() file:close() end)
-
-        if not ok then
-            os.remove(local_path)
-            errors[#errors + 1] = string.format("%s => %s", proxy_base == "" and "direct" or proxy_base, tostring(code))
+    for _i, entry in ipairs(self:proxy_candidates()) do
+        local url, wrap_err = Updater.wrap_proxy(entry, raw_url)
+        local label = entry.label or entry.id or entry.url or "proxy"
+        if not url then
+            errors[#errors + 1] = string.format("%s => skip (%s)", label, tostring(wrap_err))
+            logger.warn(LOG_MODULE, "updater download skip:", label, wrap_err)
         else
-            local numeric = tonumber(code)
-            local size = lfs.attributes(local_path, "size") or 0
-            if numeric == 200 and size > 64 then
-                return true, nil, {
-                    proxy = proxy_base,
-                    url = url,
-                    bytes = size,
-                }
+            logger.info(LOG_MODULE, "updater download", url)
+
+            local file, open_err = io.open(local_path, "wb")
+            if not file then
+                return false, open_err or "failed to open file for writing"
             end
-            os.remove(local_path)
-            errors[#errors + 1] = string.format(
-                "%s => %s",
-                proxy_base == "" and "direct" or proxy_base,
-                tostring(status or code or "bad response")
+
+            socketutil:set_timeout(
+                opts.block_timeout or socketutil.FILE_BLOCK_TIMEOUT or 30,
+                opts.total_timeout or socketutil.FILE_TOTAL_TIMEOUT or 300
             )
+            local ok, code, headers, status = pcall(function()
+                local _, resp_code, resp_headers, resp_status = http.request{
+                    url = url,
+                    method = "GET",
+                    redirect = true,
+                    sink = socketutil.file_sink(file),
+                    headers = {
+                        ["User-Agent"] = Updater.USER_AGENT,
+                        ["Accept"] = "application/zip, application/octet-stream, */*",
+                    },
+                }
+                return resp_code, resp_headers, resp_status
+            end)
+            socketutil:reset_timeout()
+            pcall(function() file:close() end)
+
+            if not ok then
+                os.remove(local_path)
+                errors[#errors + 1] = string.format("%s => %s", label, tostring(code))
+            else
+                local numeric = tonumber(code)
+                local size = lfs.attributes(local_path, "size") or 0
+                if numeric == 200 and size > 64 then
+                    return true, nil, {
+                        proxy = entry.url or "",
+                        proxy_id = entry.id,
+                        style = entry.style,
+                        url = url,
+                        bytes = size,
+                    }
+                end
+                os.remove(local_path)
+                errors[#errors + 1] = string.format(
+                    "%s => %s",
+                    label,
+                    tostring(status or code or "bad response")
+                )
+            end
         end
     end
     return false, table.concat(errors, "; ")

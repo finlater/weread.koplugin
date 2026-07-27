@@ -64,7 +64,7 @@
 **插件更新**
 
 - 菜单内一键检查/下载/安装更新，无需电脑重新拷贝插件
-- 默认通过 `gh-proxy.com` 加速访问 GitHub（可选 `ghfast.top`、`runn.i.ng` 或直连）
+- 默认通过 [ghspeedup.com](https://ghspeedup.com/)（worker: `runn.i.ng`）加速访问 GitHub（可选 `gh-proxy.com`、`ghfast.top` 或直连）
 - 更新通道：
   - **自动**：优先 GitHub Release，没有正式版时回退到 `main` 分支 zipball
   - **正式版**：只使用 Release
@@ -87,6 +87,7 @@
 
 1. 打开 [Releases](https://github.com/rollingshmily/weread.koplugin/releases) 下载最新 `weread.koplugin-v*.zip`。
 2. 国内网络可在链接前加代理前缀，例如：
+   - `https://runn.i.ng/rollingshmily/weread.koplugin/releases/download/v0.5.1/weread.koplugin-v0.5.1.zip`（[ghspeedup.com](https://ghspeedup.com/)）
    - `https://gh-proxy.com/https://github.com/rollingshmily/weread.koplugin/releases/download/v0.5.1/weread.koplugin-v0.5.1.zip`
    - `https://ghfast.top/https://github.com/rollingshmily/weread.koplugin/releases/download/v0.5.1/weread.koplugin-v0.5.1.zip`
 3. 解压后把 `weread.koplugin/` 目录放到 KOReader 的 `plugins` 目录。
@@ -113,7 +114,7 @@ koreader/plugins/weread.koplugin/
 工具 → 微信读书 → 插件更新 → 检查更新
 ```
 
-默认使用 `gh-proxy.com` 拉取 GitHub 资源。如果某个代理不可用，可在同一菜单切换到 `ghfast.top` / `runn.i.ng` / 直连；检查与下载时也会自动尝试备用代理。
+默认使用 [ghspeedup.com](https://ghspeedup.com/)（实际请求走 `runn.i.ng` 路径模式）拉取 GitHub 资源。如果某个代理不可用，可在同一菜单切换到 `gh-proxy.com` / `ghfast.top` / 直连；检查与下载时也会自动尝试备用代理。
 
 ## 登录与认证
 
@@ -167,7 +168,7 @@ koreader/plugins/weread.koplugin/
 ├── 插件更新
 │   ├── 检查更新
 │   ├── 更新通道（自动 / 正式版 / 开发分支）
-│   ├── GitHub 代理（gh-proxy.com / ghfast.top / runn.i.ng / 直连）
+│   ├── GitHub 代理（ghspeedup.com / gh-proxy.com / ghfast.top / 直连）
 │   └── 启动时检查更新（默认关闭）
 └── 关于
 ```

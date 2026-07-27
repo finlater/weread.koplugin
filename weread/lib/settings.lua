@@ -55,8 +55,8 @@ local defaults = {
         -- auto: prefer GitHub release, fall back to branch zipball
         channel = "auto",
         branch = "main",
-        -- gh-proxy.com | ghfast.top | runn.i.ng | direct | custom
-        proxy_id = "gh-proxy.com",
+        -- ghspeedup.com | gh-proxy.com | ghfast.top | direct | custom
+        proxy_id = "ghspeedup.com",
         custom_proxy = "",
         check_on_start = false,
         last_check = 0,

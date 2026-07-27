@@ -142,9 +142,9 @@ return {
 assert_eq(Updater.extract_version_from_meta(meta), "0.5.1", "extract version")
 
 assert_eq(
-    Updater.wrap_proxy("https://gh-proxy.com", "https://github.com/a/b.zip"),
-    "https://gh-proxy.com/https://github.com/a/b.zip",
-    "proxy wrap"
+    Updater.wrap_proxy("https://gh-proxy.com", "https://github.com/a/b/releases/download/v1/x.zip"),
+    "https://gh-proxy.com/https://github.com/a/b/releases/download/v1/x.zip",
+    "prefix proxy wrap"
 )
 assert_eq(
     Updater.wrap_proxy("", "https://github.com/a/b.zip"),
@@ -152,15 +152,32 @@ assert_eq(
     "direct wrap"
 )
 assert_eq(
-    Updater.wrap_proxy("https://gh-proxy.com/", "https://github.com/a/b.zip"),
-    "https://gh-proxy.com/https://github.com/a/b.zip",
-    "proxy trailing slash"
+    Updater.wrap_proxy({
+        url = "https://runn.i.ng",
+        style = "path",
+    }, "https://github.com/a/b/releases/download/v1/x.zip"),
+    "https://runn.i.ng/a/b/releases/download/v1/x.zip",
+    "ghspeedup path wrap release"
 )
+assert_eq(
+    Updater.wrap_proxy({
+        url = "https://runn.i.ng",
+        style = "path",
+    }, "https://raw.githubusercontent.com/a/b/main/_meta.lua"),
+    "https://runn.i.ng/a/b/main/_meta.lua",
+    "ghspeedup path wrap raw"
+)
+local skipped, skip_err = Updater.wrap_proxy({
+    url = "https://runn.i.ng",
+    style = "path",
+}, "https://api.github.com/repos/a/b/releases/latest")
+assert_eq(skipped, nil, "path style skips api.github.com")
+assert(type(skip_err) == "string" and skip_err ~= "", "path style skip error")
 
 local fake_settings = {
     data = {
         update = {
-            proxy_id = "ghfast.top",
+            proxy_id = "ghspeedup.com",
             channel = "auto",
         },
     },
@@ -177,9 +194,14 @@ end
 function fake_settings:flush() end
 
 local updater = Updater:new{ settings = fake_settings }
-assert_eq(updater:resolve_proxy_base(), "https://ghfast.top", "resolve proxy")
+assert_eq(updater:resolve_proxy_base(), "https://runn.i.ng", "resolve ghspeedup worker")
 local candidates = updater:proxy_candidates()
-assert_eq(candidates[1], "https://ghfast.top", "preferred proxy first")
-assert_eq(candidates[#candidates], "", "direct last")
+assert_eq(candidates[1].id, "ghspeedup.com", "preferred proxy first")
+assert_eq(candidates[1].style, "path", "ghspeedup path style")
+assert_eq(candidates[#candidates].style, "direct", "direct last")
+
+-- old preset id should migrate
+fake_settings.data.update.proxy_id = "runn.i.ng"
+assert_eq(updater:get_config().proxy_id, "ghspeedup.com", "migrate runn.i.ng id")
 
 print("updater_spec: ok")
