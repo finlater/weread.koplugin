@@ -1,15 +1,35 @@
-# WeRead KOReader Plugin
+# WeRead KOReader Plugin（二开版）
 
-> **免责声明**：本项目仅供个人学习和技术研究使用，不得用于商业用途。使用本项目所产生的一切后果（包括但不限于账号封禁、数据丢失等）由使用者自行承担，项目作者概不负责。请遵守微信读书的用户协议和相关法律法规。
+> **本仓库说明**：这是基于原作者 **[finlater/weread.koplugin](https://github.com/finlater/weread.koplugin)** 的二次开发分支，**不是**上游官方仓库。  
+> 核心阅读、登录、同步、统计等能力均来自原项目；本仓库在其之上增加了**国内可访问的在线更新**、**自动 Release 发版**等改动。  
+> 请优先给原作者点 Star / 提上游问题：https://github.com/finlater/weread.koplugin
+
+> **免责声明**：本项目仅供个人学习和技术研究使用，不得用于商业用途。使用本项目所产生的一切后果（包括但不限于账号封禁、数据丢失等）由使用者自行承担，项目作者与二开维护者概不负责。请遵守微信读书的用户协议和相关法律法规。
 
 在 KOReader 上阅读微信读书书籍和公众号文章、同步阅读时长的插件。
 
-## 相关项目
+## 本仓库相对原版的改动
 
-| 插件 | 简介 |
+| 改动 | 说明 |
 |------|------|
-| [kindlebtcontroller.koplugin](https://github.com/finlater/kindlebtcontroller.koplugin) | 蓝牙手柄/遥控器控制 Kindle —— 翻页、调节亮度、章节跳转等 20+ 操作，按键完全可自定义 |
-| [one.koplugin](https://github.com/finlater/one.koplugin) | 在 KOReader 上离线阅读「ONE · 一个」每日更新：一图、一文、一问答 |
+| **插件内在线更新** | 菜单 `工具 → 微信读书 → 插件更新`，设备上直接检查 / 下载 / 安装，不必每次用电脑覆盖插件目录 |
+| **国内 GitHub 代理** | 默认 [ghspeedup.com](https://ghspeedup.com/)（worker: `runn.i.ng` 路径模式）；备用 `gh-proxy.com`、`ghfast.top`、直连；失败自动换备用 |
+| **更新通道** | 自动（优先 Release，否则 `main`）/ 仅正式版 / 仅开发分支；可选启动时检查（默认关，12 小时节流） |
+| **自动 Release** | 修改 `_meta.lua` 的 `version` 并推送 `main` 后，GitHub Actions 自动打 tag 并上传 `weread.koplugin-v*.zip` |
+| **登录与缓存隔离** | 登录态在 `settings/weread.lua`，书籍在 `weread/`，**不在** `plugins/`；覆盖/在线更新插件不会清掉扫码登录和已下载内容 |
+| **从原作者版平滑迁移** | 与上游共用同一配置文件与字段（`AUTH_SCHEMA_VERSION = 1`）；只替换 `plugins/weread.koplugin/` 即可继承原登录态 |
+
+> 上游原有功能（书架、EPUB/公众号下载、进度同步、阅读时长上报、划线想法、阅读统计等）保持兼容；下列「功能」章节描述的是完整能力集（含上游能力 + 本仓库增量）。
+
+### 相关链接
+
+| 项目 | 链接 |
+|------|------|
+| 原作者仓库 | https://github.com/finlater/weread.koplugin |
+| 本二开仓库 | https://github.com/rollingshmily/weread.koplugin |
+| 本仓库 Releases | https://github.com/rollingshmily/weread.koplugin/releases |
+| [kindlebtcontroller.koplugin](https://github.com/finlater/kindlebtcontroller.koplugin) | 蓝牙手柄/遥控器控制 Kindle |
+| [one.koplugin](https://github.com/finlater/one.koplugin) | KOReader 离线阅读「ONE · 一个」 |
 
 ## 功能
 
@@ -87,9 +107,9 @@
 
 1. 打开 [Releases](https://github.com/rollingshmily/weread.koplugin/releases) 下载最新 `weread.koplugin-v*.zip`。
 2. 国内网络可在链接前加代理前缀，例如：
-   - `https://runn.i.ng/rollingshmily/weread.koplugin/releases/download/v0.5.1/weread.koplugin-v0.5.1.zip`（[ghspeedup.com](https://ghspeedup.com/)）
-   - `https://gh-proxy.com/https://github.com/rollingshmily/weread.koplugin/releases/download/v0.5.1/weread.koplugin-v0.5.1.zip`
-   - `https://ghfast.top/https://github.com/rollingshmily/weread.koplugin/releases/download/v0.5.1/weread.koplugin-v0.5.1.zip`
+   - `https://runn.i.ng/rollingshmily/weread.koplugin/releases/download/v0.5.2/weread.koplugin-v0.5.2.zip`（[ghspeedup.com](https://ghspeedup.com/)）
+   - `https://gh-proxy.com/https://github.com/rollingshmily/weread.koplugin/releases/download/v0.5.2/weread.koplugin-v0.5.2.zip`
+   - `https://ghfast.top/https://github.com/rollingshmily/weread.koplugin/releases/download/v0.5.2/weread.koplugin-v0.5.2.zip`
 3. 解压后把 `weread.koplugin/` 目录放到 KOReader 的 `plugins` 目录。
 
 ### 方式二：手动复制源码目录
@@ -181,8 +201,12 @@ koreader/plugins/weread.koplugin/
 
 `fonts/NotoEmoji-Regular.ttf` 是第三方字体，采用 [SIL Open Font License 1.1](fonts/LICENSE)，不适用本项目的 AGPL-3.0。
 
-Copyright © 2026 finlater and contributors.
+Copyright © 2026 finlater and contributors.  
+本仓库二次开发部分 Copyright © 2026 rollingshmily and contributors.
 
 ## 贡献
 
-欢迎提交 issue 和 PR。提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+- **上游功能 / 通用 Bug**：优先到原作者仓库反馈：https://github.com/finlater/weread.koplugin  
+- **本仓库二开改动**（在线更新、代理、Release 流程等）：在本仓库提 issue / PR  
+
+提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
