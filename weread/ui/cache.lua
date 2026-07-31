@@ -7,7 +7,6 @@ local PathChooser = require("ui/widget/pathchooser")
 local Scan = require("weread.lib.scan")
 local UIManager = require("ui/uimanager")
 local WeRead = require("weread.lib.protocol")
-local ReadCollection = require("readcollection")
 
 local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
@@ -656,6 +655,7 @@ function M:clearBookCache(book_id)
     -- Drop the full-book EPUB from the local "weread" collection when its cache is cleared.
     if cached_file then
         pcall(function()
+			local ReadCollection = require("readcollection")
             if not ReadCollection.coll then
                 ReadCollection:_read()
             end
@@ -673,24 +673,23 @@ function M:clearAllMPCache()
     -- Also drop matching entries from the local "weread" collection.
     local books = self.settings:get("books", {})
     pcall(function()
+        local ReadCollection = require("readcollection")
         if not ReadCollection.coll then
             ReadCollection:_read()
         end
+        for book_id, book in pairs(books) do
+            if WeRead.is_mp_book(book_id) and book and book.cached_file then
+                ReadCollection:removeItem(book.cached_file, "weread")
+            end
+        end
+        ReadCollection:write({ weread = true })
     end)
     for book_id, book in pairs(books) do
         if WeRead.is_mp_book(book_id) then
-            if book and book.cached_file then
-                pcall(function()
-                    ReadCollection:removeItem(book.cached_file, "weread")
-                end)
-            end
             os.execute("rm -rf " .. string.format("%q", Content.book_resolved_dir(self.settings, book_id, book)))
             books[book_id] = nil
         end
     end
-    pcall(function()
-        ReadCollection:write({ weread = true })
-    end)
     self.settings:set("books", books)
     self.settings:flush()
     self:refreshShelfCacheIndicators()
@@ -701,21 +700,20 @@ end
 function M:clearAllCache()
     local books = self.settings:get("books", {})
     pcall(function()
+        local ReadCollection = require("readcollection")
         if not ReadCollection.coll then
             ReadCollection:_read()
         end
-    end)
-    for book_id, book in pairs(books) do
-        if book and book.cached_file then
-            pcall(function()
+        for _id, book in pairs(books) do
+            if book and book.cached_file then
                 ReadCollection:removeItem(book.cached_file, "weread")
-            end)
+            end
         end
-        os.execute("rm -rf " .. string.format("%q", Content.book_resolved_dir(self.settings, book_id, book)))
-    end
-    pcall(function()
         ReadCollection:write({ weread = true })
     end)
+    for book_id, book in pairs(books) do
+        os.execute("rm -rf " .. string.format("%q", Content.book_resolved_dir(self.settings, book_id, book)))
+    end
     self.settings:set("books", {})
     self.settings:flush()
     self:refreshShelfCacheIndicators()
