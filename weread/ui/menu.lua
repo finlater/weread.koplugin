@@ -8,6 +8,8 @@ local logger = require("weread.lib.logger")
 local UIManager = require("ui/uimanager")
 local ThoughtPopup = require("weread.ui.thought_popup")
 local WeRead = require("weread.lib.protocol")
+local FileManager = require("apps/filemanager/filemanager")
+local ReadCollection = require("readcollection")
 
 local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
@@ -73,6 +75,12 @@ function M:getMainMenuItems()
             text = _("Bookshelf"),
             callback = self:safeCallback(_("Bookshelf"), function()
                 self:showBookshelf()
+            end),
+        },
+        {
+            text = _("Local bookshelf"),
+            callback = self:safeCallback(_("Local bookshelf"), function()
+                self:showWereadCollection()
             end),
         },
         {
@@ -471,6 +479,40 @@ function M:getSettingsMenuItems()
             end,
         },
     }
+end
+
+-- Open the local "weread" KOReader collection as a lightweight local bookshelf.
+-- Creates the collection on first use. Prefers the live FileManager instance;
+-- falls back to switching into FileManager when called from the reader.
+function M:showWereadCollection()
+    local COLLECTION_NAME = "weread"
+
+    if not ReadCollection.coll then
+        ReadCollection:_read()
+    end
+    if not ReadCollection.coll[COLLECTION_NAME] then
+        ReadCollection:addCollection(COLLECTION_NAME)
+        ReadCollection:write({ [COLLECTION_NAME] = true })
+    end
+    local fm = FileManager.instance
+    if fm and fm.collections then
+        fm.collections:onShowColl(COLLECTION_NAME)
+        return
+    end
+    if self.ui and self.ui.document and self.ui.showFileManager then
+        local file = self.ui.document.file
+        self.ui:onClose()
+        self.ui:showFileManager(file)
+        local fm2 = FileManager.instance
+        if fm2 and fm2.collections then
+            fm2.collections:onShowColl(COLLECTION_NAME)
+        end
+        return
+    end
+
+    if self.ui and self.ui.collections then
+        self.ui.collections:onShowColl(COLLECTION_NAME)
+    end
 end
 
 -- Let the user pick how wide the left/right page-turn edge zone is (percent of

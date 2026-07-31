@@ -4,6 +4,7 @@ local zh = {
     ["WeRead"] = "微信读书",
     ["WeRead · Sync reading progress"] = "微信读书·同步阅读进度",
     ["Bookshelf"] = "书架",
+    ["Local bookshelf"] = "本地书架",
     ["Search"] = "搜索",
     ["Settings"] = "设置",
     ["Sync progress now"] = "立即同步进度",

@@ -18,6 +18,7 @@ local UIManager = require("ui/uimanager")
 local logger = require("weread.lib.logger")
 local time = require("ui/time")
 local T = require("ffi/util").template
+local ReadCollection = require("readcollection")
 
 local Content = require("weread.lib.content")
 local DownloadDialog = require("weread.ui.download_dialog")
@@ -874,6 +875,23 @@ function Downloader:_step(dl)
             end
             return
         end
+        -- Add full-book EPUB to local "weread" collection (skip single-chapter)
+        if not dl.single_chapter then
+            pcall(function()
+                local COLLECTION_NAME = "weread"
+                if not ReadCollection.coll then
+                    ReadCollection:_read()
+                end
+                if not ReadCollection.coll[COLLECTION_NAME] then
+                    ReadCollection:addCollection(COLLECTION_NAME)
+                end
+                if not ReadCollection:isFileInCollection(path, COLLECTION_NAME) then
+                    ReadCollection:addItem(path, COLLECTION_NAME)
+                    ReadCollection:write({ [COLLECTION_NAME] = true })
+                end
+            end)
+        end
+
         if #dl.failed > 0 then
             logger.warn(
                 "book download completed with skipped chapters:",
