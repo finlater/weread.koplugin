@@ -5,6 +5,7 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 
 local Client = require("weread.lib.client")
 local Downloader = require("weread.lib.downloader")
+local LibraryDB = require("weread.lib.library_db")
 local Mixin = require("weread.lib.mixin")
 local Migrations = require("weread.lib.migrations")
 local PluginUtil = require("weread.lib.plugin_util")
@@ -25,6 +26,7 @@ local WeReadPlugin = WidgetContainer:extend{
 function WeReadPlugin:init()
     math.randomseed(os.time())
     self.settings = Settings:new()
+    self.library_db = LibraryDB:new(self.settings)
     self.client = Client:new(self.settings)
     self.downloader = Downloader:new{
         client = self.client,

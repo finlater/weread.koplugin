@@ -232,6 +232,9 @@ function M:confirmClearAccount()
             self.qr_login:cancel()
             self.read_report:stop("account_cleared")
             self.settings:reset_account()
+            if self.onWeReadAccountChanged then
+                self:onWeReadAccountChanged()
+            end
             self:refreshLoginMenu()
             self:showInfo(_("WeRead account data cleared."))
         end),
