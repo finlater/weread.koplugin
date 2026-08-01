@@ -45,13 +45,14 @@ local ok, index = BookStore.save(settings, "book/42", {
     chapters = { { chapterUid = 9 } },
 })
 expect(ok == true, "split book save failed")
-expect(index.cache_dir == root .. "/book_42",
+-- Fork layout: flat EPUBs in the library root, sidecars under <root>/meta/<bookId>.
+expect(index.cache_dir == root .. "/meta/book_42",
     "book id was not sanitized for the cache directory")
 expect(BookStore.is_minimal_index({ ["book/42"] = index }),
     "saved index was not minimal")
 expect(not BookStore.is_minimal_index({
-    ["book/42"] = { cache_dir = index.cache_dir, title = "legacy" },
-}), "legacy inline metadata was accepted as a minimal index")
+    ["book/42"] = { cache_dir = index.cache_dir, progress = 37 },
+}), "inline reading state was accepted as a minimal index")
 
 local function exists(path)
     local file = io.open(path, "rb")
