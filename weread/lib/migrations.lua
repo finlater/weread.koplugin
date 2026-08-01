@@ -1,6 +1,11 @@
 local Content = require("weread.lib.content")
 local logger = require("weread.lib.logger")
-local lfs = require("libs/libkoreader-lfs")
+-- libkoreader-lfs ships with KOReader; in bare CI/spec environments it is
+-- absent and the repair pass degrades to a no-op (catalog migration still runs).
+local ok_lfs, lfs = pcall(require, "libs/libkoreader-lfs")
+if not ok_lfs then
+    lfs = nil
+end
 
 local PluginUtil = require("weread.lib.plugin_util")
 local log_error = PluginUtil.log_error
@@ -8,11 +13,13 @@ local log_error = PluginUtil.log_error
 local Migrations = {}
 
 local function is_dir(path)
-    return type(path) == "string" and path ~= "" and lfs.attributes(path, "mode") == "directory"
+    return lfs ~= nil and type(path) == "string" and path ~= ""
+        and lfs.attributes(path, "mode") == "directory"
 end
 
 local function is_file(path)
-    return type(path) == "string" and path ~= "" and lfs.attributes(path, "mode") == "file"
+    return lfs ~= nil and type(path) == "string" and path ~= ""
+        and lfs.attributes(path, "mode") == "file"
 end
 
 local function dirname(path)

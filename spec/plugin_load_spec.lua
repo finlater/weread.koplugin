@@ -119,6 +119,11 @@ package.preload["weread.lib.reader_lifecycle"] = function()
     }
 end
 
+package.preload["weread.ui.update"] = function()
+    -- Fork-only module; depends on KOReader UI widgets not present here.
+    return {}
+end
+
 package.preload["weread.ui.common"] = function()
     return {
         showInfo = function() end,
