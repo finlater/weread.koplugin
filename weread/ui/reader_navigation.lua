@@ -1,24 +1,56 @@
 -- End-of-book navigation dialog integration.
 local EndOfBookDialog = require("weread.ui.end_of_book_dialog")
+local PluginUtil = require("weread.lib.plugin_util")
+local WeRead = require("weread.lib.protocol")
+
+local _ = PluginUtil.tr
 
 local M = {}
+
+-- Dispatcher entry point used by KOReader gesture/profile actions. The quick
+-- menu is a global WeRead entry point; actions that need a current WeRead book
+-- explain why they are unavailable when invoked from another document.
+function M:onShowWeReadQuickMenu()
+    return self:showEndOfBookDialog(self:detectWeReadBook())
+end
+
+-- Dispatcher entry point for a gesture that opens the WeRead bookshelf from
+-- any document currently open in KOReader.
+function M:onShowWeReadBookshelf()
+    self:showBookshelf()
+    return true
+end
 
 function M:showEndOfBookDialog(book_id)
     local file_path = self.ui.document and self.ui.document.file
     if not file_path then return false end
 
     local books = self.settings:get("books", {})
-    local book = books[book_id]
-    if not book or not self:ensureChaptersLoaded(book) then return false end
+    local book = book_id and (books[tostring(book_id)] or books[book_id]) or nil
+    local is_regular_weread_book = book ~= nil and not WeRead.is_mp_book(book_id)
+    local chapters = is_regular_weread_book and self:ensureChaptersLoaded(book) or nil
 
-    local current_idx, current_ch, is_full_book = self:getChapterInfoFromFile(book, file_path)
+    local current_idx, is_full_book
+    if chapters then
+        local chapter_info = { self:getChapterInfoFromFile(book, file_path) }
+        current_idx, is_full_book = chapter_info[1], chapter_info[3]
+    end
     -- The chapter-nav row is shown only for single downloaded chapters (a mapped
     -- current chapter that is not part of a full-book EPUB); "next chapter"
     -- additionally requires a successor.
-    local show_chapter_nav = current_idx ~= nil and not is_full_book
-    local next_chapter = show_chapter_nav and book.chapters[current_idx + 1] or nil
+    local next_chapter = current_idx and not is_full_book
+        and chapters[current_idx + 1] or nil
 
-    EndOfBookDialog.show({ show_chapter_nav = show_chapter_nav, has_next = next_chapter ~= nil }, {
+    local function show_context_required()
+        self:showTransientInfo(
+            _("This action requires an open WeRead book."), 1)
+    end
+
+    EndOfBookDialog.show({
+        show_chapter_nav = true,
+        show_next_chapter = true,
+        show_sync_progress = true,
+    }, {
         on_bookshelf = function()
             self:showBookshelf()
         end,
@@ -26,16 +58,37 @@ function M:showEndOfBookDialog(book_id)
             self:showSearch()
         end,
         on_chapter_list = function()
-            self:showChapterList(book)
+            if chapters then
+                self:showChapterList(book)
+            else
+                show_context_required()
+            end
         end,
-        on_next = next_chapter and function()
-            self:openChapter(book, next_chapter)
-        end or nil,
+        on_next = function()
+            if next_chapter then
+                self:openChapter(book, next_chapter)
+            elseif is_regular_weread_book then
+                self:showTransientInfo(_("You have reached the last chapter."), 1)
+            else
+                show_context_required()
+            end
+        end,
         on_book_details = function()
-            self:showCurrentBookDetails()
+            if book then
+                self:showCurrentBookDetails()
+            else
+                show_context_required()
+            end
         end,
         on_read_stats = function()
             self:showReadStats()
+        end,
+        on_sync_progress = function()
+            if is_regular_weread_book then
+                self:onWeReadSyncProgress()
+            else
+                show_context_required()
+            end
         end,
         on_close_book = function()
             -- Mirror KOReader's ReaderStatus:openFileBrowser(): closing the

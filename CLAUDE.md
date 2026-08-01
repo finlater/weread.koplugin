@@ -21,6 +21,7 @@ weread/lib/reader_lifecycle.lua KOReader lifecycle and reader-state orchestratio
 weread/lib/client.lua         HTTP client (cookie-auth Web API + Bearer-auth gateway API)
 weread/lib/book_store.lua     Per-book metadata, reading-state, and article-list persistence
 weread/lib/content.lua        Content decoding (e_0/e_1/e_2/e_3), EPUB/HTML generation
+weread/lib/footnotes.lua      Network-free book-footnote scanning, indexing, conversion, and validation
 weread/lib/cookie.lua         Cookie header parsing and merging
 weread/lib/crypto.lua         SHA-256, MD5 (pure Lua)
 weread/lib/downloader.lua     Book/chapter download engine (state machine + standby guard)

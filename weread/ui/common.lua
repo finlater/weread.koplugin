@@ -149,16 +149,19 @@ function M:runNetworkAction(label, action)
     end)
 end
 
-function M:showList(title, items, empty_text)
+function M:showList(title, items, empty_text, options)
     if not items or #items == 0 then
         self:showInfo(empty_text or _("No items."))
         return
     end
+    options = options or {}
     local menu = Menu:new{
         title = title,
         item_table = items,
         is_borderless = true,
         title_bar_fm_style = true,
+        items_per_page = options.items_per_page,
+        subtitle = options.subtitle,
     }
     UIManager:show(menu)
     return menu
@@ -230,6 +233,9 @@ function M:confirmClearAccount()
             self.qr_login:cancel()
             self.read_report:stop("account_cleared")
             self.settings:reset_account()
+            if self.onWeReadAccountChanged then
+                self:onWeReadAccountChanged()
+            end
             self:refreshLoginMenu()
             self:showInfo(_("WeRead account data cleared."))
         end),

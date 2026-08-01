@@ -52,6 +52,7 @@ local function meta_root(settings)
     if type(root) ~= "string" or root == "" then
         root = (settings.data_dir or settings.cache_dir) .. "/meta"
     end
+
     return tostring(root):gsub("/+$", "")
 end
 
@@ -92,6 +93,7 @@ local function resolved_dir(settings, book_id, book)
         -- writing metadata.json into the book library.
         if pinned == canonical or dir_has_sidecar(pinned) then
             return pinned
+
         end
     end
     local dir = type(book) == "table" and dirname(book.cached_file) or nil

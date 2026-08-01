@@ -32,6 +32,8 @@ local defaults = {
         download_book_images = true,
         download_mp_images = false,
         download_underlines_and_thoughts = false,
+        auto_prefetch_next_chapter = false,
+        show_prefetch_notifications = true,
         show_annotations = true,
         -- When true, taps in the left/right edge zones never open thought popups
         -- (and native #wrthought link follow is suppressed there too).
@@ -136,6 +138,14 @@ function Settings:new()
     end
     if cache.download_underlines_and_thoughts == nil then
         cache.download_underlines_and_thoughts = false
+        cache_changed = true
+    end
+    if cache.auto_prefetch_next_chapter == nil then
+        cache.auto_prefetch_next_chapter = false
+        cache_changed = true
+    end
+    if cache.show_prefetch_notifications == nil then
+        cache.show_prefetch_notifications = true
         cache_changed = true
     end
     if cache.show_annotations == nil then

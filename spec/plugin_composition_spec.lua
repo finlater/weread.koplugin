@@ -42,7 +42,6 @@ package.loaded.logger = {
     err = function() end,
 }
 package.loaded["weread.lib.plugin_util"] = {
-    LOG_MODULE = "[WeRead]",
     log_error = tostring,
 }
 

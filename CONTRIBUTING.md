@@ -70,6 +70,9 @@ Never include these in issues, logs, screenshots, or PRs:
 - Full cURL commands copied from browser developer tools.
 - Account IDs, private notes, or private book content.
 
+HTTP failure logs include the original response body for diagnostics. Review
+and remove sensitive or private response content before sharing `crash.log`.
+
 不要在 issue、日志、截图或 PR 中包含：
 
 - API key，例如 `wrk-...`。
@@ -77,6 +80,9 @@ Never include these in issues, logs, screenshots, or PRs:
 - `x-wrpa-*` 请求头。
 - 从浏览器开发者工具复制的完整 cURL。
 - 账号信息、私人笔记或私人书籍内容。
+
+HTTP 失败日志会记录服务端原始响应体。分享 `crash.log` 前必须先检查并删除其中的
+敏感信息或私人内容。
 
 ## Pull Requests / 提交 PR
 
@@ -123,6 +129,7 @@ Feature PRs must describe:
 - Code, variable names, and commit messages should be in English.
 - All project-owned Lua modules must live under the `weread/` namespace: non-UI code in `weread/lib/` using `require("weread.lib.<module>")`, and UI code in `weread/ui/` using `require("weread.ui.<module>")`.
 - Do not add project-owned modules to root-level `lib/` or `ui/`, or load them through bare `lib.*` / `ui.*` module keys. KOReader-owned imports such as `require("ui/widget/menu")` are exempt.
+- Use `require("weread.lib.logger")` for project logging. Do not require KOReader's `logger` directly or manually add a `[WeRead]` prefix.
 - User-facing strings should use `_()` and be translated in `weread/lib/i18n.lua`.
 - If menu items are added, removed, renamed, or moved, update `weread/ui/menu.lua` (or the owning feature UI module), `weread/lib/i18n.lua`, and the README menu tree together.
 - For non-public WeRead Web APIs, include a standalone reproducible Python verification script in `scripts/` before implementing it in Lua.
@@ -133,6 +140,7 @@ Feature PRs must describe:
 - 代码、变量名和 commit message 使用英文。
 - 所有项目自有 Lua 模块必须位于 `weread/` 命名空间下：非 UI 代码放在 `weread/lib/`，并使用 `require("weread.lib.<module>")`；UI 代码放在 `weread/ui/`，并使用 `require("weread.ui.<module>")`。
 - 不要在根目录新增项目自有的 `lib/` 或 `ui/` 模块，也不要使用裸 `lib.*` / `ui.*` 模块键。`require("ui/widget/menu")` 等 KOReader 自带依赖不受此限制。
+- 项目日志统一使用 `require("weread.lib.logger")`，不要直接引用 KOReader 的 `logger`，也不要手动添加 `[WeRead]` 前缀。
 - 用户可见文本需要使用 `_()`，并在 `weread/lib/i18n.lua` 中添加中文翻译。
 - 如果新增、删除、重命名或移动菜单项，需要同时更新 `weread/ui/menu.lua`（或对应功能的 UI 模块）、`weread/lib/i18n.lua` 和 README 菜单结构。
 - 涉及非公开 WeRead Web API 时，必须先在 `scripts/` 中提交可独立运行、可复现的 Python 验证脚本，再实现 Lua 版本。
@@ -143,15 +151,33 @@ Feature PRs must describe:
 Before submitting a PR, run the relevant checks if possible:
 
 ```bash
-find . -name '*.lua' -print0 | xargs -0 -n1 luac -p
+bash scripts/run_lua_specs.sh
+bash scripts/check_lua_namespace.sh
+luacheck main.lua _meta.lua weread spec
 python3 -m py_compile scripts/*.py
+bash scripts/package_release.sh /tmp/weread.koplugin-release-test.zip
 rg -n -P "wrk-(?!x{8,})[A-Za-z0-9_-]{12,}|(wr_skey|wr_rt|wr_vid|ptcz)=((?!XXX)[^;[:space:]'\''\"]{8,})|x-wrpa-[0-9]+:\s*((?!\.\.\.)[A-Za-z0-9+/=_-]{12,})|thirdwx[=:]\s*[A-Za-z0-9_-]{8,}" . --glob '!cache/**' --glob '!*.epub'
 ```
 
 提交 PR 前，如果可以，请运行相关检查：
 
 ```bash
-find . -name '*.lua' -print0 | xargs -0 -n1 luac -p
+bash scripts/run_lua_specs.sh
+bash scripts/check_lua_namespace.sh
+luacheck main.lua _meta.lua weread spec
 python3 -m py_compile scripts/*.py
+bash scripts/package_release.sh /tmp/weread.koplugin-release-test.zip
 rg -n -P "wrk-(?!x{8,})[A-Za-z0-9_-]{12,}|(wr_skey|wr_rt|wr_vid|ptcz)=((?!XXX)[^;[:space:]'\''\"]{8,})|x-wrpa-[0-9]+:\s*((?!\.\.\.)[A-Za-z0-9+/=_-]{12,})|thirdwx[=:]\s*[A-Za-z0-9_-]{8,}" . --glob '!cache/**' --glob '!*.epub'
 ```
+
+See [docs/testing.md](docs/testing.md) for the test layers, required regression
+coverage, and the pinned KOReader PluginLoader integration test.
+
+测试分层、回归测试要求和固定 KOReader 版本的 PluginLoader 集成测试说明，见
+[docs/testing.md](docs/testing.md)。
+
+Release packaging, manual artifacts, and automatic version-based publishing
+are documented in [docs/releasing.md](docs/releasing.md).
+
+发布包结构、手动打包和基于版本号的自动发布流程，见
+[docs/releasing.md](docs/releasing.md)。

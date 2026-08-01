@@ -476,7 +476,7 @@ def make_chapter_xhtml(title: str, source: str, css_href: str = "../styles/werea
     body = extract_body(source)
     return f'''<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="zh-CN">
 <head>
   <meta charset="utf-8"/>
   <title>{html.escape(title)}</title>

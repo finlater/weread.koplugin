@@ -45,8 +45,8 @@ package.preload["ffi/util"] = function()
 end
 package.preload["weread.lib.content"] = function()
     return {
-        save_chapter_epub = function()
-            return "/cache/book/chapter-22.epub"
+        save_chapter_epub = function(_settings, _book, chapter)
+            return "/cache/book/chapter-" .. tostring(chapter.chapterUid) .. ".epub"
         end,
     }
 end
@@ -79,16 +79,26 @@ local function eq(got, want, label)
 end
 
 local stored_books
+local live_books = {
+    book = {
+        book_id = "book",
+        progress = 88,
+        cached_chapters = { existing = "/cache/book/existing.epub" },
+    },
+}
 local opened
 local completion_count = 0
 local completion_ok
 local completion_path
 local settings = {
     get = function(_self, key)
-        return key == "books" and {} or nil
+        return key == "books" and live_books or nil
     end,
     set = function(_self, key, value)
-        if key == "books" then stored_books = value end
+        if key == "books" then
+            stored_books = value
+            live_books = value
+        end
     end,
     flush = function() end,
 }
@@ -131,6 +141,43 @@ eq(opened, "/cache/book/chapter-22.epub", "automatically opened path")
 eq(#shown, 0, "no redundant read-now dialog")
 eq(stored_books.book.cached_chapters["22"],
     "/cache/book/chapter-22.epub", "target chapter persisted")
+eq(stored_books.book.progress, 88,
+    "download cache merge preserved newer reading progress")
+eq(stored_books.book.cached_chapters.existing, "/cache/book/existing.epub",
+    "download cache merge preserved unrelated chapter mappings")
+
+local chapter_33 = { chapterUid = 33, title = "Other" }
+live_books.book.cached_file = "/cache/book/full.epub"
+live_books.book.cached_full_book = "/cache/book/full.epub"
+local separate = {
+    book = {
+        book_id = "book",
+        title = "Book",
+        cached_file = "/cache/book/full.epub",
+        cached_full_book = "/cache/book/full.epub",
+    },
+    chapters = { chapter, chapter_33 },
+    selected = { chapter, chapter_33 },
+    bodies = { ["22"] = "<p>22</p>", ["33"] = "<p>33</p>" },
+    assets = {},
+    assets_by_uid = { ["22"] = {}, ["33"] = {} },
+    state = { css = "" },
+    suffix = "chapters",
+    index = 3,
+    total = 2,
+    failed = {},
+    annotation_failed_batches = 0,
+    separate_chapters = true,
+    silent_completion = true,
+    started_at = 999,
+}
+downloader:_step(separate)
+eq(stored_books.book.cached_chapters["22"],
+    "/cache/book/chapter-22.epub", "first selected chapter persisted separately")
+eq(stored_books.book.cached_chapters["33"],
+    "/cache/book/chapter-33.epub", "second selected chapter persisted separately")
+eq(stored_books.book.cached_full_book, "/cache/book/full.epub",
+    "partial download preserved the full-book cache")
 
 print(string.format(
     "downloader_completion_spec: %d checks, %d failure(s)", checks, failures))

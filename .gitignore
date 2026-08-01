@@ -2,7 +2,9 @@ config.lua
 *.cookies
 cache/
 *.epub
+settings/weread.lua
 __pycache__/
 *.py[cod]
 .DS_Store
 /.idea/
+/dist/

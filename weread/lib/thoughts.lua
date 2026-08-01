@@ -26,8 +26,8 @@ function Thoughts.is_download_enabled(settings)
     return cache.download_underlines_and_thoughts == true
 end
 
-function Thoughts.fetch_underlines(client, settings, book_id, chapter_uid)
-    if not Thoughts.is_download_enabled(settings) then
+function Thoughts.fetch_underlines(client, settings, book_id, chapter_uid, force_enabled)
+    if force_enabled ~= true and not Thoughts.is_download_enabled(settings) then
         return true, nil, {}
     end
     if not settings:is_cookie_configured() then

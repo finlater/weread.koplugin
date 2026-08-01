@@ -1,10 +1,10 @@
--- weread/ui/end_of_book_dialog.lua — WeRead end-of-chapter navigation dialog.
+-- weread/ui/end_of_book_dialog.lua — WeRead quick navigation dialog.
 --
 -- Pure presentation layer: given navigation options and callbacks, it builds a
--- ButtonDialog offering bookshelf / chapter-list / next-chapter navigation when
--- a WeRead book reaches the end of a chapter. It performs no network, settings,
--- or book-store I/O; the controller (main.lua) computes the options and supplies
--- the callbacks.
+-- ButtonDialog offering bookshelf / chapter-list / next-chapter navigation. It
+-- is shown both at the end of a WeRead chapter and through KOReader's gesture
+-- actions. It performs no network, settings, or book-store I/O; the controller
+-- computes the options and supplies the callbacks.
 
 local ButtonDialog = require("ui/widget/buttondialog")
 local UIManager = require("ui/uimanager")
@@ -16,13 +16,15 @@ end
 
 local M = {}
 
--- Show the end-of-chapter dialog. The title already carries the WeRead brand,
+-- Show the quick menu dialog. The title already carries the WeRead brand,
 -- so the buttons use plain labels (书架 / 搜索 / 目录 / 下一章).
 --   opts.show_chapter_nav : boolean — show the chapter-list/next-chapter row
 --                           (true only for single-chapter files, not full books)
---   opts.has_next         : boolean — whether the "next chapter" button shows
+--   opts.show_next_chapter : boolean — show the "next chapter" button
+--   opts.show_sync_progress : boolean — show the full-width progress sync row
 --   callbacks             : { on_bookshelf, on_search, on_chapter_list, on_next,
---                             on_book_details, on_read_stats, on_close_book }
+--                             on_book_details, on_read_stats, on_sync_progress,
+--                             on_close_book }
 -- Returns the dialog widget instance.
 function M.show(opts, callbacks)
     opts = opts or {}
@@ -42,9 +44,9 @@ function M.show(opts, callbacks)
 
     local buttons = {}
 
-    -- Row 1: chapter list / next chapter — shown only when a single downloaded
-    -- chapter (not a full-book EPUB) reaches its end. The "next chapter" button
-    -- additionally requires a successor chapter to exist.
+    -- Row 1: chapter list / next chapter. These stay visible in the global quick
+    -- menu; the controller reports when the current document lacks WeRead
+    -- chapter context.
     if opts.show_chapter_nav then
         local nav_row = {
             {
@@ -52,7 +54,7 @@ function M.show(opts, callbacks)
                 callback = function() dismiss_then(callbacks.on_chapter_list) end,
             },
         }
-        if opts.has_next then
+        if opts.show_next_chapter then
             table.insert(nav_row, {
                 text = _("Next chapter"),
                 callback = function() dismiss_then(callbacks.on_next) end,
@@ -85,7 +87,17 @@ function M.show(opts, callbacks)
         },
     })
 
-    -- Row 4: cancel / close book
+    -- Penultimate row: one full-width action, only for a regular WeRead book.
+    if opts.show_sync_progress then
+        table.insert(buttons, {
+            {
+                text = _("Sync progress now"),
+                callback = function() dismiss_then(callbacks.on_sync_progress) end,
+            },
+        })
+    end
+
+    -- Final row: cancel / close book
     table.insert(buttons, {
         {
             text = _("Cancel"),
@@ -98,7 +110,7 @@ function M.show(opts, callbacks)
     })
 
     dialog = ButtonDialog:new{
-        title = _("WeRead: Reached end of chapter"),
+        title = _("WeRead · Quick menu"),
         buttons = buttons,
     }
 

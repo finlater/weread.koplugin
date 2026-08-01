@@ -290,6 +290,14 @@ function M:moveMetaDirsToNewDir(movable, new_dir)
                 local book = books[m.book_id]
                 if book then
                     book.cache_dir = m.dst
+                    book.cached_file = self:remapCachedPath(book.cached_file, m.dst)
+                    book.cached_full_book = self:remapCachedPath(
+                        book.cached_full_book, m.dst)
+                    if type(book.cached_chapters) == "table" then
+                        for uid, path in pairs(book.cached_chapters) do
+                            book.cached_chapters[uid] = self:remapCachedPath(path, m.dst)
+                        end
+                    end
                 end
                 moved = moved + 1
             elseif reason == "target_exists" then
@@ -337,11 +345,11 @@ function M:moveBookDir(src, dst)
 end
 
 local SHELF_SORT_OPTIONS = {
-    { key = "time_desc", label = _("Last read time (newest first)") },
-    { key = "time_asc",  label = _("Last read time (oldest first)") },
-    { key = "default",   label = _("Default order") },
-    { key = "name_asc",  label = _("Title A-Z") },
-    { key = "name_desc", label = _("Title Z-A") },
+    { key = "time_desc", label = _("Last read time (newest first)"), short = _("Newest") },
+    { key = "time_asc",  label = _("Last read time (oldest first)"), short = _("Oldest") },
+    { key = "default",   label = _("Default order"), short = _("Default") },
+    { key = "name_asc",  label = _("Title A-Z"), short = "A–Z" },
+    { key = "name_desc", label = _("Title Z-A"), short = "Z–A" },
 }
 
 local function shelfSortLabel(sort_key)
@@ -351,6 +359,14 @@ local function shelfSortLabel(sort_key)
         end
     end
     return SHELF_SORT_OPTIONS[1].label
+end
+
+function M:shelfSortSummary()
+    local sort_key = self.settings:get("shelf").sort_order
+    for _i, opt in ipairs(SHELF_SORT_OPTIONS) do
+        if opt.key == sort_key then return opt.short end
+    end
+    return SHELF_SORT_OPTIONS[1].short
 end
 
 local SHELF_FILTER_OPTIONS = {
@@ -477,6 +493,17 @@ function M:showShelfFilterOptions(on_changed)
     UIManager:show(dialog)
 end
 
+function M:bookRecordHasDownload(record)
+    if type(record) ~= "table" then return false end
+    if file_exists(record.cached_full_book) or file_exists(record.cached_file) then
+        return true
+    end
+    for _uid, path in pairs(record.cached_chapters or {}) do
+        if file_exists(path) then return true end
+    end
+    return false
+end
+
 function M:isBookDownloaded(book, saved_books, downloaded_cache)
     local book_id = book.book_id or book.bookId
     if not book_id then
@@ -486,7 +513,7 @@ function M:isBookDownloaded(book, saved_books, downloaded_cache)
         return downloaded_cache[book_id]
     end
     local record = (saved_books or self.settings:get("books", {}))[book_id]
-    local is_downloaded = record ~= nil and file_exists(record.cached_file)
+    local is_downloaded = self:bookRecordHasDownload(record)
     if downloaded_cache then
         downloaded_cache[book_id] = is_downloaded
     end

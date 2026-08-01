@@ -140,7 +140,7 @@ function Content.book_resolved_dir(settings, book_id, book)
         end
     end
 
-    local dir = book and path_dirname(book.cached_file)
+    local dir = book and path_dirname(book.cached_full_book or book.cached_file)
     if looks_like_book_id_dir(dir, book_id) and dir_has_sidecar(dir) then
         return dir
     end

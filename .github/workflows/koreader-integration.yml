@@ -1,0 +1,57 @@
+name: KOReader integration
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 18 * * 1"
+  push:
+    branches:
+      - main
+    paths:
+      - main.lua
+      - _meta.lua
+      - "weread/**"
+      - "spec/koreader/**"
+      - scripts/run_koreader_integration.sh
+      - .github/workflows/koreader-integration.yml
+
+concurrency:
+  group: koreader-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  plugin-loader:
+    name: PluginLoader (pinned KOReader)
+    runs-on: ubuntu-latest
+    container:
+      image: koreader/kobase:1.0.0-22.04
+    timeout-minutes: 60
+    env:
+      KOREADER_COMMIT: 1e2fa5f1239028ab4b37acae833cdc86a71e5258
+      EMULATE_READER: "1"
+      MAKEFLAGS: OUTPUT_DIR=build PARALLEL_JOBS=3 INSTALL_DIR=install
+
+    steps:
+      - name: Checkout plugin
+        uses: actions/checkout@v6
+
+      - name: Checkout pinned KOReader
+        uses: actions/checkout@v6
+        with:
+          repository: koreader/koreader
+          ref: ${{ env.KOREADER_COMMIT }}
+          path: .koreader-integration
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Restore KOReader build cache
+        uses: actions/cache@v5
+        with:
+          path: .koreader-integration/build
+          key: koreader-linux-${{ env.KOREADER_COMMIT }}-v1
+
+      - name: Run real PluginLoader integration spec
+        env:
+          KOREADER_DIR: ${{ github.workspace }}/.koreader-integration
+          KOREADER_SKIP_FETCH: "1"
+        run: bash scripts/run_koreader_integration.sh

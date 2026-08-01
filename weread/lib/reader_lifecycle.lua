@@ -1,8 +1,14 @@
 -- KOReader event lifecycle and reader-state orchestration.
 local Content = require("weread.lib.content")
+local logger = require("weread.lib.logger").scoped("Prefetch")
 local UIManager = require("ui/uimanager")
 local PluginUtil = require("weread.lib.plugin_util")
+local WeRead = require("weread.lib.protocol")
 local _ = PluginUtil.tr
+local T = PluginUtil.T
+local display_error = PluginUtil.display_error
+local file_exists = PluginUtil.file_exists
+local log_error = PluginUtil.log_error
 
 local M = {}
 
@@ -11,10 +17,17 @@ function M:onShowWeRead()
 end
 
 function M:onWeReadSyncProgress()
+    local book_id = self:detectWeReadBook()
+    if not book_id or WeRead.is_mp_book(book_id) then
+        self:showTransientInfo(
+            _("This action requires an open WeRead book."), 1)
+        return false
+    end
     if not self:requireLogin(true, false) then
-        return
+        return false
     end
     self.progress_sync:sync_now()
+    return true
 end
 
 function M:handleEndOfBook(status_self)
@@ -89,6 +102,11 @@ function M:onReaderReady()
 
     self.progress_sync:on_reader_ready()
     -- Auto mode silently skips non-WeRead documents; no toast (still logged by ReadReport).
+    local prefetch_session_gen = self._reader_session_gen
+    UIManager:scheduleIn(0.2, function()
+        if prefetch_session_gen ~= self._reader_session_gen then return end
+        self:maybePrefetchNextChapter(weread_book_id)
+    end)
     self.read_report:on_reader_ready()
 end
 
@@ -102,6 +120,8 @@ function M:onCloseDocument()
     -- in-flight report slot before that scheduled upload begins.
     self.progress_sync:on_close_document()
     self._reader_session_gen = (self._reader_session_gen or 0) + 1
+    self.downloader:cancelPrefetch("document_closed")
+    self._current_weread_book_id = nil
     self:_teardownThoughtInterception()
 
     if self._orig_onEndOfBook and self.ui.status then
@@ -110,6 +130,111 @@ function M:onCloseDocument()
     end
 
     self.read_report:on_close_document()
+end
+
+function M:showPrefetchNotice(text, timeout)
+    if self.settings:get("cache").show_prefetch_notifications == false then
+        return
+    end
+    self:showTransientInfo(text, timeout or 1)
+end
+
+function M:maybePrefetchNextChapter(book_id)
+    local cache = self.settings:get("cache")
+    if cache.auto_prefetch_next_chapter ~= true or not book_id then
+        self.downloader:cancelPrefetch("prefetch_not_applicable")
+        return false
+    end
+
+    local books = self.settings:get("books", {})
+    local book = books[tostring(book_id)] or books[book_id]
+    local chapters = self:ensureChaptersLoaded(book)
+    local file = self.ui.document and self.ui.document.file
+    if not book or not chapters or not file then
+        self.downloader:cancelPrefetch("prefetch_context_missing")
+        return false
+    end
+    local chapter_info = { self:getChapterInfoFromFile(book, file) }
+    local current_index, is_full_book = chapter_info[1], chapter_info[3]
+    local next_chapter = not is_full_book and current_index
+        and chapters[current_index + 1] or nil
+    if not next_chapter then
+        self.downloader:cancelPrefetch("no_next_chapter")
+        return false
+    end
+
+    local next_uid = tostring(next_chapter.chapterUid or next_chapter.chapterId or "")
+    local cached = book.cached_chapters and book.cached_chapters[next_uid]
+    if file_exists(cached) then
+        if not self.downloader:isPrefetching(book, next_chapter) then
+            self.downloader:cancelPrefetch("next_chapter_cached")
+        end
+        return true
+    end
+    if self.downloader:isPrefetching(book, next_chapter) then
+        return true
+    end
+
+    local title = next_chapter.title or T(_("Chapter %1"), next_uid)
+    return self.downloader:start(book, { next_chapter }, "chapter", {
+        single_chapter = true,
+        include_annotations = cache.download_underlines_and_thoughts == true,
+        prefetch = true,
+        start_delay = cache.show_prefetch_notifications == false and 0.1 or 0.7,
+        silent_completion = true,
+        offer_read = false,
+        on_start = function()
+            logger.info("started:",
+                "book_id=", tostring(book_id),
+                "chapter_uid=", next_uid,
+                "title=", title)
+            self:showPrefetchNotice(
+                T(_("Prefetching next chapter: %1"), title), 0.5)
+        end,
+        on_complete = function(ok, value)
+            if ok then
+                logger.info("succeeded:",
+                    "book_id=", tostring(book_id),
+                    "chapter_uid=", next_uid,
+                    "title=", title)
+                self:showPrefetchNotice(T(_("Next chapter prefetched: %1"), title))
+                return
+            end
+            local retry_requested = self.downloader:isPromotedPrefetch(
+                book, next_chapter)
+            if value == "cancelled" or value == "document_closed"
+                or value == "replaced" or value == "manual_download"
+                or value == "setting_disabled" or value == "prefetch_not_applicable"
+                or value == "prefetch_context_missing" or value == "no_next_chapter"
+                or value == "next_chapter_cached" then
+                logger.info("ended without completion:",
+                    "book_id=", tostring(book_id),
+                    "chapter_uid=", next_uid,
+                    "title=", title,
+                    "reason=", tostring(value))
+                return
+            end
+            local reason = value == "offline" and _("Network is not connected")
+                or display_error(value)
+            logger.warn("failed:",
+                "book_id=", tostring(book_id),
+                "chapter_uid=", next_uid,
+                "title=", title,
+                "reason=", log_error(value))
+            self:showPrefetchNotice(T(_("Next chapter prefetch failed: %1"), reason))
+            if retry_requested then
+                local source_file = file
+                local retry_cache = self.settings:get("cache")
+                local retry_delay = retry_cache.show_prefetch_notifications == false
+                    and 0.1 or 1.1
+                UIManager:scheduleIn(retry_delay, function()
+                    if self.ui.document and self.ui.document.file == source_file then
+                        self:downloadChapterAndRead(book, next_chapter)
+                    end
+                end)
+            end
+        end,
+    })
 end
 
 function M:maybeStartReadReport()
@@ -200,6 +325,26 @@ function M:ensureChaptersLoaded(book)
     return book.chapters
 end
 
+-- cached_file historically pointed at either a full-book EPUB or the most
+-- recently downloaded single chapter. Treat it as a legacy full-book path only
+-- when it does not map to exactly one chapter; new downloads use the explicit
+-- cached_full_book field.
+function M:getFullBookCachePath(book)
+    if type(book) ~= "table" then return nil end
+    if type(book.cached_full_book) == "string"
+        and book.cached_full_book ~= "" and file_exists(book.cached_full_book) then
+        return book.cached_full_book
+    end
+    local legacy = book.cached_file
+    if type(legacy) ~= "string" or legacy == "" then return nil end
+    local mapped_count = 0
+    for _uid, path in pairs(book.cached_chapters or {}) do
+        if path == legacy then mapped_count = mapped_count + 1 end
+    end
+    if mapped_count == 1 then return nil end
+    return legacy
+end
+
 -- Retrieves chapter information for the given file path.
 --
 -- Parameters:
@@ -211,17 +356,22 @@ end
 --   current_ch (table or nil): The chapter object of the current chapter, if it's a single chapter file.
 --   is_full_book (boolean): True if the file maps to multiple chapters (e.g. a combined EPUB), false otherwise.
 function M:getChapterInfoFromFile(book, file_path)
-    if not book or not file_path or not book.chapters or not book.cached_chapters then
+    if not book or not file_path or not book.chapters then
         return nil, nil, false
     end
 
     local mapped_count = 0
     local current_uid = nil
-    for uid, path in pairs(book.cached_chapters) do
+    for uid, path in pairs(book.cached_chapters or {}) do
         if path == file_path then
             mapped_count = mapped_count + 1
             current_uid = uid
         end
+    end
+
+    local full_book_path = self:getFullBookCachePath(book)
+    if full_book_path == file_path then
+        return nil, nil, true
     end
 
     local is_full_book = (mapped_count > 1)

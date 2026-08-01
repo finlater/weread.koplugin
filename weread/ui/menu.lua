@@ -16,17 +16,22 @@ local T = PluginUtil.T
 local M = {}
 
 function M:onDispatcherRegisterActions()
-    Dispatcher:registerAction("weread_show", {
-        category = "none",
-        event = "ShowWeRead",
-        title = _("WeRead"),
-        filemanager = true,
-        reader = true,
-    })
     Dispatcher:registerAction("weread_sync_progress", {
         category = "none",
         event = "WeReadSyncProgress",
-        title = _("Sync WeRead progress"),
+        title = _("WeRead · Sync reading progress"),
+        reader = true,
+    })
+    Dispatcher:registerAction("weread_quick_menu", {
+        category = "none",
+        event = "ShowWeReadQuickMenu",
+        title = _("WeRead · Quick menu"),
+        reader = true,
+    })
+    Dispatcher:registerAction("weread_bookshelf", {
+        category = "none",
+        event = "ShowWeReadBookshelf",
+        title = _("WeRead · Bookshelf"),
         reader = true,
     })
 end
@@ -247,7 +252,7 @@ function M:getSettingsMenuItems()
             end,
         },
         {
-            text = _("Download content"),
+            text = _("Download settings"),
             sub_item_table_func = function()
                 return {
                     {
@@ -294,12 +299,126 @@ function M:getSettingsMenuItems()
                         end),
                     },
                     {
-                        text = _("Underlines and thoughts"),
-                        keep_menu_open = true,
-                        check_callback_updates_menu = true,
-                        checked_func = function()
-                            return self.settings:get("cache").download_underlines_and_thoughts
+                        text = _("Chapter prefetch"),
+                        sub_item_table_func = function()
+                            return {
+                                {
+                                    text = _("Automatically prefetch next chapter"),
+                                    keep_menu_open = true,
+                                    check_callback_updates_menu = true,
+                                    checked_func = function()
+                                        return self.settings:get("cache").auto_prefetch_next_chapter
+                                            == true
+                                    end,
+                                    callback = self:safeCallback(
+                                        _("Automatically prefetch next chapter"),
+                                        function(touchmenu_instance)
+                                            local cache = self.settings:get("cache")
+                                            local function apply(enabled)
+                                                cache.auto_prefetch_next_chapter = enabled
+                                                self.settings:set("cache", cache)
+                                                self.settings:flush()
+                                                if not enabled then
+                                                    self.downloader:cancelPrefetch(
+                                                        "setting_disabled")
+                                                elseif self._current_weread_book_id then
+                                                    local book_id = self._current_weread_book_id
+                                                    UIManager:scheduleIn(0.1, function()
+                                                        if self._current_weread_book_id == book_id then
+                                                            self:maybePrefetchNextChapter(book_id)
+                                                        end
+                                                    end)
+                                                end
+                                                if touchmenu_instance then
+                                                    touchmenu_instance:updateItems()
+                                                end
+                                            end
+
+                                            if cache.auto_prefetch_next_chapter == true then
+                                                apply(false)
+                                                return
+                                            end
+
+                                            UIManager:show(ConfirmBox:new{
+                                                text = _("Due to network conditions, automatic prefetching may cause a few seconds of delay when you start reading a new chapter. Enable it?"),
+                                                ok_text = _("Confirm"),
+                                                ok_callback = self:safeCallback(
+                                                    _("Confirm"), function()
+                                                        apply(true)
+                                                    end),
+                                                cancel_text = _("Cancel"),
+                                            })
+                                        end),
+                                },
+                                {
+                                    text = _("Prefetch underlines and thoughts"),
+                                    keep_menu_open = true,
+                                    check_callback_updates_menu = true,
+                                    enabled_func = function()
+                                        return self.settings:get("cache").auto_prefetch_next_chapter
+                                            == true
+                                    end,
+                                    checked_func = function()
+                                        return self.settings:get("cache").download_underlines_and_thoughts
+                                    end,
+                                    callback = self:safeCallback(
+                                        _("Prefetch underlines and thoughts"),
+                                        function(touchmenu_instance)
+                                            local cache = self.settings:get("cache")
+                                            if cache.download_underlines_and_thoughts then
+                                                cache.download_underlines_and_thoughts = false
+                                                self.settings:set("cache", cache)
+                                                self.settings:flush()
+                                                logger.info(
+                                                    "underlines/thoughts download setting changed:",
+                                                    "enabled=", "false")
+                                                touchmenu_instance:updateItems()
+                                                return
+                                            end
+                                            UIManager:show(ConfirmBox:new{
+                                                text = _("Prefetching underlines and thoughts adds extra requests and may significantly increase prefetch time. Continue?"),
+                                                ok_text = _("Confirm"),
+                                                ok_callback = self:safeCallback(_("Confirm"), function()
+                                                    cache.download_underlines_and_thoughts = true
+                                                    self.settings:set("cache", cache)
+                                                    self.settings:flush()
+                                                    logger.info(
+                                                        "underlines/thoughts download setting changed:",
+                                                        "enabled=", "true")
+                                                    touchmenu_instance:updateItems()
+                                                end),
+                                                cancel_text = _("Cancel"),
+                                            })
+                                        end),
+                                },
+                                {
+                                    text = _("Show prefetch notifications"),
+                                    keep_menu_open = true,
+                                    check_callback_updates_menu = true,
+                                    enabled_func = function()
+                                        return self.settings:get("cache").auto_prefetch_next_chapter
+                                            == true
+                                    end,
+                                    checked_func = function()
+                                        return self.settings:get("cache").show_prefetch_notifications
+                                            ~= false
+                                    end,
+                                    callback = self:safeCallback(
+                                        _("Show prefetch notifications"),
+                                        function(touchmenu_instance)
+                                            local cache = self.settings:get("cache")
+                                            cache.show_prefetch_notifications =
+                                                not (cache.show_prefetch_notifications ~= false)
+                                            self.settings:set("cache", cache)
+                                            self.settings:flush()
+                                            if touchmenu_instance then
+                                                touchmenu_instance:updateItems()
+                                            end
+                                        end),
+                                },
+                            }
                         end,
+
                         callback = self:safeCallback(_("Underlines and thoughts"), function(touchmenu_instance)
                             local cache = self.settings:get("cache")
                             if cache.download_underlines_and_thoughts then
@@ -325,6 +444,7 @@ function M:getSettingsMenuItems()
                                 cancel_text = _("Cancel"),
                             })
                         end),
+
                     },
                 }
             end,
