@@ -251,7 +251,7 @@ package.preload["weread.lib.plugin_util"] = function()
 end
 
 local real_os_execute = os.execute
-os.execute = function() return 0 end
+rawset(os, "execute", function() return 0 end)
 
 package.loaded["weread.ui.cache"] = nil
 package.loaded["weread.lib.content"] = nil
@@ -327,7 +327,7 @@ do
         "clearAllMPCache path")
 end
 
-os.execute = real_os_execute
+rawset(os, "execute", real_os_execute)
 
 print(string.format(
     "local_bookshelf_collection_spec: %d checks, %d failure(s)", checks, failures))
