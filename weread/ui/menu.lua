@@ -8,7 +8,6 @@ local logger = require("weread.lib.logger")
 local UIManager = require("ui/uimanager")
 local ThoughtPopup = require("weread.ui.thought_popup")
 local WeRead = require("weread.lib.protocol")
-local FileManager = require("apps/filemanager/filemanager")
 
 local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
@@ -486,6 +485,7 @@ end
 -- document underneath, so navigating up/closing the shelf drops back into it.
 function M:showWereadCollection()
     local COLLECTION_NAME = "weread"
+    local FileManager = require("apps/filemanager/filemanager")
     local ReadCollection = require("readcollection")
 
     if not ReadCollection.coll then
