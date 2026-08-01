@@ -9,7 +9,6 @@ local UIManager = require("ui/uimanager")
 local ThoughtPopup = require("weread.ui.thought_popup")
 local WeRead = require("weread.lib.protocol")
 local FileManager = require("apps/filemanager/filemanager")
-local ReadCollection = require("readcollection")
 
 local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
@@ -481,11 +480,13 @@ function M:getSettingsMenuItems()
     }
 end
 
--- Open the local "weread" KOReader collection as a lightweight local bookshelf.
--- Creates the collection on first use. Prefers the live FileManager instance;
--- falls back to switching into FileManager when called from the reader.
+-- Open the local WeRead collection.
+-- From FileManager: open in place. From the reader: leave the book first and
+-- open via FileManager — showing the collection on top of ReaderUI leaves the
+-- document underneath, so navigating up/closing the shelf drops back into it.
 function M:showWereadCollection()
     local COLLECTION_NAME = "weread"
+    local ReadCollection = require("readcollection")
 
     if not ReadCollection.coll then
         ReadCollection:_read()
@@ -494,6 +495,7 @@ function M:showWereadCollection()
         ReadCollection:addCollection(COLLECTION_NAME)
         ReadCollection:write({ [COLLECTION_NAME] = true })
     end
+
     local fm = FileManager.instance
     if fm and fm.collections then
         fm.collections:onShowColl(COLLECTION_NAME)
@@ -503,13 +505,14 @@ function M:showWereadCollection()
         local file = self.ui.document.file
         self.ui:onClose()
         self.ui:showFileManager(file)
-        local fm2 = FileManager.instance
-        if fm2 and fm2.collections then
-            fm2.collections:onShowColl(COLLECTION_NAME)
-        end
+        UIManager:scheduleIn(0.1, function()
+            local fm2 = FileManager.instance
+            if fm2 and fm2.collections then
+                fm2.collections:onShowColl(COLLECTION_NAME)
+            end
+        end)
         return
     end
-
     if self.ui and self.ui.collections then
         self.ui.collections:onShowColl(COLLECTION_NAME)
     end

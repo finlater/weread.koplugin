@@ -152,15 +152,22 @@ function M:moveBooksToNewDir(movable, new_dir)
             end
         end
         if #collection_updates > 0 then
+            -- After mv, updateItem may miss the old key (realpath fails).
+            -- remove + add is more reliable while the new file is on disk.
             pcall(function()
                 local ReadCollection = require("readcollection")
+                local name = "weread"
                 if not ReadCollection.coll then
                     ReadCollection:_read()
                 end
                 for _i, update in ipairs(collection_updates) do
-                    ReadCollection:updateItem(update.old_path, update.new_path)
+                    ReadCollection:removeItem(update.old_path, name, true)
+                    if file_exists(update.new_path)
+                        and not ReadCollection:isFileInCollection(update.new_path, name) then
+                        ReadCollection:addItem(update.new_path, name)
+                    end
                 end
-                ReadCollection:write({ weread = true })
+                ReadCollection:write({ [name] = true })
             end)
         end
         self.settings:set("books", books)
@@ -665,23 +672,23 @@ end
 
 function M:clearBookCache(book_id)
     local books = self.settings:get("books", {})
-    local cached_file = books[book_id] and books[book_id].cached_file
-    local cache_dir = Content.book_resolved_dir(self.settings, book_id, books[book_id])
+    local book = books[book_id]
+    local path_to_remove = book and (book.cached_full_book or book.cached_file)
+    local cache_dir = Content.book_resolved_dir(self.settings, book_id, book)
     os.execute("rm -rf " .. string.format("%q", cache_dir))
-    if books[book_id] then
+    if book then
         books[book_id] = nil
         self.settings:set("books", books)
         self.settings:flush()
     end
-    -- Drop the full-book EPUB from the local "weread" collection when its cache is cleared.
-    if cached_file then
+    if path_to_remove then
         pcall(function()
-			local ReadCollection = require("readcollection")
+            local ReadCollection = require("readcollection")
+            local name = "weread"
             if not ReadCollection.coll then
                 ReadCollection:_read()
             end
-            ReadCollection:removeItem(cached_file, "weread")
-            ReadCollection:write({ weread = true })
+            ReadCollection:removeItem(path_to_remove, name)
         end)
     end
     self:refreshShelfCacheIndicators()
@@ -691,19 +698,22 @@ function M:clearAllMPCache()
     -- Delete each MP book's real directory (which may sit under an old download
     -- root) rather than scanning only the current cache_dir, and only touch
     -- plugin-owned entries tracked in the books table.
-    -- Also drop matching entries from the local "weread" collection.
     local books = self.settings:get("books", {})
     pcall(function()
         local ReadCollection = require("readcollection")
+        local name = "weread"
         if not ReadCollection.coll then
             ReadCollection:_read()
         end
         for book_id, book in pairs(books) do
-            if WeRead.is_mp_book(book_id) and book and book.cached_file then
-                ReadCollection:removeItem(book.cached_file, "weread", true)
+            if WeRead.is_mp_book(book_id) and book then
+                local path = book.cached_full_book or book.cached_file
+                if path then
+                    ReadCollection:removeItem(path, name, true)
+                end
             end
         end
-        ReadCollection:write({ weread = true })
+        ReadCollection:write({ [name] = true })
     end)
     for book_id, book in pairs(books) do
         if WeRead.is_mp_book(book_id) then
@@ -716,21 +726,23 @@ function M:clearAllMPCache()
     self:refreshShelfCacheIndicators()
 end
 
--- Also drop each book's cached EPUB from the local "weread" collection so the
--- shelf stays in sync with on-disk cache. removeItem is cheap and idempotent.
 function M:clearAllCache()
     local books = self.settings:get("books", {})
     pcall(function()
         local ReadCollection = require("readcollection")
+        local name = "weread"
         if not ReadCollection.coll then
             ReadCollection:_read()
         end
         for _id, book in pairs(books) do
-            if book and book.cached_file then
-                ReadCollection:removeItem(book.cached_file, "weread", true)
+            if book then
+                local path = book.cached_full_book or book.cached_file
+                if path then
+                    ReadCollection:removeItem(path, name, true)
+                end
             end
         end
-        ReadCollection:write({ weread = true })
+        ReadCollection:write({ [name] = true })
     end)
     for book_id, book in pairs(books) do
         os.execute("rm -rf " .. string.format("%q", Content.book_resolved_dir(self.settings, book_id, book)))
