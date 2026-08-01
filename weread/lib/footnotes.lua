@@ -12,11 +12,13 @@ Footnotes.FOOTNOTES_CSS = [[
 .wr-fn-ref{font-size:0.75em;vertical-align:super;line-height:0;white-space:nowrap;}
 .wr-fn-ref a{-cr-hint:noteref;position:relative;text-decoration:none;color:#0366d6;}
 .wr-fn-ref a::after{content:"";position:absolute;top:-0.5em;right:-0.3em;bottom:-0.5em;left:-0.3em;}
-/* Do not use display:none here: CREngine then loses each aside's rendered
- * boundary and its popup range can expand across adjacent footnotes. Keep a
- * zero-height block for range detection; popup extraction ignores book CSS. */
-aside.wr-book-footnote{-cr-hint:footnote;display:block!important;visibility:hidden;height:0!important;max-height:0!important;overflow:hidden!important;margin:0!important;padding:0!important;border:0!important;font-size:0!important;line-height:0!important;text-indent:0!important;}
-aside.wr-book-footnote *{margin:0!important;padding:0!important;font-size:0!important;line-height:0!important;}
+/* Render each generated note at the bottom of the page that references it,
+ * like KOReader's built-in "In-page EPUB footnotes" tweak (ON by default).
+ * Must NOT hide the aside: the old `-cr-hint: footnote` + hidden block relied on
+ * the footnote *popup* (`footnote_link_in_popup`), which is OFF by default, so
+ * the text stayed invisible and tapping the marker followed the #id link to the
+ * hidden aside, jumping the page. `footnote-inpage` works with default settings. */
+aside.wr-book-footnote{-cr-hint:footnote-inpage;font-size:0.85em;margin:0!important;}
 div.wr-footnotes{margin:0;padding:0;border:0;}
 div.wr-footnotes>hr{display:none;}
 .wr-fn-num{font-weight:bold;margin-right:0.3em;text-decoration:none;color:inherit;}
