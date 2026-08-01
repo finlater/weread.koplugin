@@ -9,8 +9,6 @@ local ltn12 = require("ltn12")
 local socketutil = require("socketutil")
 local util = require("util")
 
-local PluginUtil = require("weread.lib.plugin_util")
-
 local ok_archiver, Archiver = pcall(require, "ffi/archiver")
 if not ok_archiver then
     Archiver = nil
@@ -385,10 +383,10 @@ function Updater.to_path_style_url(proxy_base, raw_url)
     -- codeload.github.com/<owner>/<repo>/zip/refs/heads/<branch>
     -- map to /<owner>/<repo>/archive/refs/heads/<branch>.zip
     if host == "codeload.github.com" then
-        local owner, repo, kind, rest = path:match([[^/([^/]+)/([^/]+)/(zip|tar%.gz)/(.*)$]])
-        if owner and repo and rest then
+        local owner, repo, kind, tail = path:match([[^/([^/]+)/([^/]+)/(zip|tar%.gz)/(.*)$]])
+        if owner and repo and tail then
             local ext = (kind == "zip") and ".zip" or ".tar.gz"
-            path = string.format("/%s/%s/archive/%s%s", owner, repo, rest, ext)
+            path = string.format("/%s/%s/archive/%s%s", owner, repo, tail, ext)
         end
     end
 
@@ -560,7 +558,7 @@ function Updater:download_to_file(raw_url, local_path, opts)
                 opts.block_timeout or socketutil.FILE_BLOCK_TIMEOUT or 30,
                 opts.total_timeout or socketutil.FILE_TOTAL_TIMEOUT or 300
             )
-            local ok, code, headers, status = pcall(function()
+            local ok, code, _, status = pcall(function()
                 local _, resp_code, resp_headers, resp_status = http.request{
                     url = url,
                     method = "GET",

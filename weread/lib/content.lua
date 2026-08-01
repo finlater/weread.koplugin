@@ -1529,7 +1529,7 @@ end
 function Content.save_mp_article_html(settings, book, article, body_html)
     local book_id = book.book_id or book.bookId
     -- MP articles stay in the sidecar tree so the flat library only holds EPUBs.
-    local dir = Content.ensure_book_meta_dir(settings, book_id, book)
+    Content.ensure_book_meta_dir(settings, book_id, book)
     local title = article.title or "Article"
     local path = Content.mp_article_path(settings, book, article)
     body_html = strip_mp_reader_font_styles(body_html)
