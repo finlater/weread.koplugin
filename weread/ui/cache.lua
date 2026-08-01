@@ -222,11 +222,11 @@ function M:remapCachedPath(path, dst)
 end
 
 local SHELF_SORT_OPTIONS = {
-    { key = "time_desc", label = _("Last read time (newest first)") },
-    { key = "time_asc",  label = _("Last read time (oldest first)") },
-    { key = "default",   label = _("Default order") },
-    { key = "name_asc",  label = _("Title A-Z") },
-    { key = "name_desc", label = _("Title Z-A") },
+    { key = "time_desc", label = _("Last read time (newest first)"), short = _("Newest") },
+    { key = "time_asc",  label = _("Last read time (oldest first)"), short = _("Oldest") },
+    { key = "default",   label = _("Default order"), short = _("Default") },
+    { key = "name_asc",  label = _("Title A-Z"), short = "A–Z" },
+    { key = "name_desc", label = _("Title Z-A"), short = "Z–A" },
 }
 
 local function shelfSortLabel(sort_key)
@@ -236,6 +236,14 @@ local function shelfSortLabel(sort_key)
         end
     end
     return SHELF_SORT_OPTIONS[1].label
+end
+
+function M:shelfSortSummary()
+    local sort_key = self.settings:get("shelf").sort_order
+    for _i, opt in ipairs(SHELF_SORT_OPTIONS) do
+        if opt.key == sort_key then return opt.short end
+    end
+    return SHELF_SORT_OPTIONS[1].short
 end
 
 local SHELF_FILTER_OPTIONS = {

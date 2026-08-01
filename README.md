@@ -4,6 +4,8 @@
 
 在 KOReader 上阅读微信读书书籍和公众号文章、同步阅读时长的插件。
 
+书架采用“书籍 / 公众号”双 Tab，保留排序、阅读状态与下载状态筛选，并可在书架内搜索和手动获取最新内容。书架快照、点开过的书籍信息和章节目录会按登录账号隔离写入 SQLite；首次打开未缓存详情的书籍会自动获取信息，已下载书籍及文章可在离线状态下直接浏览和打开。
+
 ## 其它项目推荐
 
 | 插件 | 简介                                                  |
@@ -32,12 +34,6 @@
 | 搜索书籍 | 快捷菜单 | 设置 |
 |:---:|:---:|:---:|
 | ![搜索书籍](screenshots/book_search.png) | ![快捷菜单](screenshots/quick_menu.png) | ![设置](screenshots/setting.png) |
-
-## TODO
-
-- [ ] 书签/笔记展示
-- [ ] 更丰富的书籍详情（热门划线等）
-- [ ] 书架页面支持搜索功能（包括阅读时间上报手动选择目标书籍时支持搜索）
 
 ## 安装
 
@@ -69,6 +65,20 @@ koreader/plugins/weread.koplugin/
 4. 在 KOReader 打开 **工具 → 微信读书 → 微信扫码登录**。
 5. 使用微信扫码并在手机端确认；若手机显示四位验证码，请在 KOReader 中输入。
 
+## SimpleUI / Zen_UI 集成
+
+插件提供统一的“微信读书书架”入口并支持集成到 SimpleUI和 ZenUI的快捷按钮中。(需要安装最新版 [SimpleUI](https://github.com/doctorhetfield-cmd/simpleui.koplugin) 和 [ZenUI](https://github.com/AnthonyGress/zen_ui.koplugin)插件)。
+
+- **SimpleUI**：进入 `快捷操作` 新建操作，类型选择 `插件 → 微信读书`，再把该操作加入底部栏即可。如需使用本项目图标，将 `icons/weread-w-book.svg` 复制到 SimpleUI 的自定义图标目录后，在快捷操作中选中它。
+- **Zen_UI 底栏**：进入 `控件 → 按钮 → ➕ → 插件 → 微信读书`，点击后直接打开微信读书书架。注册时会把 `weread-w-book.svg` 同步到 KOReader 用户图标目录，供 ZenUI 自动匹配或手动选择；不会自动修改、添加或启用 Tab。
+- **Zen_UI 首页**：进入 `主页 → 小组件`，启用“微信读书”组件。组件默认关闭，可由用户自行排序。
+
+原生 KOReader 的 “工具 → 微信读书” 菜单保持不变。
+
+|                     SimpleUI                     |                   Zen_UI                   |
+|:------------------------------------------------:|:------------------------------------------:|
+| ![simpleui](screenshots/simpleui_quick_menu.png) | ![ZenUI](screenshots/zenui_quick_menu.png) |
+
 ## 菜单结构
 
 ```
@@ -77,7 +87,7 @@ koreader/plugins/weread.koplugin/
 ├── 立即同步进度       （阅读微信读书缓存书籍时显示）
 ├── 书籍详情           （阅读微信读书缓存书籍时显示）
 ├── 显示划线和想法     （阅读书籍时显示，开关）
-├── 书架               书架浏览（书籍 + 公众号分类；章节列表可刷新、多选下载）
+├── 书架               书籍 / 公众号 Tab；书架内搜索、离线缓存、手动更新
 ├── 本地书架            已下载书籍（不包含单章）的本地入口
 ├── 搜索               搜索微信读书
 ├── 阅读时间上报        后台上报阅读时长
@@ -113,6 +123,16 @@ koreader/plugins/weread.koplugin/
 └── 关于
 ```
 
+## TODO
+
+- [ ] 书签/笔记展示
+- [ ] 更丰富的书籍详情（热门划线等）
+- [ ] 阅读时间上报手动选择目标书籍时支持搜索
+
+## 贡献
+
+欢迎提交 issue 和 PR。提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
 ## 许可证
 
 本项目代码采用 [GNU Affero General Public License v3.0](LICENSE)，SPDX 标识为 `AGPL-3.0-only`，与 KOReader 使用的许可证保持一致。
@@ -122,7 +142,3 @@ koreader/plugins/weread.koplugin/
 `fonts/NotoEmoji-Regular.ttf` 是第三方字体，采用 [SIL Open Font License 1.1](fonts/LICENSE)，不适用本项目的 AGPL-3.0。
 
 Copyright © 2026 finlater and contributors.
-
-## 贡献
-
-欢迎提交 issue 和 PR。提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
