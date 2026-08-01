@@ -86,6 +86,8 @@ end
 
 local LibraryView = InputContainer:extend{
     mode = "books",
+    title = nil,
+    wp_enable = true,
     books = nil,
     accounts = nil,
     keyword = nil,
@@ -102,12 +104,13 @@ local LibraryView = InputContainer:extend{
 function LibraryView:tabBar()
     local tabs = {
         { mode = "books", text = T(_("Books (%1)"), #(self.books or {})) },
-        { mode = "accounts", text = T(_("Public Accounts (%1)"), #(self.accounts or {})) },
+        { mode = "public_account", text = T(_("Public Accounts (%1)"), #(self.accounts or {})) },
     }
     local cell_w = math.floor(self.screen_w / #tabs)
     local row = HorizontalGroup:new{}
     for index, tab in ipairs(tabs) do
         local active = tab.mode == self.mode
+        local enabled = tab.mode ~= "public_account" or self.wp_enable
         local width = index == #tabs and self.screen_w - cell_w or cell_w
         table.insert(row, VerticalGroup:new{
             align = "left",
@@ -120,9 +123,12 @@ function LibraryView:tabBar()
                 background = Blitbuffer.COLOR_WHITE,
                 text_font_size = 24,
                 text_font_bold = true,
+                enabled = enabled,
                 show_parent = self,
                 callback = function()
-                    if not active and self.on_switch then self.on_switch(tab.mode) end
+                    if enabled and not active and self.on_switch then
+                        self.on_switch(tab.mode)
+                    end
                 end,
             },
             LineWidget:new{
@@ -186,7 +192,7 @@ function LibraryView:actionBar()
 end
 
 function LibraryView:itemStatus(book)
-    if self.mode == "accounts" then return book.author or "" end
+    if self.mode == "public_account" then return book.author or "" end
     local status = ""
     if book.readUpdateTime and book.readUpdateTime > 0 then
         status = os.date("%Y-%m-%d", book.readUpdateTime)
@@ -200,7 +206,8 @@ function LibraryView:itemStatus(book)
 end
 
 function LibraryView:content()
-    local source = self.mode == "accounts" and (self.accounts or {}) or (self.books or {})
+    local source = self.mode == "public_account"
+        and (self.accounts or {}) or (self.books or {})
     local content = VerticalGroup:new{
         align = "left",
         HorizontalSpan:new{ width = self.list_width },
@@ -247,7 +254,7 @@ function LibraryView:init()
 
     self.title_bar = TitleBar:new{
         width = self.screen_w,
-        title = _("WeRead Bookshelf"),
+        title = self.title or _("WeRead Bookshelf"),
         align = "center",
         with_bottom_line = true,
         close_callback = function() self:onClose() end,
@@ -289,6 +296,8 @@ function M.show(data, callbacks)
     callbacks = callbacks or {}
     local view = LibraryView:new{
         mode = data.mode,
+        title = data.title,
+        wp_enable = data.wp_enable ~= false,
         books = data.books,
         accounts = data.accounts,
         keyword = data.keyword,

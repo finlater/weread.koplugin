@@ -92,7 +92,7 @@ function M:applyShelfSnapshot(all_books)
     self.shelf_books = self.shelf_regular
 end
 
-function M:refreshBookshelf(old_view)
+function M:refreshBookshelf(old_view, view_options)
     if not self:requireLogin(false, true) then return end
     self:showBusy(_("Loading bookshelf..."))
     self:runOnlineTask(_("Bookshelf"), function()
@@ -129,7 +129,12 @@ function M:refreshBookshelf(old_view)
         self:applyShelfSnapshot(all_books)
         self:closeBusy()
         if old_view then UIManager:close(old_view) end
-        self:showShelfView(self.shelf_view_mode or "books")
+        self:showShelfView(
+            view_options and view_options.mode or self.shelf_view_mode or "books",
+            view_options and view_options.keyword or nil,
+            nil,
+            view_options
+        )
     end)
 end
 
@@ -145,9 +150,12 @@ local function shelf_search_match(book, keyword)
 end
 
 
-function M:showShelfView(mode, keyword, old_view)
+function M:showShelfView(mode, keyword, old_view, options)
     local LibraryView = require("weread.ui.library_view")
+    options = options or {}
     mode = mode or "books"
+    options.mode = mode
+    options.keyword = keyword
     self.shelf_view_mode = mode
     self.shelf_search_keyword = keyword
     local saved_books = self.settings:get("books", {})
@@ -173,6 +181,8 @@ function M:showShelfView(mode, keyword, old_view)
     local view
     view = LibraryView.show({
         mode = mode,
+        title = options.title,
+        wp_enable = options.wp_enable,
         books = books,
         accounts = accounts,
         keyword = keyword,
@@ -180,26 +190,28 @@ function M:showShelfView(mode, keyword, old_view)
         filter_label = self:shelfFilterSummary(),
     }, {
         on_switch = function(new_mode)
-            self:showShelfView(new_mode, keyword, view)
+            self:showShelfView(new_mode, keyword, view, options)
         end,
         on_search = function()
-            self:showShelfSearchDialog(view, mode, keyword)
+            self:showShelfSearchDialog(view, mode, keyword, options)
         end,
         on_refresh = function()
-            self:refreshBookshelf(view)
+            self:refreshBookshelf(view, options)
         end,
         on_sort = function()
             self:showShelfSortOptions(function()
-                self:showShelfView(mode, keyword, view)
+                self:showShelfView(mode, keyword, view, options)
             end)
         end,
         on_filter = function()
             self:showShelfFilterOptions(function()
-                self:showShelfView(mode, keyword, view)
+                self:showShelfView(mode, keyword, view, options)
             end)
         end,
         on_select = function(book, selected_mode)
-            if selected_mode == "accounts" then
+            if options.on_select then
+                options.on_select(book, selected_mode, view)
+            elseif selected_mode == "public_account" then
                 self:showMPAccount(book)
             else
                 self:showBookRecord(book)
@@ -209,7 +221,7 @@ function M:showShelfView(mode, keyword, old_view)
     self.shelf_view = view
 end
 
-function M:showShelfSearchDialog(view, mode, keyword)
+function M:showShelfSearchDialog(view, mode, keyword, options)
     local dialog
     dialog = InputDialog:new{
         title = _("Search shelf"),
@@ -220,7 +232,7 @@ function M:showShelfSearchDialog(view, mode, keyword)
                 text = _("Clear"),
                 callback = self:safeCallback(_("Clear"), function()
                     UIManager:close(dialog)
-                    self:showShelfView(mode, nil, view)
+                    self:showShelfView(mode, nil, view, options)
                 end),
             },
             {
@@ -229,7 +241,9 @@ function M:showShelfSearchDialog(view, mode, keyword)
                 callback = self:safeCallback(_("Search"), function()
                     local value = dialog:getInputText()
                     UIManager:close(dialog)
-                    self:showShelfView(mode, value ~= "" and value or nil, view)
+                    self:showShelfView(
+                        mode, value ~= "" and value or nil, view, options
+                    )
                 end),
             },
         }},
