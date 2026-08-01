@@ -9,6 +9,17 @@ local Updater = require("weread.lib.updater")
 local _ = PluginUtil.tr
 local T = PluginUtil.T
 
+local function trim_notes(text)
+    if type(text) ~= "string" then
+        return ""
+    end
+    text = text:gsub("\r\n", "\n"):gsub("^%s+", ""):gsub("%s+$", "")
+    if #text > 600 then
+        text = text:sub(1, 600) .. "..."
+    end
+    return text
+end
+
 local M = {}
 
 function M:getUpdater()
@@ -273,16 +284,6 @@ function M:checkPluginUpdate(opts)
     end)
 end
 
-function trim_notes(text)
-    if type(text) ~= "string" then
-        return ""
-    end
-    text = text:gsub("\r\n", "\n"):gsub("^%s+", ""):gsub("%s+$", "")
-    if #text > 600 then
-        text = text:sub(1, 600) .. "..."
-    end
-    return text
-end
 
 function M:performPluginUpdate(check_result, opts)
     opts = opts or {}
