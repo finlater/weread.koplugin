@@ -118,15 +118,24 @@ function M:moveBooksToNewDir(movable, new_dir)
     UIManager:scheduleIn(0.1, function()
         local books = self.settings:get("books", {})
         local moved, skipped, failed = 0, 0, 0
+        local collection_updates = {}
         for _i, m in ipairs(movable) do
             local ok, reason = self:moveBookDir(m.src, m.dst)
             if ok then
                 local book = books[m.book_id]
                 if book then
+                    local old_cached_full_book = book.cached_full_book or book.cached_file
                     book.cache_dir = m.dst
                     book.cached_file = self:remapCachedPath(book.cached_file, m.dst)
                     book.cached_full_book = self:remapCachedPath(
                         book.cached_full_book, m.dst)
+                    local new_cached_full_book = book.cached_full_book or book.cached_file
+                    if old_cached_full_book and new_cached_full_book ~= old_cached_full_book then
+                        table.insert(collection_updates, {
+                            old_path = old_cached_full_book,
+                            new_path = new_cached_full_book,
+                        })
+                    end
                     if type(book.cached_chapters) == "table" then
                         for uid, path in pairs(book.cached_chapters) do
                             book.cached_chapters[uid] = self:remapCachedPath(path, m.dst)
@@ -141,6 +150,18 @@ function M:moveBooksToNewDir(movable, new_dir)
                 failed = failed + 1
                 logger.err("move book cache failed:", m.src, "->", m.dst)
             end
+        end
+        if #collection_updates > 0 then
+            pcall(function()
+                local ReadCollection = require("readcollection")
+                if not ReadCollection.coll then
+                    ReadCollection:_read()
+                end
+                for _i, update in ipairs(collection_updates) do
+                    ReadCollection:updateItem(update.old_path, update.new_path)
+                end
+                ReadCollection:write({ weread = true })
+            end)
         end
         self.settings:set("books", books)
         self.settings:flush()
@@ -679,7 +700,7 @@ function M:clearAllMPCache()
         end
         for book_id, book in pairs(books) do
             if WeRead.is_mp_book(book_id) and book and book.cached_file then
-                ReadCollection:removeItem(book.cached_file, "weread")
+                ReadCollection:removeItem(book.cached_file, "weread", true)
             end
         end
         ReadCollection:write({ weread = true })
@@ -706,7 +727,7 @@ function M:clearAllCache()
         end
         for _id, book in pairs(books) do
             if book and book.cached_file then
-                ReadCollection:removeItem(book.cached_file, "weread")
+                ReadCollection:removeItem(book.cached_file, "weread", true)
             end
         end
         ReadCollection:write({ weread = true })
