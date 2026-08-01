@@ -128,6 +128,12 @@ jobs:
             | grep -qx "weread.koplugin/main.lua"
           unzip -Z1 "${{ steps.version.outputs.archive }}" \
             | grep -qx "weread.koplugin/_meta.lua"
+          unzip -Z1 "${{ steps.version.outputs.archive }}" \
+            | grep -qx "weread.koplugin/icons/weread-w-book.svg"
+          unzip -Z1 "${{ steps.version.outputs.archive }}" \
+            | grep -qx "weread.koplugin/integrations/init.lua"
+          unzip -Z1 "${{ steps.version.outputs.archive }}" \
+            | grep -qx "weread.koplugin/integrations/zenui.lua"
           if unzip -Z1 "${{ steps.version.outputs.archive }}" \
             | grep -Eq '^weread\.koplugin/(spec|scripts|docs|\.github)/'; then
             echo "error: development-only files were included in the release package" >&2

@@ -4,6 +4,7 @@ local Blitbuffer = require("ffi/blitbuffer")
 local Button = require("ui/widget/button")
 local Device = require("device")
 local Font = require("ui/font")
+local CenterContainer = require("ui/widget/container/centercontainer")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
@@ -24,59 +25,60 @@ local I18n = require("weread.lib.i18n")
 
 local function _(text) return I18n.tr(text) end
 
-local RefreshRow = InputContainer:extend{
-    label = "",
-    date = "",
+local FooterAction = InputContainer:extend{
+    text = "",
+    subtitle = nil,
     width = nil,
+    height = nil,
+    enabled = true,
     callback = nil,
     show_parent = nil,
-    label_bold = true,
-    bordersize = Size.border.thin,
-    padding_left = nil,
-    padding_right = nil,
 }
 
-function RefreshRow:init()
-    local padding_left = self.padding_left == nil and Size.padding.large or self.padding_left
-    local padding_right = self.padding_right == nil and Size.padding.large or self.padding_right
-    local inner_width = self.width - padding_left - padding_right - 2 * self.bordersize
-    local left = TextWidget:new{
-        text = self.label,
-        face = Font:getFace("cfont", 20),
-        bold = self.label_bold,
+function FooterAction:init()
+    local color = self.enabled and Blitbuffer.COLOR_BLACK or Blitbuffer.COLOR_GRAY
+    local content = VerticalGroup:new{
+        align = "center",
+        TextWidget:new{
+            text = self.text,
+            face = Font:getFace("cfont", 20),
+            bold = true,
+            fgcolor = color,
+            max_width = self.width - 2 * Size.padding.small,
+        },
     }
-    local right = TextWidget:new{
-        text = self.date,
-        face = Font:getFace("cfont", 16),
-    }
-    local gap = math.max(Size.padding.large,
-        inner_width - left:getSize().w - right:getSize().w)
+    if self.subtitle and self.subtitle ~= "" then
+        table.insert(content, VerticalSpan:new{ width = Screen:scaleBySize(2) })
+        table.insert(content, TextWidget:new{
+            text = self.subtitle,
+            face = Font:getFace("cfont", 13),
+            fgcolor = color,
+            max_width = self.width - 2 * Size.padding.small,
+        })
+    end
     self.frame = FrameContainer:new{
-        bordersize = self.bordersize,
+        width = self.width,
+        height = self.height,
         radius = 0,
         margin = 0,
-        padding_left = padding_left,
-        padding_right = padding_right,
-        padding_top = Size.padding.default,
-        padding_bottom = Size.padding.default,
+        padding = 0,
+        bordersize = Size.border.thin,
         background = Blitbuffer.COLOR_WHITE,
         show_parent = self.show_parent,
-        HorizontalGroup:new{
-            align = "center",
-            left,
-            HorizontalSpan:new{ width = gap },
-            right,
+        CenterContainer:new{
+            dimen = Geom:new{ w = self.width, h = self.height },
+            content,
         },
     }
     self[1] = self.frame
     self.dimen = self.frame:getSize()
     self.ges_events = {
-        TapRefreshRow = { GestureRange:new{ ges = "tap", range = self.dimen } },
+        TapFooterAction = { GestureRange:new{ ges = "tap", range = self.dimen } },
     }
 end
 
-function RefreshRow:onTapRefreshRow()
-    if not self.callback then return true end
+function FooterAction:onTapFooterAction()
+    if not self.enabled or not self.callback then return true end
     self.frame.invert = true
     UIManager:widgetRepaint(self.frame, self.frame.dimen.x, self.frame.dimen.y)
     UIManager:forceRePaint()
@@ -119,17 +121,21 @@ function BookDetailView:metadataBlock()
         if item.left or item.right then
             local face = Font:getFace("cfont", 18)
             local half = math.floor((self.content_width - Size.padding.large) / 2)
-            local left = TextWidget:new{
-                text = item.left or "", face = face, max_width = half,
+            local left = TextBoxWidget:new{
+                text = item.left or "",
+                face = face,
+                width = half,
+                alignment = "left",
             }
-            local right = TextWidget:new{
-                text = item.right or "", face = face, max_width = half,
+            local right = TextBoxWidget:new{
+                text = item.right or "",
+                face = face,
+                width = half,
+                alignment = "left",
             }
-            local gap = math.max(Size.padding.large,
-                self.content_width - left:getSize().w - right:getSize().w)
             table.insert(group, HorizontalGroup:new{
                 left,
-                HorizontalSpan:new{ width = gap },
+                HorizontalSpan:new{ width = Size.padding.large },
                 right,
             })
         else
@@ -150,35 +156,21 @@ function BookDetailView:actionBlock(actions)
         HorizontalSpan:new{ width = self.content_width },
     }
     for _i, action in ipairs(actions or {}) do
-        if action.status then
-            table.insert(group, RefreshRow:new{
-                label = action.text,
-                date = action.status,
-                width = self.content_width,
-                label_bold = action.bold == true,
-                bordersize = 0,
-                padding_left = 0,
-                padding_right = 0,
-                show_parent = self,
-                callback = action.callback,
-            })
-        else
-            table.insert(group, Button:new{
-                text = action.text,
-                width = self.content_width,
-                height = Screen:scaleBySize(54),
-                align = "left",
-                radius = 0,
-                margin = 0,
-                padding_h = Size.padding.large,
-                bordersize = 0,
-                text_font_size = 20,
-                text_font_bold = action.bold == true,
-                enabled = action.enabled ~= false,
-                show_parent = self,
-                callback = action.callback,
-            })
-        end
+        table.insert(group, Button:new{
+            text = action.text,
+            width = self.content_width,
+            height = Screen:scaleBySize(54),
+            align = "left",
+            radius = 0,
+            margin = 0,
+            padding_h = Size.padding.large,
+            bordersize = 0,
+            text_font_size = 20,
+            text_font_bold = action.bold == true,
+            enabled = action.enabled ~= false,
+            show_parent = self,
+            callback = action.callback,
+        })
         table.insert(group, LineWidget:new{
             dimen = Geom:new{ w = self.content_width, h = 1 },
             background = Blitbuffer.COLOR_GRAY,
@@ -191,18 +183,15 @@ function BookDetailView:footer()
     local actions = self.data.bottom_actions or {}
     local count = math.max(1, #actions)
     local cell_width = math.floor(self.screen_w / count)
+    local footer_height = Screen:scaleBySize(66)
     local row = HorizontalGroup:new{}
     for index, action in ipairs(actions) do
-        table.insert(row, Button:new{
+        table.insert(row, FooterAction:new{
             text = action.text,
+            subtitle = action.subtitle,
             width = index == count
                 and self.screen_w - cell_width * (count - 1) or cell_width,
-            height = Screen:scaleBySize(52),
-            radius = 0,
-            margin = 0,
-            bordersize = Size.border.thin,
-            text_font_size = 21,
-            text_font_bold = true,
+            height = footer_height,
             enabled = action.enabled ~= false,
             show_parent = self,
             callback = action.callback,
@@ -217,39 +206,55 @@ function BookDetailView:content()
         align = "left",
         HorizontalSpan:new{ width = self.content_width },
     }
+    local refresh_width = math.floor(self.content_width * 0.34)
+    local summary_width = self.content_width - refresh_width - Size.padding.large
+    local summary = VerticalGroup:new{ align = "left" }
     if data.author_line and data.author_line ~= "" then
-        table.insert(content, TextBoxWidget:new{
+        table.insert(summary, TextBoxWidget:new{
             text = data.author_line,
             face = Font:getFace("cfont", 19),
-            width = self.content_width,
-            alignment = "center",
+            bold = true,
+            width = summary_width,
         })
-        table.insert(content, VerticalSpan:new{ width = Size.padding.default })
+        table.insert(summary, VerticalSpan:new{ width = Size.padding.small })
     end
     if data.status_line and data.status_line ~= "" then
-        table.insert(content, TextBoxWidget:new{
+        table.insert(summary, TextBoxWidget:new{
             text = data.status_line,
-            face = Font:getFace("cfont", 17),
-            bold = true,
-            width = self.content_width,
-            alignment = "center",
+            face = Font:getFace("cfont", 16),
+            width = summary_width,
         })
-        table.insert(content, VerticalSpan:new{ width = Size.padding.large })
     end
-
-    table.insert(content, RefreshRow:new{
-        label = data.refresh_label,
-        date = data.refresh_date,
-        width = self.content_width,
-        show_parent = self,
-        callback = function() if self.on_refresh then self.on_refresh() end end,
+    local refresh = VerticalGroup:new{
+        align = "center",
+        Button:new{
+            text = data.refresh_label,
+            width = refresh_width,
+            height = Screen:scaleBySize(38),
+            radius = Screen:scaleBySize(7),
+            margin = 0,
+            bordersize = Size.border.thin,
+            text_font_size = 16,
+            text_font_bold = false,
+            show_parent = self,
+            callback = function() if self.on_refresh then self.on_refresh() end end,
+        },
+        VerticalSpan:new{ width = Size.padding.small },
+        TextBoxWidget:new{
+            text = _("Last updated") .. " " .. data.refresh_date,
+            face = Font:getFace("cfont", 12),
+            fgcolor = Blitbuffer.COLOR_DARK_GRAY,
+            width = refresh_width,
+            alignment = "center",
+        },
+    }
+    table.insert(content, HorizontalGroup:new{
+        align = "center",
+        summary,
+        HorizontalSpan:new{ width = Size.padding.large },
+        refresh,
     })
     table.insert(content, VerticalSpan:new{ width = Size.padding.large })
-
-    if data.chapter_action then
-        table.insert(content, self:actionBlock({ data.chapter_action }))
-        table.insert(content, VerticalSpan:new{ width = Size.padding.large })
-    end
 
     if #(data.metadata or {}) > 0 then
         table.insert(content, self:sectionTitle(_("Book information")))

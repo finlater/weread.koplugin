@@ -28,6 +28,7 @@ local ShelfRow = InputContainer:extend{
     text = "",
     status = "",
     width = nil,
+    font_size = 22,
     callback = nil,
     show_parent = nil,
 }
@@ -35,7 +36,7 @@ local ShelfRow = InputContainer:extend{
 function ShelfRow:init()
     local padding = Size.padding.large
     local inner_width = self.width - 2 * padding
-    local face = Font:getFace("cfont", 22)
+    local face = Font:getFace("cfont", self.font_size)
     local status_widget = TextWidget:new{ text = self.status or "", face = face }
     local status_width = status_widget:getSize().w
     local gap = Size.padding.large
@@ -217,6 +218,7 @@ function LibraryView:content()
             text = book.title or book.bookId or book.book_id or _("Untitled"),
             status = self:itemStatus(book),
             width = self.list_width,
+            font_size = self.mode == "books" and 20 or 22,
             show_parent = self,
             callback = function()
                 if self.on_select then self.on_select(book, self.mode) end

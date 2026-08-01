@@ -440,6 +440,9 @@ function M:showBookMenu(book)
     if is_full_cached and cached_chapter_count == 0 and total_chapters then
         cached_chapter_count = total_chapters
     end
+    local chapter_status = total_chapters
+        and T(_("Cached %1/%2 chapters"), tostring(cached_chapter_count), tostring(total_chapters))
+        or T(_("%1 chapters cached"), tostring(cached_chapter_count))
 
     local author_parts = {}
     if book.author and book.author ~= "" then author_parts[#author_parts + 1] = book.author end
@@ -450,8 +453,7 @@ function M:showBookMenu(book)
     if book.progress and book.progress > 0 then
         statuses[#statuses + 1] = T(_("Progress %1%"), tostring(book.progress))
     end
-    if book.chapters then statuses[#statuses + 1] = T(_("%1 chapters"), tostring(#book.chapters)) end
-    statuses[#statuses + 1] = has_cache and _("✓ Cached locally") or _("Not downloaded")
+    statuses[#statuses + 1] = chapter_status
 
     local metadata = {}
     local function format_field(label, value)
@@ -476,25 +478,20 @@ function M:showBookMenu(book)
     end
     add_row(_("Publisher"), book.publisher,
         _("Publication date"), BookReviews.format_date(book.publishTime))
-    add_row(_("Category"), book.categoryName, _("Word count"), word_count)
+    local category = format_field(_("Category"), book.categoryName)
+    if category then metadata[#metadata + 1] = { text = category } end
+    local words = format_field(_("Word count"), word_count)
+    if words then metadata[#metadata + 1] = { text = words } end
     add_row("ISBN", book.isbn, _("Rating"), rating)
 
     local view
-    local chapter_status = total_chapters
-        and T(_("Cached %1/%2 chapters"), tostring(cached_chapter_count), tostring(total_chapters))
-        or T(_("%1 chapters cached"), tostring(cached_chapter_count))
-    local chapter_action = {
-        text = _("Chapter list"),
-        status = chapter_status,
-        bold = true,
-        callback = self:safeCallback(_("Chapter list"), function()
-            self:showChapterList(book, function()
-                local latest = self.settings:get("books", {})[book_id] or book
-                if view then UIManager:close(view) end
-                self:showBookMenu(latest)
-            end)
-        end),
-    }
+    local open_chapter_list = self:safeCallback(_("Chapter list"), function()
+        self:showChapterList(book, function()
+            local latest = self.settings:get("books", {})[book_id] or book
+            if view then UIManager:close(view) end
+            self:showBookMenu(latest)
+        end)
+    end)
     local review_action = {
         text = _("Recommended / Latest"),
         callback = self:safeCallback(_("Book reviews"), function()
@@ -527,6 +524,10 @@ function M:showBookMenu(book)
             end),
         },
         {
+            text = _("☷ Chapter list"),
+            callback = open_chapter_list,
+        },
+        {
             text = _("▤ Read"),
             enabled = has_cache,
             callback = self:safeCallback(_("Read"), function()
@@ -542,7 +543,6 @@ function M:showBookMenu(book)
         refresh_date = updated,
         metadata = metadata,
         intro = book.intro,
-        chapter_action = chapter_action,
         review_action = review_action,
         actions = actions,
         bottom_actions = bottom_actions,
@@ -1252,7 +1252,7 @@ function M:confirmAndDownloadChapters(book, chapters, suffix, options)
         )
     end
     text = text .. "\n" .. _(
-        "Downloading underlines and thoughts adds requests for every chapter and may significantly increase download time."
+        "Downloading underlines and thoughts may significantly increase download time."
     )
 
     local dialog
