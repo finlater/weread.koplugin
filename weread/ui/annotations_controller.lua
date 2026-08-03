@@ -227,7 +227,10 @@ function M:_teardownThoughtInterception()
         self._thought_interception_setup = nil
     end
     self:_removeLinkFilter()
-    ThoughtPopup.closeVisible()
+    -- Document boundary: drop the pooled popup entirely. closeVisible() would
+    -- keep the pooled widget and its page/piece/layout caches (~10+ MB of
+    -- bitmaps) alive for the whole KOReader session; cleanup() frees them.
+    ThoughtPopup.cleanup()
     if self._thought_refresh_request then
         local progress_dialog = self._thought_refresh_request.progress_dialog
         self._thought_refresh_request = nil
@@ -310,11 +313,18 @@ function M:_showThoughtPopup(pages, link, session_gen, tap_started)
     end
 
     local popup_started = time.now()
+    local ok_params, params = pcall(function()
+        return self:_thoughtPopupLayoutParams()
+    end)
+    params = ok_params and params or nil
     local ok, popup = pcall(function()
         return ThoughtPopup.show({
             pages = pages,
-            height_ratio = 0.62,
+            height_ratio = tonumber(self.settings:get("thought_popup").height_ratio) or 0.62,
             dialog = self.dialog,
+            doc_font_name = params and params.doc_font_name,
+            doc_font_size = params and params.doc_font_size,
+            doc_margins = params and params.doc_margins,
             close_callback = function()
                 self._thought_popup_open = nil
                 self._current_thought_popup = nil
@@ -341,6 +351,43 @@ function M:_showThoughtPopup(pages, link, session_gen, tap_started)
     if tap_started then
         thought_perf("tap_to_popup_return", tap_started, "pages=", tostring(#pages))
     end
+end
+
+-- Reader font/layout preferences for the thought popup so it matches the book
+-- text. Returns nil when unavailable; every access is guarded and callers fall
+-- back to the popup's built-in defaults.
+function M:_thoughtPopupLayoutParams()
+    if not self.ui or not self.ui.document then
+        return nil
+    end
+    local document = self.ui.document
+    local Screen = require("device").screen
+
+    local font_face = self.ui.font and self.ui.font.font_face
+    if not font_face then
+        font_face = G_reader_settings:readSetting("cre_font")
+    end
+
+    local thought_popup = self.settings:get("thought_popup")
+    local font_size = thought_popup.font_size
+    local font_size_scaled
+    if font_size then
+        font_size_scaled = Screen:scaleBySize(font_size)
+    else
+        local relative = tonumber(thought_popup.font_size_relative) or -2
+        local doc_font_size = (document.configurable and document.configurable.font_size) or 18
+        font_size_scaled = Screen:scaleBySize(doc_font_size) + relative
+    end
+
+    local ok, margins = pcall(function()
+        return document:getPageMargins()
+    end)
+
+    return {
+        doc_font_name = font_face,
+        doc_font_size = font_size_scaled,
+        doc_margins = ok and margins or nil,
+    }
 end
 
 -- Recursively pull a thought anchor href out of a KOReader link object.

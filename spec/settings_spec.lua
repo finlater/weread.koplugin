@@ -91,6 +91,11 @@ expect(settings:get("update").prefer_proxy == true,
     "update proxy should be preferred by default")
 expect(settings:get("shelf").paginated == true,
     "bookshelf pagination should be enabled by default")
+local thought_popup = settings:get("thought_popup")
+expect(thought_popup.height_ratio == 0.62
+    and thought_popup.font_size_relative == -2
+    and thought_popup.font_size == nil,
+    "thought popup preferences should use the defaults")
 expect(created_dirs[1] == "/data/weread"
     and created_dirs[2] == "/data/weread/cache",
     "settings directories were not initialized")
