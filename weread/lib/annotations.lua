@@ -265,23 +265,6 @@ function Annotations.buildThoughtPopupItems(range_review)
     return items
 end
 
---- Format a normalized thought item for KOReader's native TextViewer.
-function Annotations.formatThoughtPopupItem(item)
-    if type(item) ~= "table" then
-        return ""
-    end
-
-    local parts = {}
-    local meta = "▸ " .. tostring(item.author or "匿名")
-    local likes = tonumber(item.likes_count) or 0
-    if likes > 0 then
-        meta = meta .. " · ♥ " .. tostring(likes)
-    end
-    parts[#parts + 1] = meta
-    parts[#parts + 1] = tostring(item.content or "")
-    return table.concat(parts, "\n")
-end
-
 --- 在 HTML 中注入下划线标记。
 -- @string html  完整的原始 HTML（包含 body 标签）
 -- @table  underlines  划线列表
