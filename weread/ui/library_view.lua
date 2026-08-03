@@ -187,7 +187,7 @@ function LibraryView:actionBar()
     end
     return FrameContainer:new{
         bordersize = 0, padding = 0, margin = 0,
-        VerticalGroup:new{ align = "left", primary, secondary },
+        VerticalGroup:new{ align = "left", secondary, primary },
     }
 end
 
@@ -255,8 +255,10 @@ function LibraryView:init()
     self.title_bar = TitleBar:new{
         width = self.screen_w,
         title = self.title or _("WeRead Bookshelf"),
+        title_face = Font:getFace("tfont", 28),
         align = "center",
         with_bottom_line = true,
+        right_icon_size_ratio = 0.75,
         close_callback = function() self:onClose() end,
         show_parent = self,
     }

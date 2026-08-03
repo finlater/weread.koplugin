@@ -10,6 +10,7 @@ local zh = {
     ["Book details"] = "书籍详情",
     ["Show underlines and thoughts"] = "显示划线和想法",
     ["Thoughts"] = "想法",
+    ["Underline settings"] = "划线设置",
     ["Thought %1/%2"] = "想法 %1/%2",
     ["Previous"] = "上一页",
     ["Next"] = "下一页",

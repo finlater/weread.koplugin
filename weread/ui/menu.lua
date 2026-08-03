@@ -457,7 +457,7 @@ function M:getSettingsMenuItems()
             end,
         },
         {
-            text = _("Thoughts"),
+            text = _("Underline settings"),
             sub_item_table_func = function()
                 return {
                     {
