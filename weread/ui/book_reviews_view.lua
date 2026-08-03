@@ -98,6 +98,7 @@ function BookReviewsView:buildContent()
         table.insert(content, VerticalSpan:new{ width = Size.padding.large })
         table.insert(content, TextWidget:new{
             text = _("No reviews."),
+            face = Font:getFace("cfont", 20),
             max_width = self.content_width,
         })
         return content
