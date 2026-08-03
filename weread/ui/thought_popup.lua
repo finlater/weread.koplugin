@@ -151,7 +151,7 @@ function NativeThoughtPopup:_updatePage()
     local abstract = self.items[1] and self.items[1].abstract
     if type(abstract) == "string" and abstract ~= "" then
         -- Let TitleBar use its exact available width (including the close icon)
-        -- and apply its native right-edge ellipsis.
+        -- and wrap long abstracts onto multiple lines (title_multilines).
         self.title = abstract:gsub("%s+", " ")
     else
         self.title = _("Thoughts")
@@ -253,6 +253,9 @@ function NativeThoughtPopup:init(reinit)
     self.add_default_buttons = false
     self.text_type = "general"
     self.alignment = "left"
+    -- wrap long abstract titles instead of truncating
+    self.title_multilines = true
+    self.title_face = Font:getFace("x_smalltfont", 18)
     self.auto_para_direction = true
     self.buttons_table = self:_buildButtons()
     self:_updatePage()
