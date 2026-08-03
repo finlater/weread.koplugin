@@ -45,7 +45,18 @@ local host = setmetatable({
     stopReadReport = function(_self, reason) stopped = reason end,
     maybeStartReadReport = function() started = true end,
     showTransientInfo = function(_self, text) notice = text end,
+    safeCallback = function(_self, _label, callback) return callback end,
 }, { __index = ReadReportUI })
+
+local report_items = host:getReadReportMenuItems()
+expect(report_items[1].keep_menu_open == true
+        and report_items[2].keep_menu_open == true
+        and report_items[4].keep_menu_open == true,
+    "reading report actions keep their menu open")
+local target_items = host:getReportTargetMenuItems()
+expect(target_items[1].keep_menu_open == true
+        and target_items[2].keep_menu_open == true,
+    "report target actions keep their menu open")
 
 host:showReadReportBookPicker()
 expect(picker_options and picker_options.mode == "books",

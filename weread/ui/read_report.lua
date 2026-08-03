@@ -17,6 +17,8 @@ function M:getReadReportMenuItems()
     return {
         {
             text = _("Enable reading time report"),
+            keep_menu_open = true,
+            check_callback_updates_menu = true,
             checked_func = function()
                 return self.settings:get("read_report").enabled
             end,
@@ -41,6 +43,8 @@ function M:getReadReportMenuItems()
         },
         {
             text = _("Only report when reading"),
+            keep_menu_open = true,
+            check_callback_updates_menu = true,
             checked_func = function()
                 return self.settings:get("read_report").report_on_open ~= false
             end,
@@ -102,6 +106,8 @@ function M:getReportTargetMenuItems()
     return {
         {
             text = _("Auto-associate with WeRead book"),
+            keep_menu_open = true,
+            check_callback_updates_menu = true,
             checked_func = function()
                 return self.settings:get("read_report").mode == "auto"
             end,
@@ -120,6 +126,8 @@ function M:getReportTargetMenuItems()
         },
         {
             text = _("Manually set report book"),
+            keep_menu_open = true,
+            check_callback_updates_menu = true,
             checked_func = function()
                 return self.settings:get("read_report").mode == "manual"
             end,

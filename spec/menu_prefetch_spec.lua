@@ -101,8 +101,21 @@ expect(bookshelf_action and bookshelf_action.title == "WeRead · Bookshelf",
 
 local settings_items = host:getSettingsMenuItems()
 local download_settings
+local cache_management
 for _, item in ipairs(settings_items) do
     if item.text == "Download settings" then download_settings = item end
+    if item.text == "Cache management" then cache_management = item end
+end
+local cache_items = cache_management and cache_management.sub_item_table_func() or {}
+expect(cache_items[1] and cache_items[1].keep_menu_open == true
+        and cache_items[2] and cache_items[2].keep_menu_open == true,
+    "cache dialogs keep the settings menu open")
+local main_items = host:getMainMenuItems()
+for _, item in ipairs(main_items) do
+    if item.text == "Search" or item.text == "Reading statistics" then
+        expect(item.keep_menu_open == true,
+            item.text .. " keeps the main menu open while its dialog is shown")
+    end
 end
 local download_items = download_settings and download_settings.sub_item_table_func()
 local prefetch

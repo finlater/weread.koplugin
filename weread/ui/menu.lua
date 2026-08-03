@@ -77,6 +77,7 @@ function M:getMainMenuItems()
         },
         {
             text = _("Search"),
+            keep_menu_open = true,
             callback = self:safeCallback(_("Search"), function()
                 self:showSearch()
             end),
@@ -92,6 +93,7 @@ function M:getMainMenuItems()
         },
         {
             text = _("Reading statistics"),
+            keep_menu_open = true,
             callback = self:safeCallback(_("Reading statistics"), function()
                 self:showReadStats()
             end),
@@ -110,6 +112,7 @@ function M:getMainMenuItems()
         },
         {
             text = T(_("About (v%1)"), self.version),
+            keep_menu_open = true,
             callback = function()
                 local version = self.version
                 if self.getUpdater then
@@ -125,6 +128,7 @@ function M:getMainMenuItems()
     if self.ui.document then
         table.insert(items, 2, {
             text = _("Sync progress now"),
+            keep_menu_open = true,
             enabled_func = function()
                 local book_id = self:detectWeReadBook()
                 return book_id ~= nil and not WeRead.is_mp_book(book_id)
@@ -135,6 +139,7 @@ function M:getMainMenuItems()
         })
         table.insert(items, 3, {
             text = _("Book details"),
+            keep_menu_open = true,
             callback = self:safeCallback(_("Book details"), function()
                 self:showCurrentBookDetails()
             end),
@@ -176,12 +181,14 @@ function M:getSettingsMenuItems()
                 return {
                     {
                         text = _("Scan and match local books"),
+                        keep_menu_open = true,
                         callback = self:safeCallback(_("Scan and match local books"), function()
                             self:confirmScanLocalCache()
                         end),
                     },
                     {
                         text = _("Cache cleanup"),
+                        keep_menu_open = true,
                         callback = self:safeCallback(_("Cache cleanup"), function()
                             self:showCacheManagement()
                         end),
@@ -495,6 +502,7 @@ function M:getSettingsMenuItems()
                 return {
                     {
                         text = _("Account status"),
+                        keep_menu_open = true,
                         callback = self:safeCallback(_("Account status"), function()
                             self:showAccountStatus()
                         end),
