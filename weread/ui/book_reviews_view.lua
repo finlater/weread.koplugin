@@ -4,6 +4,7 @@
 local Blitbuffer = require("ffi/blitbuffer")
 local Button = require("ui/widget/button")
 local Device = require("device")
+local Font = require("ui/font")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
