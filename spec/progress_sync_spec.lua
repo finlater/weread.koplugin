@@ -28,7 +28,8 @@ local chapters = {
     { chapterUid = 33, chapterIdx = 3, wordCount = 600 },
 }
 
-local function fixture(remote)
+local function fixture(remote, options)
+    options = options or {}
     local document = {
         file = "/cache/book/full.epub",
         page = 25,
@@ -74,6 +75,7 @@ local function fixture(remote)
     local choices = {}
     local uploads = {}
     local jumps = {}
+    local notifications = {}
     local client = {
         get_progress = function()
             return { book = remote }
@@ -89,11 +91,12 @@ local function fixture(remote)
         get_document = function() return document end,
         detect_book = function() return "book" end,
         get_book = function() return book end,
-        get_chapters = function() return chapters end,
+        get_chapters = options.get_chapters or function() return chapters end,
+        refresh_catalog = options.refresh_catalog,
         get_file_context = function()
             return nil, nil, true
         end,
-        run_online = function(_kind, callback)
+        run_online = options.run_online or function(_kind, callback)
             callback()
             return true
         end,
@@ -111,6 +114,10 @@ local function fixture(remote)
         on_choice = function(context)
             choices[#choices + 1] = context
         end,
+        notify = function(code, data)
+            notifications[#notifications + 1] = { code = code, data = data }
+        end,
+        is_online = options.is_online,
     }
     local function drain()
         local count = 0
@@ -127,6 +134,7 @@ local function fixture(remote)
         choices = choices,
         uploads = uploads,
         jumps = jumps,
+        notifications = notifications,
         drain = drain,
     }
 end
@@ -354,6 +362,70 @@ test("automatic hooks stay disabled when flags are absent", function()
     f.sync.dirty = true
     f.sync:on_close_document()
     eq(#f.uploads, 0, "close does not upload by default")
+end)
+
+test("manual sync refreshes a missing catalog inside the online task", function()
+    local available_chapters
+    local refresh_count = 0
+    local online_count = 0
+    local f = fixture({
+        bookId = "book",
+        progress = 25,
+        chapterUid = 22,
+        chapterIdx = 2,
+        chapterOffset = 150,
+        updateTime = 10,
+    }, {
+        get_chapters = function() return available_chapters end,
+        refresh_catalog = function(book_id)
+            eq(book_id, "book", "refresh receives current book")
+            refresh_count = refresh_count + 1
+            available_chapters = chapters
+            return chapters
+        end,
+        run_online = function(_kind, callback)
+            online_count = online_count + 1
+            callback()
+            return true
+        end,
+    })
+    eq(f.sync:sync_now(), true, "manual sync starts")
+    eq(refresh_count, 1, "catalog refreshed once")
+    eq(online_count, 1, "catalog and progress share one online task")
+    eq(f.sync:status().verified, true, "refreshed catalog completes sync")
+    eq(#f.notifications, 1, "aligned manual sync notifies once")
+    eq(f.notifications[1].code, "already_synced", "sync result notified")
+end)
+
+test("automatic open never refreshes a missing catalog", function()
+    local refresh_count = 0
+    local f = fixture({}, {
+        get_chapters = function() return nil end,
+        refresh_catalog = function()
+            refresh_count = refresh_count + 1
+            return chapters
+        end,
+    })
+    f.sync:on_reader_ready()
+    f.drain()
+    eq(refresh_count, 0, "automatic path stays offline")
+    eq(f.sync:status().state, "unsafe", "missing catalog degrades safely")
+end)
+
+test("offline manual catalog refresh reports offline instead of raw reason", function()
+    local refresh_count = 0
+    local f = fixture({}, {
+        get_chapters = function() return nil end,
+        refresh_catalog = function()
+            refresh_count = refresh_count + 1
+            return chapters
+        end,
+        is_online = function() return false end,
+    })
+    eq(f.sync:sync_now(), false, "offline sync does not start")
+    eq(refresh_count, 0, "offline path does not refresh")
+    eq(#f.notifications, 1, "offline failure notifies once")
+    eq(f.notifications[1].code, "offline", "offline message is explicit")
 end)
 
 print(string.format(

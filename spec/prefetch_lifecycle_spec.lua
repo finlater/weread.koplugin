@@ -4,7 +4,12 @@ package.path = "./?.lua;" .. package.path
 
 local existing = {}
 local logs = {}
-package.preload["weread.lib.content"] = function() return {} end
+package.preload["weread.lib.content"] = function()
+    return {
+        catalog_cache_path = function() return "/cache/catalog.json" end,
+        save_catalog_cache = function() return true end,
+    }
+end
 package.preload["weread.lib.logger"] = function()
     return {
         scoped = function()

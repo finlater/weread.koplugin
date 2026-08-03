@@ -4,6 +4,7 @@ local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 
 local Client = require("weread.lib.client")
+local Content = require("weread.lib.content")
 local Downloader = require("weread.lib.downloader")
 local Integrations = require("integrations.init")
 local LibraryDB = require("weread.lib.library_db")
@@ -89,6 +90,7 @@ function WeReadPlugin:init()
     self.read_report = ReadReport:new{
         settings = self.settings,
         client = self.client,
+        library_db = self.library_db,
         scheduler = UIManager,
         get_document = function()
             return self.ui and self.ui.document
@@ -126,6 +128,33 @@ function WeReadPlugin:init()
         end,
         get_chapters = function(book)
             return self:ensureChaptersLoaded(book)
+        end,
+        refresh_catalog = function(book_id)
+            local book = self.settings:get("books", {})[tostring(book_id)]
+            if type(book) ~= "table" then
+                return nil, "book_not_found"
+            end
+            local ok, chapters_or_err = pcall(function()
+                Content.ensure_reader_state(self.client, book)
+                return Content.fetch_catalog(self.client, book)
+            end)
+            if not ok then
+                return nil, chapters_or_err
+            end
+            local chapters = chapters_or_err
+            if type(chapters) ~= "table" or #chapters == 0 then
+                return nil, "catalog_unavailable"
+            end
+            local cache_ok, cache_err = Content.save_catalog_cache(
+                self.client, self.settings, book, chapters)
+            if not cache_ok then
+                logger.warn("save chapter catalog cache failed:",
+                    PluginUtil.log_error(cache_err))
+            end
+            if self.library_db then
+                self.library_db:putChapters(book_id, chapters)
+            end
+            return chapters
         end,
         get_file_context = function(book, path)
             return self:getChapterInfoFromFile(book, path)

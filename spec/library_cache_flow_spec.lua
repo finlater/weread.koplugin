@@ -1,6 +1,7 @@
 package.path = "./?.lua;" .. package.path
 
 local existing_paths = {}
+local catalog_save_count = 0
 local function empty_module() return {} end
 package.preload["weread.lib.book_reviews"] = function()
     return { format_date = function() return "" end }
@@ -36,7 +37,11 @@ package.preload["weread.lib.content"] = function()
     return {
         ensure_reader_state = function() end,
         fetch_catalog = function() return fetched_chapters end,
-        save_catalog_cache = function() return true end,
+        catalog_cache_path = function() return "/cache/42/catalog.json" end,
+        save_catalog_cache = function()
+            catalog_save_count = catalog_save_count + 1
+            return true
+        end,
         load_catalog_cache = function() return nil end,
     }
 end
@@ -52,6 +57,7 @@ local books = {}
 local db_detail
 local written_book
 local written_chapters
+local db_chapters
 local auto_refresh
 local shown_book
 local opened_path
@@ -72,7 +78,7 @@ local host = {
         accountKey = function() return "account-a" end,
         getBook = function() return db_detail end,
         putBook = function(_self, book) written_book = book return true end,
-        getChapters = function() return nil end,
+        getChapters = function() return db_chapters end,
         putChapters = function(_self, _book_id, chapters)
             written_chapters = chapters
             return true
@@ -118,6 +124,17 @@ expect(written_chapters == fetched_chapters,
     "fetched chapter catalog was not written to SQLite")
 expect(callback_chapters == fetched_chapters,
     "chapter callback did not receive the fetched catalog")
+
+db_chapters = { { chapterUid = 8, title = "Database chapter" } }
+callback_chapters = nil
+local db_book = { book_id = "42", title = "Database catalog" }
+host:loadChapters(db_book, function(chapters)
+    callback_chapters = chapters
+end)
+expect(callback_chapters == db_chapters and db_book.chapters == db_chapters,
+    "SQLite chapter hit was not returned")
+expect(catalog_save_count == 2,
+    "SQLite chapter hit did not backfill missing catalog.json")
 
 local partial = {
     book_id = "42",

@@ -174,6 +174,7 @@ function ReadReport:new(options)
     local object = {
         settings = options.settings,
         client = options.client,
+        library_db = options.library_db,
         scheduler = options.scheduler,
         get_document = options.get_document,
         detect_book = options.detect_book,
@@ -941,7 +942,25 @@ function ReadReport:_build_context(book_id, force, book)
     -- otherwise the TTL check below can never pass and every report would
     -- refetch the whole reader page.
     if type(book.chapters) ~= "table" or #book.chapters == 0 then
-        Content.load_catalog_cache(self.client, self.settings, book)
+        local chapters = Content.load_catalog_cache(
+            self.client, self.settings, book)
+        if type(chapters) == "table" and #chapters > 0 then
+            if self.library_db then
+                self.library_db:putChapters(book_id, chapters)
+            end
+        else
+            chapters = self.library_db
+                and self.library_db:getChapters(book_id) or nil
+            if type(chapters) == "table" and #chapters > 0 then
+                book.chapters = chapters
+                local cache_ok, cache_err = Content.save_catalog_cache(
+                    self.client, self.settings, book, chapters)
+                if not cache_ok then
+                    log("warn", "save chapter catalog cache failed:",
+                        tostring(cache_err))
+                end
+            end
+        end
     end
 
     local age = self.now() - (tonumber(book.read_context_updated_at) or 0)
@@ -965,6 +984,9 @@ function ReadReport:_build_context(book_id, force, book)
             self.client, self.settings, book, chapters)
         if not cache_ok then
             log("warn", "save chapter catalog cache failed:", tostring(cache_err))
+        end
+        if self.library_db then
+            self.library_db:putChapters(book_id, chapters)
         end
     end
     self:_merge_remote_progress(book_id, book)

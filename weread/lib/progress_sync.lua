@@ -59,6 +59,7 @@ function ProgressSync:new(options)
         detect_book = options.detect_book,
         get_book = options.get_book,
         get_chapters = options.get_chapters,
+        refresh_catalog = options.refresh_catalog,
         get_file_context = options.get_file_context,
         run_online = options.run_online,
         upload_position = options.upload_position,
@@ -502,8 +503,14 @@ function ProgressSync:_pull(options)
     if self.pulling then return false end
     local local_position, reason, context = self:capture_local()
     if not local_position then
-        if options.manual then self.notify("local_unavailable", { error = reason }) end
-        return false
+        if not (options.manual == true
+            and reason == "catalog_unavailable"
+            and type(self.refresh_catalog) == "function") then
+            if options.manual then
+                self.notify("local_unavailable", { error = reason })
+            end
+            return false
+        end
     end
     if not self.settings:is_api_configured()
         and not self.settings:is_cookie_configured() then
@@ -520,6 +527,28 @@ function ProgressSync:_pull(options)
     self.pulling = true
     self.state = "pulling"
     local started = self.run_online("progress_pull", function()
+        if not local_position then
+            local book_id = tostring(self.detect_book() or "")
+            local refresh_ok, refreshed, refresh_error = pcall(
+                self.refresh_catalog, book_id)
+            if not refresh_ok then
+                refresh_error = refreshed
+                refreshed = nil
+            end
+            self.document_context = nil
+            local_position, reason, context = self:capture_local()
+            if not local_position then
+                self.pulling = false
+                self.state = "error"
+                self.notify("local_unavailable", {
+                    error = refresh_error or reason,
+                })
+                return
+            end
+            if type(refreshed) ~= "table" or #refreshed == 0 then
+                log("warn", "catalog refresh returned no chapters for:", book_id)
+            end
+        end
         local remote, pull_error = self:_fetch_remote(
             context.book_id,
             context.chapters

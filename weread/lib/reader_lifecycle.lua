@@ -319,10 +319,45 @@ end
 
 function M:ensureChaptersLoaded(book)
     if not book then return nil end
-    if not (type(book.chapters) == "table" and #book.chapters > 0) then
-        Content.load_catalog_cache(self.client, self.settings, book)
+    if type(book.chapters) == "table" and #book.chapters > 0 then
+        local book_id = book.book_id or book.bookId
+        if self.library_db and book_id then
+            self.library_db:putChapters(book_id, book.chapters)
+        end
+        local catalog_path = Content.catalog_cache_path(self.settings, book)
+        if catalog_path and not file_exists(catalog_path) then
+            local cache_ok, cache_err = Content.save_catalog_cache(
+                self.client, self.settings, book, book.chapters)
+            if not cache_ok then
+                logger.warn("save chapter catalog cache failed:",
+                    log_error(cache_err))
+            end
+        end
+        return book.chapters
     end
-    return book.chapters
+
+    local book_id = book.book_id or book.bookId
+    local chapters = Content.load_catalog_cache(
+        self.client, self.settings, book)
+    if type(chapters) == "table" and #chapters > 0 then
+        if self.library_db then
+            self.library_db:putChapters(book_id, chapters)
+        end
+        return chapters
+    end
+
+    chapters = self.library_db and self.library_db:getChapters(book_id) or nil
+    if type(chapters) == "table" and #chapters > 0 then
+        book.chapters = chapters
+        local cache_ok, cache_err = Content.save_catalog_cache(
+            self.client, self.settings, book, chapters)
+        if not cache_ok then
+            logger.warn("save chapter catalog cache failed:",
+                log_error(cache_err))
+        end
+        return chapters
+    end
+    return nil
 end
 
 -- cached_file historically pointed at either a full-book EPUB or the most

@@ -893,19 +893,44 @@ end
 function M:loadChapters(book, callback, force_refresh)
     if not force_refresh then
         if book.chapters and #book.chapters > 0 then
+            local book_id = book.book_id or book.bookId
+            if self.library_db and book_id then
+                self.library_db:putChapters(book_id, book.chapters)
+            end
+            local catalog_path = Content.catalog_cache_path(
+                self.settings, book)
+            if catalog_path and not file_exists(catalog_path) then
+                local cache_ok, cache_err = Content.save_catalog_cache(
+                    self.client, self.settings, book, book.chapters)
+                if not cache_ok then
+                    logger.warn("save chapter catalog cache failed:",
+                        log_error(cache_err))
+                end
+            end
             callback(book.chapters)
             return
         end
         local book_id = book.book_id or book.bookId
         local cached = self.library_db and self.library_db:getChapters(book_id) or nil
-        if cached then book.chapters = cached end
-        if not cached then
+        if type(cached) == "table" and #cached > 0 then
+            book.chapters = cached
+            local catalog_path = Content.catalog_cache_path(
+                self.settings, book)
+            if catalog_path and not file_exists(catalog_path) then
+                local cache_ok, cache_err = Content.save_catalog_cache(
+                    self.client, self.settings, book, cached)
+                if not cache_ok then
+                    logger.warn("save chapter catalog cache failed:",
+                        log_error(cache_err))
+                end
+            end
+        else
             cached = Content.load_catalog_cache(self.client, self.settings, book)
-            if cached and self.library_db then
+            if type(cached) == "table" and #cached > 0 and self.library_db then
                 self.library_db:putChapters(book_id, cached)
             end
         end
-        if cached then
+        if type(cached) == "table" and #cached > 0 then
             callback(cached)
             return
         end

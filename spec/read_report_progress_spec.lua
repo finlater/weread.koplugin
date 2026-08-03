@@ -4,8 +4,19 @@
 
 package.path = "./?.lua;" .. package.path
 
+local cached_catalog
+local saved_catalog
 package.preload["weread.lib.content"] = function()
-    return {}
+    return {
+        load_catalog_cache = function(_client, _settings, book)
+            if cached_catalog then book.chapters = cached_catalog end
+            return cached_catalog
+        end,
+        save_catalog_cache = function(_client, _settings, _book, chapters)
+            saved_catalog = chapters
+            return true
+        end,
+    }
 end
 
 package.preload["weread.lib.protocol"] = function()
@@ -145,6 +156,49 @@ test("one reader session enters once and reports live position", function()
     eq(records[2].chapter_offset, 150, "live offset used")
     eq(records[2].elapsed_seconds, 0, "progress-only report has zero time")
     eq(records[3].elapsed_seconds, 30, "time report keeps interval")
+end)
+
+test("report context restores SQLite catalog and backfills disk", function()
+    local report = fixture()
+    local db_catalog = { { chapterUid = 11, chapterIdx = 1 } }
+    report.library_db = {
+        getChapters = function() return db_catalog end,
+        putChapters = function() end,
+    }
+    cached_catalog = nil
+    saved_catalog = nil
+    local book = {
+        book_id = "book",
+        psvts = "ps",
+        chapter_uid = 11,
+        read_context_updated_at = 100,
+        read_session_id = report.session_id,
+    }
+    local context = report:_build_context("book", false, book)
+    eq(context.chapters, db_catalog, "SQLite catalog restored")
+    eq(saved_catalog, db_catalog, "catalog.json backfilled")
+end)
+
+test("report context backfills SQLite from catalog.json", function()
+    local report = fixture()
+    local disk_catalog = { { chapterUid = 11, chapterIdx = 1 } }
+    local written_catalog
+    report.library_db = {
+        getChapters = function() return nil end,
+        putChapters = function(_self, _book_id, chapters)
+            written_catalog = chapters
+        end,
+    }
+    cached_catalog = disk_catalog
+    local book = {
+        book_id = "book",
+        psvts = "ps",
+        chapter_uid = 11,
+        read_context_updated_at = 100,
+        read_session_id = report.session_id,
+    }
+    report:_build_context("book", false, book)
+    eq(written_catalog, disk_catalog, "catalog.json backfills SQLite")
 end)
 
 print(string.format(
