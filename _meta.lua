@@ -7,5 +7,5 @@ end
 return {
     fullname = _("WeRead"),
     description = _([[Read WeRead books in KOReader, cache chapters, and sync reading progress.]]),
-    version = "0.6.0",
+    version = "1.0.0",
 }
