@@ -1345,143 +1345,82 @@ local function normalize_void_elements(html)
 end
 
 local function strip_mp_reader_font_styles(html)
-    local blocked = {
-        ["font"] = true,
-        ["font-family"] = true,
-        ["line-height"] = true,
-        ["color"] = true,
-        ["-webkit-text-fill-color"] = true,
-        ["opacity"] = true,
-        ["page-break-before"] = true,
-        ["page-break-after"] = true,
-        ["page-break-inside"] = true,
-        ["break-before"] = true,
-        ["break-after"] = true,
-        ["break-inside"] = true,
-        ["text-size-adjust"] = true,
-        ["-webkit-text-size-adjust"] = true,
-        -- WeChat inline layout props: they inflate paragraph spacing and can
-        -- make KOReader paginate one paragraph per page.
-        ["letter-spacing"] = true,
-        ["margin"] = true,
-        ["margin-top"] = true,
-        ["margin-right"] = true,
-        ["margin-bottom"] = true,
-        ["margin-left"] = true,
-        ["padding"] = true,
-        ["padding-top"] = true,
-        ["padding-right"] = true,
-        ["padding-bottom"] = true,
-        ["padding-left"] = true,
-        ["text-indent"] = true,
-        ["height"] = true,
-        ["min-height"] = true,
-        ["max-height"] = true,
-        ["width"] = true,
-        ["min-width"] = true,
-        ["max-width"] = true,
-        ["float"] = true,
-        ["position"] = true,
-        ["vertical-align"] = true,
-        ["display"] = true,
-        ["text-align"] = true,
-        ["white-space"] = true,
-        ["word-spacing"] = true,
-        ["flex"] = true,
-        ["flex-flow"] = true,
-        ["flex-direction"] = true,
-        ["flex-wrap"] = true,
-        ["justify-content"] = true,
-        ["align-items"] = true,
-        ["align-self"] = true,
-        ["box-sizing"] = true,
-        ["outline"] = true,
-        ["outline-color"] = true,
-        ["outline-style"] = true,
-        ["outline-width"] = true,
-        ["caret-color"] = true,
-        ["cursor"] = true,
-        ["user-select"] = true,
-        ["overflow-wrap"] = true,
-        ["word-break"] = true,
-        ["word-wrap"] = true,
-        ["text-decoration"] = true,
-        ["text-decoration-thickness"] = true,
-        ["text-decoration-style"] = true,
-        ["text-decoration-color"] = true,
-        ["text-transform"] = true,
-        ["font-style"] = true,
-        ["font-variant"] = true,
-        ["font-variant-ligatures"] = true,
-        ["font-variant-caps"] = true,
-        ["font-weight"] = true,
-        ["font-stretch"] = true,
-        ["orphans"] = true,
-        ["widows"] = true,
-        ["visibility"] = true,
-        ["border"] = true,
-        ["border-width"] = true,
-        ["border-style"] = true,
-        ["border-color"] = true,
-        ["border-top"] = true,
-        ["border-right"] = true,
-        ["border-bottom"] = true,
-        ["border-left"] = true,
-        ["border-radius"] = true,
-        ["background"] = true,
-        ["background-color"] = true,
-        ["background-image"] = true,
-        ["box-shadow"] = true,
-        ["z-index"] = true,
-        ["clear"] = true,
-    }
-
-    local function relative_heading_size(value)
-        local lower = tostring(value or ""):lower():gsub("%s*!important%s*$", "")
+    -- Whitelist mode: keep only typography CREngine can render meaningfully
+    -- (text-align, font-weight, relative font-size). Everything else that
+    -- WeChat's editor emits (margins, letter-spacing, colors, backgrounds,
+    -- flex, vendor props, page-breaks...) is dropped -- those are what made
+    -- KOReader paginate one paragraph per page with blank space below.
+    --
+    -- font-size is normalized against the article's dominant size: a paragraph
+    -- set in the common size becomes 1em (dropped), while genuinely smaller or
+    -- larger text (footnotes, emphasized lines, headers) keeps its ratio.
+    local size_counts = {}
+    for value in tostring(html or ""):gmatch("font%-size%s*:%s*([^;]+)") do
+        local lower = value:lower()
         local px = tonumber(lower:match("^%s*([%d%.]+)%s*px%s*$"))
-        if px then
-            return px >= 18 and string.format("%.2fem", px / 16) or nil
-        end
         local pt = tonumber(lower:match("^%s*([%d%.]+)%s*pt%s*$"))
-        if pt then
-            return pt >= 13.5 and string.format("%.2fem", pt / 12) or nil
+        local n
+        if px then
+            n = px
+        elseif pt then
+            n = pt * 4 / 3
         end
-        local rem = tonumber(lower:match("^%s*([%d%.]+)%s*rem%s*$"))
-        if rem then
-            return rem > 1.05 and string.format("%.2fem", rem) or nil
+        if n and n > 0 then
+            size_counts[n] = (size_counts[n] or 0) + 1
         end
+    end
+    local base_px = 15 -- CSS default; overridden by the mode below
+    local best = 0
+    for n, c in pairs(size_counts) do
+        if c > best then
+            base_px, best = n, c
+        end
+    end
+
+    local function keep_font_size(value)
+        local lower = value:lower()
+        local px = tonumber(lower:match("^%s*([%d%.]+)%s*px%s*$"))
+        local pt = tonumber(lower:match("^%s*([%d%.]+)%s*pt%s*$"))
         local em = tonumber(lower:match("^%s*([%d%.]+)%s*em%s*$"))
-        if em then
-            return em > 1.05 and string.format("%.2fem", em) or nil
-        end
         local percent = tonumber(lower:match("^%s*([%d%.]+)%s*%%%s*$"))
-        if percent then
-            return percent > 105 and string.format("%.0f%%", percent) or nil
+        local ratio
+        if px then
+            ratio = px / base_px
+        elseif pt then
+            ratio = pt * 4 / 3 / base_px
+        elseif em then
+            ratio = em
+        elseif percent then
+            ratio = percent / 100
         end
-        local keyword = lower:match("^%s*(.-)%s*$")
-        if keyword == "large" or keyword == "larger" or keyword == "x-large" or keyword == "xx-large" then
-            return keyword
+        if ratio and math.abs(ratio - 1) >= 0.1 then
+            return string.format("font-size: %.2fem", ratio)
         end
         return nil
     end
 
-    return tostring(html or ""):gsub('style=(["\'])(.-)%1', function(quote, style)
+    return tostring(html or ""):gsub('style=([\"\'])(.-)%1', function(quote, style)
         local kept = {}
         for decl in style:gmatch("[^;]+") do
             local name, value = decl:match("^%s*([^:]+)%s*:%s*(.-)%s*$")
             if name and value then
                 local property = name:lower()
                 if property == "font-size" then
-                    local heading_size = relative_heading_size(value)
-                    if heading_size then
-                        table.insert(kept, "font-size: " .. heading_size)
+                    local fs = keep_font_size(value)
+                    if fs then
+                        table.insert(kept, fs)
                     end
-                elseif not blocked[property]
-                    and not property:match("^-webkit-")
-                    and not property:match("^-moz-")
-                    and not property:match("^-ms-")
-                    and not property:match("^overflow") then
-                    table.insert(kept, name .. ": " .. value)
+                elseif property == "font-weight" then
+                    local w = value:lower()
+                    local wnum = tonumber(w)
+                    if w == "bold" or (wnum and wnum >= 600) then
+                        table.insert(kept, "font-weight: bold")
+                    end
+                elseif property == "text-align" then
+                    local a = value:lower()
+                    if a == "center" or a == "left" or a == "right" or a == "justify" then
+                        table.insert(kept, name .. ": " .. a)
+                    end
                 end
             end
         end
@@ -1491,6 +1430,7 @@ local function strip_mp_reader_font_styles(html)
         return "style=" .. quote .. table.concat(kept, "; ") .. quote
     end)
 end
+
 
 function Content.strip_mp_images(html)
     html = tostring(html or "")
@@ -1512,6 +1452,29 @@ end
 local function simplify_mp_markup(html)
     -- Attribute-less spans are pure wrappers: unwrap them, keeping inner markup
     -- and text. Attributed spans (annotation markers etc.) are preserved.
+    -- Whitelist span attributes: only class (annotation markers) and style
+    -- (already reduced to the typography whitelist) survive; WeChat image
+    -- shells carry dozens of data-*/align/width attributes that only block
+    -- unwrapping.
+    html = html:gsub("<span([^>]*)>", function(attrs)
+        if attrs == "" or not attrs:match("%S") then
+            return "<span>"
+        end
+        local cls = attrs:match('class%s*=%s*["\'](.-)["\']')
+        local style = attrs:match('style%s*=%s*["\'](.-)["\']')
+        local kept = {}
+        if cls and cls ~= "" then
+            table.insert(kept, 'class="' .. cls .. '"')
+        end
+        if style and style ~= "" then
+            table.insert(kept, 'style="' .. style .. '"')
+        end
+        if #kept == 0 then
+            return "<span>"
+        end
+        return "<span " .. table.concat(kept, " ") .. ">"
+    end)
+    -- Attribute-less spans are pure wrappers: unwrap them, keeping inner markup
     html = html:gsub("<[sS][pP][aA][nN]%s+>", "<span>")
     for _ = 1, 8 do
         local previous = html
@@ -1587,7 +1550,8 @@ local function strip_blank_mp_blocks(html)
         if inner:match("^%s*$") then
             return ""
         end
-        attrs = attrs:gsub('style%s*=%s*(["\']).-%1', "")
+        -- Keep the (already whitelisted) style so in-body headings keep their
+        -- emphasis size; only the tag is demoted to a paragraph.
         return "<p" .. attrs .. ">" .. inner .. "</p>"
     end)
 
@@ -1611,8 +1575,15 @@ local function strip_blank_mp_blocks(html)
     html = html:gsub("%s+data%-mpa%-action%-id%s*=%s*([\"\']).-%1", "")
     -- Same editor leaks without the data- prefix: mpa-font-*, leaf, data-nest-level.
     html = html:gsub("%s+mpa%-font%-[%w%-]+%s*=%s*([\"\']).-%1", "")
+    -- valueless form: <span mpa-font-> (attribute without ="...")
+    html = html:gsub("%s+mpa%-font%-+([ >])", "%1")
     html = html:gsub("%s+leaf%s*=%s*([\"\']).-%1", "")
     html = html:gsub("%s+data%-nest%-level%s*=%s*([\"\']).-%1", "")
+    -- Word/other editor leaks: <font face="宋体"> has no effect in KOReader
+    -- (device fonts are user-controlled), drop the face attribute; <o:p> is a
+    -- Word placeholder that renders as an empty paragraph.
+    html = html:gsub("%s+face%s*=%s*([\"\']).-%1", "")
+    html = html:gsub("<[oO]:[pP][^>]*>.-</[oO]:[pP]>", "")
     -- Tencent doc editor tags <span text="...">; the value duplicates the text
     -- content and has no meaning for rendering. Sometimes the attribute is
     -- valueless (<span text>), so handle both forms.

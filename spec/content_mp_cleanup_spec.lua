@@ -41,6 +41,10 @@ local raw = [[
 </section>
 <section><section><section><section><section><section><section><section><section><section><section><section><section><section><section><section><section><p>十八层嵌套的正文，不该是十八个盒子。</p></section></section></section></section></section></section></section></section></section></section></section></section></section></section></section></section></section></section>
 <span>无属性壳span一</span><span lang="EN-US">英文壳span</span><span text>裸text属性壳span</span><span>无属性壳span二</span><span class="wr-underline">保留的划线span</span>
+<p style="text-align: center; letter-spacing: 2px; margin: 10px;">居中段落标题</p>
+<p style="text-align: justify;">两端对齐正文。</p>
+<p><span style="font-weight: bold; color: rgb(255,0,0);">粗体强调</span><span style="font-size: 12px;">小字注释</span></p>
+<font face="宋体">宋体字</font><o:p></o:p><span mpa-font->裸属性span</span>
 ]]
 
 local settings = { meta_dir = "/tmp/weread-mp-spec-meta" }
@@ -106,5 +110,19 @@ expect(count(body, "保留的划线span") == 1, "annotation span text lost")
 expect(count(body, "无属性壳span一") == 1 and count(body, "无属性壳span二") == 1, "unwrapped span text lost")
 expect(count(body, "英文壳span") == 1 and count(body, "裸text属性壳span") == 1, "lang/text-attr span text lost")
 expect(count(body, "十八层嵌套的正文，不该是十八个盒子") == 1, "deep-nested paragraph text lost")
+
+-- typography whitelist: text-align / font-weight / relative font-size survive
+expect(count(body, "text%-align:%s*center") == 1, "text-align center must be kept")
+expect(count(body, "text%-align:%s*justify") >= 1, "text-align justify must be kept")
+expect(count(body, "font%-weight:%s*bold") == 1, "font-weight bold must be kept")
+expect(count(body, "font%-size:") >= 1, "relative font-size must be kept (12px vs 17px base)")
+expect(count(body, "居中段落标题") == 1, "centered heading text lost")
+expect(count(body, "粗体强调") == 1, "bold span text lost")
+expect(count(body, "小字注释") == 1, "small text span lost")
+expect(count(body, "宋体字") == 1, "font tag text lost")
+expect(count(body, "face=") == 0, "font face attribute must be stripped")
+expect(count(body, "[oO]:[pP]") == 0, "o:p placeholder must be dropped")
+expect(count(body, "mpa%-font%-") == 0, "valueless mpa-font- attribute must be stripped")
+expect(count(body, "裸属性span") == 1, "valueless mpa-font- span text lost")
 
 print(string.format("content_mp_cleanup_spec: %d checks, 0 failure(s)", checks))
