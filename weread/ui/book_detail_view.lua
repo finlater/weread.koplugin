@@ -4,6 +4,7 @@ local Blitbuffer = require("ffi/blitbuffer")
 local Button = require("ui/widget/button")
 local Device = require("device")
 local Font = require("ui/font")
+local FocusManager = require("ui/widget/focusmanager")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
@@ -21,6 +22,7 @@ local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local Screen = Device.screen
+local FocusNav = require("weread.ui.focus_nav")
 local I18n = require("weread.lib.i18n")
 
 local function _(text) return I18n.tr(text) end
@@ -89,7 +91,17 @@ function FooterAction:onTapFooterAction()
     return true
 end
 
-local BookDetailView = InputContainer:extend{
+function FooterAction:onFocus()
+    self.frame.invert = true
+    return true
+end
+
+function FooterAction:onUnfocus()
+    self.frame.invert = false
+    return true
+end
+
+local BookDetailView = FocusManager:extend{
     data = nil,
     on_refresh = nil,
 }
@@ -156,7 +168,7 @@ function BookDetailView:actionBlock(actions)
         HorizontalSpan:new{ width = self.content_width },
     }
     for _i, action in ipairs(actions or {}) do
-        table.insert(group, Button:new{
+        local button = Button:new{
             text = action.text,
             width = self.content_width,
             height = Screen:scaleBySize(54),
@@ -170,7 +182,9 @@ function BookDetailView:actionBlock(actions)
             enabled = action.enabled ~= false,
             show_parent = self,
             callback = action.callback,
-        })
+        }
+        self._action_buttons[#self._action_buttons + 1] = button
+        table.insert(group, button)
         table.insert(group, LineWidget:new{
             dimen = Geom:new{ w = self.content_width, h = 1 },
             background = Blitbuffer.COLOR_GRAY,
@@ -185,8 +199,9 @@ function BookDetailView:footer()
     local cell_width = math.floor(self.screen_w / count)
     local footer_height = Screen:scaleBySize(66)
     local row = HorizontalGroup:new{}
+    self._footer_actions = {}
     for index, action in ipairs(actions) do
-        table.insert(row, FooterAction:new{
+        local footer_action = FooterAction:new{
             text = action.text,
             subtitle = action.subtitle,
             width = index == count
@@ -195,7 +210,9 @@ function BookDetailView:footer()
             enabled = action.enabled ~= false,
             show_parent = self,
             callback = action.callback,
-        })
+        }
+        self._footer_actions[#self._footer_actions + 1] = footer_action
+        table.insert(row, footer_action)
     end
     return FrameContainer:new{ bordersize = 0, padding = 0, margin = 0, row }
 end
@@ -225,20 +242,21 @@ function BookDetailView:content()
             width = summary_width,
         })
     end
+    self._refresh_button = Button:new{
+        text = data.refresh_label,
+        width = refresh_width,
+        height = Screen:scaleBySize(38),
+        radius = Screen:scaleBySize(7),
+        margin = 0,
+        bordersize = Size.border.thin,
+        text_font_size = 16,
+        text_font_bold = false,
+        show_parent = self,
+        callback = function() if self.on_refresh then self.on_refresh() end end,
+    }
     local refresh = VerticalGroup:new{
         align = "center",
-        Button:new{
-            text = data.refresh_label,
-            width = refresh_width,
-            height = Screen:scaleBySize(38),
-            radius = Screen:scaleBySize(7),
-            margin = 0,
-            bordersize = Size.border.thin,
-            text_font_size = 16,
-            text_font_bold = false,
-            show_parent = self,
-            callback = function() if self.on_refresh then self.on_refresh() end end,
-        },
+        self._refresh_button,
         VerticalSpan:new{ width = Size.padding.small },
         TextBoxWidget:new{
             text = _("Last updated") .. " " .. data.refresh_date,
@@ -290,7 +308,7 @@ function BookDetailView:init()
     self.outer_margin = Size.padding.large
     self.content_width = self.screen_w - 2 * self.outer_margin
         - 3 * Screen:scaleBySize(6)
-    if Device:hasKeys() then self.key_events = { Close = { { Device.input.group.Back } } } end
+    if Device:hasKeys() then self.key_events.Close = { { Device.input.group.Back } } end
 
     self.title_bar = TitleBar:new{
         width = self.screen_w,
@@ -302,6 +320,8 @@ function BookDetailView:init()
         close_callback = function() self:onClose() end,
         show_parent = self,
     }
+    self._action_buttons = {}
+    self._refresh_button = nil
     local footer = self:footer()
     local scroll = ScrollableContainer:new{
         dimen = Geom:new{
@@ -319,6 +339,19 @@ function BookDetailView:init()
             },
         },
     }
+    local rows = {}
+    if self._refresh_button then rows[#rows + 1] = { self._refresh_button } end
+    for _i, action_button in ipairs(self._action_buttons) do
+        rows[#rows + 1] = { action_button }
+    end
+    if #self._footer_actions > 0 then rows[#rows + 1] = self._footer_actions end
+    local outside_scroll = {}
+    for _i, footer_action in ipairs(self._footer_actions) do
+        outside_scroll[footer_action] = true
+    end
+    FocusNav.apply(self, rows, { scroll = scroll, outside_scroll = outside_scroll })
+    -- The footer holds the primary actions (download / chapter list / read).
+    FocusNav.initialFocus(self, 1, #rows)
     self[1] = FrameContainer:new{
         background = Blitbuffer.COLOR_WHITE,
         bordersize = 0, padding = 0, margin = 0,
