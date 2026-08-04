@@ -1504,6 +1504,57 @@ function Content.strip_mp_images(html)
     return html
 end
 
+-- WeChat nests <section>/<span> shells 10-20 levels deep and wraps most inline
+-- text in attribute-less <span> wrappers. After style stripping the shells are
+-- pure layout noise: unwrapping them shrinks the render tree by an order of
+-- magnitude (measured: 1400+ tags / 18 levels -> ~400 tags / 2 levels) which is
+-- exactly what makes KOReader hang for seconds on open.
+local function simplify_mp_markup(html)
+    -- Attribute-less spans are pure wrappers: unwrap them, keeping inner markup
+    -- and text. Attributed spans (annotation markers etc.) are preserved.
+    html = html:gsub("<[sS][pP][aA][nN]%s+>", "<span>")
+    for _ = 1, 8 do
+        local previous = html
+        html = html:gsub("<span>(.-)</span>", "%1")
+        if html == previous then
+            break
+        end
+    end
+
+    -- Collapse single-child div chains. WeChat's section tree is mostly nested
+    -- wrappers around exactly one block child; after attribute stripping they
+    -- carry no layout meaning. Divs with attributes or multiple children stay.
+    -- First drop the remaining non-style attributes (WeChat dark-mode classes,
+    -- 135editor data-role/label hooks, nodeleaf, etc.): they have no rendering
+    -- meaning in KOReader and only block the collapsing below.
+    html = html:gsub("<div([^>]*)>", function(attrs)
+        if attrs == "" or not attrs:match("%S") then
+            return "<div>"
+        end
+        local style = attrs:match('style%s*=%s*["\'](.-)["\']')
+        if style and style ~= "" then
+            return '<div style="' .. style .. '">'
+        end
+        return "<div>"
+    end)
+    for _ = 1, 24 do
+        local previous = html
+        html = html:gsub("<div([^>]*)>(<div[^>]*>.-</div>)</div>", function(attrs, inner)
+            if attrs:match("%S") then
+                return "<div" .. attrs .. ">" .. inner .. "</div>"
+            end
+            return inner
+        end)
+        if html == previous then
+            break
+        end
+    end
+    -- Drop empty divs that the collapsing may have left behind.
+    html = html:gsub("<div%s*>%s*</div>", "")
+
+    return html
+end
+
 local function strip_blank_mp_blocks(html)
     html = tostring(html or "")
     html = html:gsub("<mp%-common%-profile[^>]->.-</mp%-common%-profile>", "")
@@ -1558,6 +1609,19 @@ local function strip_blank_mp_blocks(html)
     html = html:gsub("%s+data%-pm%-slice%s*=%s*([\"\']).-%1", "")
     html = html:gsub("%s+data%-mpa%-[%w%-]+%s*=%s*([\"\']).-%1", "")
     html = html:gsub("%s+data%-mpa%-action%-id%s*=%s*([\"\']).-%1", "")
+    -- Same editor leaks without the data- prefix: mpa-font-*, leaf, data-nest-level.
+    html = html:gsub("%s+mpa%-font%-[%w%-]+%s*=%s*([\"\']).-%1", "")
+    html = html:gsub("%s+leaf%s*=%s*([\"\']).-%1", "")
+    html = html:gsub("%s+data%-nest%-level%s*=%s*([\"\']).-%1", "")
+    -- Tencent doc editor tags <span text="...">; the value duplicates the text
+    -- content and has no meaning for rendering. Sometimes the attribute is
+    -- valueless (<span text>), so handle both forms.
+    html = html:gsub("%s+text%s*=%s*([\"\']).-%1", "")
+    html = html:gsub("%s+text([ >])", "%1")
+    -- lang= is meaningless for a zh-CN render and only blocks unwrapping.
+    html = html:gsub("%s+lang%s*=%s*([\"\']).-%1", "")
+
+    html = simplify_mp_markup(html)
 
     html = html:gsub("\n%s*\n%s*\n+", "\n\n")
     return html

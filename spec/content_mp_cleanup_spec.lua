@@ -39,6 +39,8 @@ local raw = [[
   </blockquote>
   <p data-mpa-action-id="a1b2" style="margin: 0px; overflow-wrap: break-word; word-break: break-all; -webkit-tap-highlight-color: rgba(0,0,0,0);">结尾段，带各种杂七杂八的样式。</p>
 </section>
+<section><section><section><section><section><section><section><section><section><section><section><section><section><section><section><section><section><p>十八层嵌套的正文，不该是十八个盒子。</p></section></section></section></section></section></section></section></section></section></section></section></section></section></section></section></section></section></section>
+<span>无属性壳span一</span><span lang="EN-US">英文壳span</span><span text>裸text属性壳span</span><span>无属性壳span二</span><span class="wr-underline">保留的划线span</span>
 ]]
 
 local settings = { meta_dir = "/tmp/weread-mp-spec-meta" }
@@ -76,5 +78,33 @@ expect(count(body, "小标题") == 1, "in-body heading text lost")
 expect(count(body, "“人工智能是年轻的事业，这个判断不会错”") == 1, "h1 lead text lost")
 expect(count(body, "引用内容，不该被撑成整页") == 1, "blockquote text lost")
 expect(count(body, "结尾段，带各种杂七杂八的样式") == 1, "trailing paragraph text lost")
+
+expect(count(body, "<h[2-6][ >]") == 0, "no h2-h6 should survive")
+
+-- structure simplification: attribute-less span shells unwrapped, single-child
+-- div chains collapsed, attributed spans (annotation markers) preserved
+local function max_div_depth(s)
+    local depth, maxd = 0, 0
+    s:gsub("<div[ >]", function()
+        depth = depth + 1
+        if depth > maxd then maxd = depth end
+    end)
+    s:gsub("</div>", function()
+        depth = math.max(0, depth - 1)
+    end)
+    return maxd
+end
+local span_count = 0
+for _ in body:gmatch("<span[ >]") do span_count = span_count + 1 end
+local span_with_attr = 0
+for _ in body:gmatch('<span[^>]*class="wr%-underline"') do span_with_attr = span_with_attr + 1 end
+
+expect(max_div_depth(body) <= 4, "deep div nesting was not collapsed")
+expect(span_count <= 6, "attribute-less span shells were not unwrapped")
+expect(span_with_attr == 1, "attributed annotation span must be preserved")
+expect(count(body, "保留的划线span") == 1, "annotation span text lost")
+expect(count(body, "无属性壳span一") == 1 and count(body, "无属性壳span二") == 1, "unwrapped span text lost")
+expect(count(body, "英文壳span") == 1 and count(body, "裸text属性壳span") == 1, "lang/text-attr span text lost")
+expect(count(body, "十八层嵌套的正文，不该是十八个盒子") == 1, "deep-nested paragraph text lost")
 
 print(string.format("content_mp_cleanup_spec: %d checks, 0 failure(s)", checks))
