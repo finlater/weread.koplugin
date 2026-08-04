@@ -1383,13 +1383,57 @@ local function strip_mp_reader_font_styles(html)
         ["float"] = true,
         ["position"] = true,
         ["vertical-align"] = true,
+        ["display"] = true,
         ["text-align"] = true,
         ["white-space"] = true,
         ["word-spacing"] = true,
+        ["flex"] = true,
+        ["flex-flow"] = true,
+        ["flex-direction"] = true,
+        ["flex-wrap"] = true,
+        ["justify-content"] = true,
+        ["align-items"] = true,
+        ["align-self"] = true,
+        ["box-sizing"] = true,
+        ["outline"] = true,
+        ["outline-color"] = true,
+        ["outline-style"] = true,
+        ["outline-width"] = true,
+        ["caret-color"] = true,
+        ["cursor"] = true,
+        ["user-select"] = true,
+        ["overflow-wrap"] = true,
+        ["word-break"] = true,
+        ["word-wrap"] = true,
+        ["text-decoration"] = true,
+        ["text-decoration-thickness"] = true,
+        ["text-decoration-style"] = true,
+        ["text-decoration-color"] = true,
+        ["text-transform"] = true,
+        ["font-style"] = true,
+        ["font-variant"] = true,
+        ["font-variant-ligatures"] = true,
+        ["font-variant-caps"] = true,
+        ["font-weight"] = true,
+        ["font-stretch"] = true,
+        ["orphans"] = true,
+        ["widows"] = true,
+        ["visibility"] = true,
+        ["border"] = true,
+        ["border-width"] = true,
+        ["border-style"] = true,
+        ["border-color"] = true,
+        ["border-top"] = true,
+        ["border-right"] = true,
+        ["border-bottom"] = true,
+        ["border-left"] = true,
+        ["border-radius"] = true,
         ["background"] = true,
         ["background-color"] = true,
-        ["border"] = true,
-        ["border-radius"] = true,
+        ["background-image"] = true,
+        ["box-shadow"] = true,
+        ["z-index"] = true,
+        ["clear"] = true,
     }
 
     local function relative_heading_size(value)
@@ -1432,7 +1476,11 @@ local function strip_mp_reader_font_styles(html)
                     if heading_size then
                         table.insert(kept, "font-size: " .. heading_size)
                     end
-                elseif not blocked[property] then
+                elseif not blocked[property]
+                    and not property:match("^-webkit-")
+                    and not property:match("^-moz-")
+                    and not property:match("^-ms-")
+                    and not property:match("^overflow") then
                     table.insert(kept, name .. ": " .. value)
                 end
             end
@@ -1478,19 +1526,17 @@ local function strip_blank_mp_blocks(html)
         end
     end
 
-    -- WeChat editor sometimes wraps the article lead (导语) in an <h1> and
-    -- leaves an empty <h1> right after it. Demote those in-body headings to
-    -- paragraphs so KOReader does not render them as full-page titles.
-    -- Keep at most the first in-body heading as a real heading.
-    local heading_seen = false
+    -- WeChat editor sometimes wraps the article lead (导语) and inline labels in
+    -- <h1>/<h2>. The saved article already prepends the real title as <h1>, so
+    -- demote ALL in-body headings to paragraphs (keeping inner <strong>/<b> so
+    -- section labels stay visually distinct). Drop the whole style attribute:
+    -- WeChat headings carry e.g. font-size: 1.38em which would otherwise keep
+    -- the paragraph oversized.
     html = html:gsub("<([hH])([1-6])([^>]*)>(.-)</%1%2>", function(tag, level, attrs, inner)
         if inner:match("^%s*$") then
             return ""
         end
-        if not heading_seen then
-            heading_seen = true
-            return "<" .. tag .. level .. attrs .. ">" .. inner .. "</" .. tag .. level .. ">"
-        end
+        attrs = attrs:gsub('style%s*=%s*(["\']).-%1', "")
         return "<p" .. attrs .. ">" .. inner .. "</p>"
     end)
 
@@ -1501,6 +1547,18 @@ local function strip_blank_mp_blocks(html)
         end
         html = updated
     end
+
+    -- CREngine handles <div> much more predictably than WeChat's deeply
+    -- nested <section> trees; convert section wrappers to plain divs.
+    html = html:gsub("<([sS][eE][cC][tT][iI][oO][nN])([^>]*)>", "<div%2>")
+    html = html:gsub("</[sS][eE][cC][tT][iI][oO][nN]>", "</div>")
+
+    -- WeChat editor dumps editor state (including serialized styles) into
+    -- data-pm-slice / data-mpa-* attributes; drop them to keep output clean.
+    html = html:gsub("%s+data%-pm%-slice%s*=%s*([\"\']).-%1", "")
+    html = html:gsub("%s+data%-mpa%-[%w%-]+%s*=%s*([\"\']).-%1", "")
+    html = html:gsub("%s+data%-mpa%-action%-id%s*=%s*([\"\']).-%1", "")
+
     html = html:gsub("\n%s*\n%s*\n+", "\n\n")
     return html
 end
