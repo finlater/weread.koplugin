@@ -1351,6 +1351,13 @@ end
 -- to the user's main font), unless it is explicitly a serif/sans choice.
 local function mp_font_family(value)
     local v = (value or ""):lower()
+    -- Exact generic keywords pass through: the whitelist pass normalizes named
+    -- families first, and substring matching below would misroute "sans-serif"
+    -- to serif (it contains "serif") -- the pingfang bug all over again.
+    if v == "serif" then return "serif" end
+    if v == "sans-serif" or v == "sans serif" then return "sans-serif" end
+    if v == "monospace" then return "monospace" end
+    if v == "fang song" then return "Fang Song" end
     local function has(pat)
         return v:find(pat) ~= nil
     end
@@ -1624,10 +1631,17 @@ local function strip_blank_mp_blocks(html)
     html = html:gsub("%s+mpa%-font%-+([ >])", "%1")
     html = html:gsub("%s+leaf%s*=%s*([\"\']).-%1", "")
     html = html:gsub("%s+data%-nest%-level%s*=%s*([\"\']).-%1", "")
-    -- Word/other editor leaks: <font face="宋体"> has no effect in KOReader
-    -- (device fonts are user-controlled), drop the face attribute; <o:p> is a
-    -- Word placeholder that renders as an empty paragraph.
-    html = html:gsub("%s+face%s*=%s*([\"\']).-%1", "")
+    -- <font face="宋体"> has no matching device font, but the family intent is
+    -- real: map it onto the generic family (serif/sans-serif/Fang Song) that
+    -- the user maps in KOReader's Font-family fonts menu. Unknown faces drop.
+    -- <o:p> is a Word placeholder that renders as an empty paragraph.
+    html = html:gsub('%s+face%s*=%s*[\"\'](.-)[\"\']', function(v)
+        local fam = mp_font_family(v)
+        if fam then
+            return ' face="' .. fam .. '"'
+        end
+        return ""
+    end)
     html = html:gsub("<[oO]:[pP][^>]*>.-</[oO]:[pP]>", "")
     -- Tencent doc editor tags <span text="...">; the value duplicates the text
     -- content and has no meaning for rendering. Sometimes the attribute is
@@ -1711,7 +1725,135 @@ function Content.mp_article_cached_path(settings, book, article)
     return nil
 end
 
+-- CREngine's standalone-HTML mode ignores inline style attributes (only EPUB
+-- gets full CSS cascade; legacy presentational attributes are honored since
+-- KOReader 2024.04). So after the whitelist pass we translate the surviving
+-- typography into mechanisms CREngine actually applies:
+--   font-weight: bold   -> <b> element
+--   text-align: ...     -> align="..." attribute (block elements)
+--   font-size: X.XXem   -> class="mp-fs-NNN" + <style> rule
+--   font-family: ...    -> face="..." attribute (presentational hint) + class
+-- Returns the rewritten HTML plus the collected <style> rules.
+local function mp_typography_to_legacy(html)
+    local css_defs = {}
+    local css_seen = {}
+    local function add_css(selector, rule)
+        if not css_seen[selector] then
+            css_seen[selector] = true
+            table.insert(css_defs, selector .. " { " .. rule .. " }")
+        end
+    end
+
+    -- 1. bold -> <b> for spans whose inner is plain text (safe against
+    --    nested spans; iterated so inner-most levels collapse first).
+    for _ = 1, 8 do
+        local prev = html
+        html = html:gsub('<span style="([^"]*font%-weight:%s*bold[^"]*)">([^<]-)</span>',
+            function(style, inner)
+                if inner == "" then
+                    return ""
+                end
+                local cls = {}
+                local fs = style:match("font%-size:%s*([%d%.]+)em")
+                if fs then
+                    local key = string.format("mp-fs-%d", math.floor(tonumber(fs) * 100 + 0.5))
+                    table.insert(cls, key)
+                    add_css("." .. key, string.format("font-size: %.2fem", tonumber(fs)))
+                end
+                if #cls > 0 then
+                    return '<b class="' .. table.concat(cls, " ") .. '">' .. inner .. "</b>"
+                end
+                return "<b>" .. inner .. "</b>"
+            end)
+        if html == prev then
+            break
+        end
+    end
+
+    -- 2. remaining styles (text-align / font-weight / font-size / font-family)
+    --    -> attributes / classes; bold that could not safely become <b> (mixed
+    --    content, block elements) falls back to the .mp-b class rule.
+    --    and classes; the style attribute itself is removed.
+    html = html:gsub("<([a-zA-Z][a-zA-Z0-9]*)([^>]*)>", function(tag, attrs)
+        local style = attrs:match('style%s*=%s*["\'](.-)["\']')
+        if not style or style == "" then
+            return "<" .. tag .. attrs .. ">"
+        end
+        local align, bold, fs, ff
+        for decl in style:gmatch("[^;]+") do
+            local name, value = decl:match("^%s*([^:]+)%s*:%s*(.-)%s*$")
+            if name then
+                local p = name:lower()
+                if p == "text-align" then
+                    align = value:lower()
+                elseif p == "font-weight" then
+                    local w = value:lower()
+                    local wnum = tonumber(w)
+                    if w == "bold" or (wnum and wnum >= 600) then
+                        bold = true
+                    end
+                elseif p == "font-size" then
+                    fs = value:lower()
+                elseif p == "font-family" then
+                    ff = value
+                end
+            end
+        end
+        attrs = attrs:gsub('style%s*=%s*["\'](.-)["\']', "")
+        local extra = {}
+        if bold then
+            table.insert(extra, ' class="mp-b"')
+            add_css(".mp-b", "font-weight: bold")
+        end
+        if align and (tag == "p" or tag == "div" or tag == "blockquote") then
+            table.insert(extra, ' align="' .. align .. '"')
+        end
+        if fs then
+            local em = tonumber(fs:match("([%d%.]+)em"))
+            if em and math.abs(em - 1) >= 0.1 then
+                local key = string.format("mp-fs-%d", math.floor(em * 100 + 0.5))
+                table.insert(extra, ' class="' .. key .. '"')
+                add_css("." .. key, string.format("font-size: %.2fem", em))
+            end
+        end
+        if ff then
+            local fam = mp_font_family(ff)
+            if fam then
+                table.insert(extra, ' face="' .. fam .. '"')
+                local key = "mp-ff-" .. fam:gsub("%s", "")
+                if not attrs:match('class="[^"]*' .. key) and not table.concat(extra):find(key, 1, true) then
+                    add_css("." .. key, "font-family: " .. fam)
+                end
+            end
+        end
+        -- merge class into an existing class attribute if present
+        local existing = attrs:match('class%s*=%s*["\'](.-)["\']')
+        local new_classes = {}
+        for c in (table.concat(extra, " ")):gmatch('class="([^"]+)"') do
+            for w in c:gmatch("[^%s]+") do table.insert(new_classes, w) end
+        end
+        if #new_classes > 0 then
+            if existing then
+                attrs = attrs:gsub('class%s*=%s*["\'](.-)["\']',
+                    'class="' .. existing .. " " .. table.concat(new_classes, " ") .. '"')
+            else
+                attrs = attrs .. ' class="' .. table.concat(new_classes, " ") .. '"'
+            end
+            -- drop the class= entries already emitted inside extra
+            local cleaned = {}
+            for _, e in ipairs(extra) do
+                if not e:match('^%s*class=') then table.insert(cleaned, e) end
+            end
+            extra = cleaned
+        end
+        return "<" .. tag .. attrs .. table.concat(extra) .. ">"
+    end)
+
+    return html, css_defs
+end
+
 function Content.save_mp_article_html(settings, book, article, body_html)
+    local mp_css
     local book_id = book.book_id or book.bookId
     -- MP articles stay in the sidecar tree so the flat library only holds EPUBs.
     Content.ensure_book_meta_dir(settings, book_id, book)
@@ -1719,6 +1861,7 @@ function Content.save_mp_article_html(settings, book, article, body_html)
     local path = Content.mp_article_path(settings, book, article)
     body_html = strip_mp_reader_font_styles(body_html)
     body_html = strip_blank_mp_blocks(body_html)
+    body_html, mp_css = mp_typography_to_legacy(body_html)
 
     local html = [[<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1768,6 +1911,10 @@ p {
   margin: 0.25em 0 !important;
   text-indent: 0 !important;
 }
+/* WeChat typography translated to classes (CREngine ignores inline styles
+   in standalone-HTML mode; align= / face= / <b> are the presentational hints) */
+]] .. table.concat(mp_css or {}, "\n") .. [[
+
 section, div {
   margin: 0 !important;
   padding: 0 !important;
