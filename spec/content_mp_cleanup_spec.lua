@@ -42,6 +42,10 @@ local raw = [[
 <section><section><section><section><section><section><section><section><section><section><section><section><section><section><section><section><section><p>十八层嵌套的正文，不该是十八个盒子。</p></section></section></section></section></section></section></section></section></section></section></section></section></section></section></section></section></section></section>
 <span>无属性壳span一</span><span lang="EN-US">英文壳span</span><span text>裸text属性壳span</span><span>无属性壳span二</span><span class="wr-underline">保留的划线span</span>
 <p style="text-align: center; letter-spacing: 2px; margin: 10px;">居中段落标题</p>
+<p style="font-family: SimSun; font-size: 16px;">宋体段落</p>
+<p style="font-family: -apple-system-font, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;">默认正文</p>
+<p style="font-family: FangSong;">仿宋段落</p>
+<p style="font-family: mp-quote;">引用字体段落</p>
 <p style="text-align: justify;">两端对齐正文。</p>
 <p><span style="font-weight: bold; color: rgb(255,0,0);">粗体强调</span><span style="font-size: 12px;">小字注释</span></p>
 <font face="宋体">宋体字</font><o:p></o:p><span mpa-font->裸属性span</span>
@@ -124,5 +128,16 @@ expect(count(body, "face=") == 0, "font face attribute must be stripped")
 expect(count(body, "[oO]:[pP]") == 0, "o:p placeholder must be dropped")
 expect(count(body, "mpa%-font%-") == 0, "valueless mpa-font- attribute must be stripped")
 expect(count(body, "裸属性span") == 1, "valueless mpa-font- span text lost")
+
+-- font-family normalization: WeChat names map to generic families KOReader maps
+-- in its Font-family fonts menu; named fonts (SimSun etc.) never reach the HTML.
+expect(count(body, "font%-family:%s*serif") >= 1, "SimSun must map to serif")
+expect(count(body, "font%-family:%s*sans%-serif") >= 1, "PingFang SC must map to sans-serif (not Fang Song)")
+expect(count(body, "font%-family:%s*Fang Song") == 1, "FangSong must map to Fang Song family")
+expect(count(body, "font%-family:%s*SimSun") == 0, "named font SimSun must not survive")
+expect(count(body, "font%-family:%s*mp%-quote") == 0, "mp-quote noise must be dropped")
+expect(count(body, 'style="font%-family:%s*"Fang Song') == 0, "quoted family must not break the style attribute")
+expect(count(body, "宋体段落") == 1 and count(body, "仿宋段落") == 1
+    and count(body, "默认正文") == 1 and count(body, "引用字体段落") == 1, "font-family test text lost")
 
 print(string.format("content_mp_cleanup_spec: %d checks, 0 failure(s)", checks))

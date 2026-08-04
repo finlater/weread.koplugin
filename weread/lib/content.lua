@@ -1344,6 +1344,46 @@ local function normalize_void_elements(html)
     return html
 end
 
+-- Map WeChat's editor font names onto the generic families KOReader maps in
+-- its Font-family fonts menu (serif / sans-serif / monospace / "Fang Song").
+-- Named fonts like SimSun are NOT honored by CREngine, so we never emit them.
+-- The common system-ui / -apple-system-font noise maps to nothing (falls back
+-- to the user's main font), unless it is explicitly a serif/sans choice.
+local function mp_font_family(value)
+    local v = (value or ""):lower()
+    local function has(pat)
+        return v:find(pat) ~= nil
+    end
+    -- PingFang is Apple's sans CJK font ("pingfang" contains "fang"): check it
+    -- before Fang Song so it does not misroute to the Fang Song family.
+    if has("pingfang") or has("苹方") then
+        return "sans-serif"
+    end
+    -- Fang Song before song: "fangsong" contains "song" and would go serif.
+    -- The family name is emitted without quotes: CSS allows unquoted multi-word
+    -- family names, and quotes would break the style attribute in the HTML.
+    if has("fangsong") or has("仿宋") or has("fang") then
+        return "Fang Song"
+    end
+    if has("kai") or has("楷") then
+        return "serif"
+    end
+    if has("song") or has("sun") or has("宋") or has("serif")
+        or has("times") or has("georgia") or has("ming") or has("明") then
+        return "serif"
+    end
+    if has("hei") or has("黑") or has("yahei") or has("雅黑")
+        or has("sans") or has("arial") or has("helvetica")
+        or has("verdana") or has("tahoma") or has("noto%s+sans")
+        or has("system%-ui") or has("apple") or has("microsoft") then
+        return "sans-serif"
+    end
+    if has("mono") or has("courier") or has("consolas") or has("menlo") then
+        return "monospace"
+    end
+    return nil
+end
+
 local function strip_mp_reader_font_styles(html)
     -- Whitelist mode: keep only typography CREngine can render meaningfully
     -- (text-align, font-weight, relative font-size). Everything else that
@@ -1420,6 +1460,11 @@ local function strip_mp_reader_font_styles(html)
                     local a = value:lower()
                     if a == "center" or a == "left" or a == "right" or a == "justify" then
                         table.insert(kept, name .. ": " .. a)
+                    end
+                elseif property == "font-family" then
+                    local fam = mp_font_family(value)
+                    if fam then
+                        table.insert(kept, "font-family: " .. fam)
                     end
                 end
             end
@@ -1696,7 +1741,6 @@ body {
 }
 body * {
   color: inherit !important;
-  font-family: inherit !important;
   line-height: inherit !important;
 }
 img {
