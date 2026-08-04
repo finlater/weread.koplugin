@@ -1360,6 +1360,36 @@ local function strip_mp_reader_font_styles(html)
         ["break-inside"] = true,
         ["text-size-adjust"] = true,
         ["-webkit-text-size-adjust"] = true,
+        -- WeChat inline layout props: they inflate paragraph spacing and can
+        -- make KOReader paginate one paragraph per page.
+        ["letter-spacing"] = true,
+        ["margin"] = true,
+        ["margin-top"] = true,
+        ["margin-right"] = true,
+        ["margin-bottom"] = true,
+        ["margin-left"] = true,
+        ["padding"] = true,
+        ["padding-top"] = true,
+        ["padding-right"] = true,
+        ["padding-bottom"] = true,
+        ["padding-left"] = true,
+        ["text-indent"] = true,
+        ["height"] = true,
+        ["min-height"] = true,
+        ["max-height"] = true,
+        ["width"] = true,
+        ["min-width"] = true,
+        ["max-width"] = true,
+        ["float"] = true,
+        ["position"] = true,
+        ["vertical-align"] = true,
+        ["text-align"] = true,
+        ["white-space"] = true,
+        ["word-spacing"] = true,
+        ["background"] = true,
+        ["background-color"] = true,
+        ["border"] = true,
+        ["border-radius"] = true,
     }
 
     local function relative_heading_size(value)
@@ -1438,7 +1468,8 @@ local function strip_blank_mp_blocks(html)
 
     for _ = 1, 12 do
         local previous = html
-        for _, tag in ipairs({ "a", "span", "p", "section", "div", "figure", "picture" }) do
+        for _, tag in ipairs({ "a", "span", "p", "section", "div", "figure", "picture",
+            "h1", "h2", "h3", "h4", "h5", "h6" }) do
             html = html:gsub("<" .. tag .. "[^>]->%s*<br/>%s*</" .. tag .. ">", "")
             html = html:gsub("<" .. tag .. "[^>]->%s*</" .. tag .. ">", "")
         end
@@ -1446,6 +1477,22 @@ local function strip_blank_mp_blocks(html)
             break
         end
     end
+
+    -- WeChat editor sometimes wraps the article lead (导语) in an <h1> and
+    -- leaves an empty <h1> right after it. Demote those in-body headings to
+    -- paragraphs so KOReader does not render them as full-page titles.
+    -- Keep at most the first in-body heading as a real heading.
+    local heading_seen = false
+    html = html:gsub("<([hH])([1-6])([^>]*)>(.-)</%1%2>", function(tag, level, attrs, inner)
+        if inner:match("^%s*$") then
+            return ""
+        end
+        if not heading_seen then
+            heading_seen = true
+            return "<" .. tag .. level .. attrs .. ">" .. inner .. "</" .. tag .. level .. ">"
+        end
+        return "<p" .. attrs .. ">" .. inner .. "</p>"
+    end)
 
     for _ = 1, 4 do
         local updated = html:gsub("(%s*<br/>%s*)%s*<br/>%s*", "<br/>")
@@ -1570,13 +1617,23 @@ img {
   break-before: auto !important;
   break-after: auto !important;
 }
+h1, h2, h3, h4, h5, h6 {
+  font-size: 1.2em !important;
+  line-height: 1.4 !important;
+  margin: 0.6em 0 0.3em !important;
+  page-break-after: avoid;
+  break-after: avoid;
+}
 h1 {
-  font-size: 1.35em !important;
-  line-height: 1.35 !important;
-  margin: 0 0 1em;
+  font-size: 1.3em !important;
 }
 p {
   margin: 0.25em 0 !important;
+  text-indent: 0 !important;
+}
+section, div {
+  margin: 0 !important;
+  padding: 0 !important;
 }
 </style>
 </head>
