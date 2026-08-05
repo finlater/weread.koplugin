@@ -11,6 +11,11 @@ local TextViewer = require("ui/widget/textviewer")
 local UIManager = require("ui/uimanager")
 local WeRead = require("weread.lib.protocol")
 
+local ok_json, json = pcall(require, "json")
+if not ok_json then
+    ok_json, json = pcall(require, "rapidjson")
+end
+
 local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
 local T = PluginUtil.T
@@ -790,10 +795,76 @@ function M:fetchMPArticles(book)
     end)
 end
 
+-- Serialize the MP article list for the dedicated sidecar cache file.
+-- {version, updated_at, articles} wrapper keeps room for future schema
+-- changes without breaking older readers.
+local function encode_mp_articles(articles)
+    if not ok_json or type(articles) ~= "table" then
+        return nil
+    end
+    local ok, encoded = pcall(function()
+        if json.encode then
+            return json.encode({
+                version = 1,
+                updated_at = os.time(),
+                articles = articles,
+            })
+        end
+        return json:encode({
+            version = 1,
+            updated_at = os.time(),
+            articles = articles,
+        })
+    end)
+    if not ok or type(encoded) ~= "string" then
+        logger.warn("encode mp_articles failed:", log_error(encoded))
+        return nil
+    end
+    return encoded
+end
+
+local function decode_mp_articles(encoded)
+    if not ok_json or type(encoded) ~= "string" or encoded == "" then
+        return nil
+    end
+    local ok, decoded = pcall(function()
+        if json.decode then
+            return json.decode(encoded)
+        end
+        return json:decode(encoded)
+    end)
+    if not ok or type(decoded) ~= "table" then
+        return nil
+    end
+    local articles = decoded.articles
+    if type(articles) ~= "table" then
+        -- Tolerate a bare list written by an intermediate build.
+        articles = decoded
+    end
+    return articles
+end
+
 function M:getCachedMPArticles(book_id)
     local books = self.settings:get("books", {})
     local record = books[book_id]
-    if record and record.mp_articles then
+    if not record then
+        return nil
+    end
+    -- New format: dedicated sidecar file keeps the settings JSON small.
+    local file_path = record.mp_articles_file
+    if type(file_path) == "string" and file_path ~= "" then
+        local file = io.open(file_path, "rb")
+        if file then
+            local encoded = file:read("*a")
+            file:close()
+            local decoded = decode_mp_articles(encoded)
+            if type(decoded) == "table" then
+                return decoded
+            end
+        end
+    end
+    -- Legacy format: inline list in the settings record (pre-v1.0.10).
+    if type(record.mp_articles) == "table" then
         return record.mp_articles
     end
     return nil
@@ -801,9 +872,42 @@ end
 
 function M:cacheMPArticles(book_id, articles)
     local books = self.settings:get("books", {})
-    books[book_id] = books[book_id] or {}
-    books[book_id].mp_articles = articles
-    books[book_id].mp_articles_time = os.time()
+    local record = books[book_id] or {}
+    -- Dedicated sidecar file: keeps the settings JSON thin, so the sync
+    -- flush on document close stops rewriting a huge inline article list.
+    local dir = Content.ensure_book_meta_dir(self.settings, book_id)
+    local path = dir .. "/mp_articles.json"
+    local encoded = encode_mp_articles(articles)
+    local file_ok = false
+    if encoded then
+        local tmp_path = path .. ".tmp"
+        local file, err = io.open(tmp_path, "wb")
+        if file then
+            local write_ok, write_err = file:write(encoded)
+            file:close()
+            if write_ok then
+                file_ok = os.rename(tmp_path, path) == true
+                if not file_ok then
+                    os.remove(tmp_path)
+                end
+            else
+                os.remove(tmp_path)
+                logger.warn("write mp_articles cache failed:", tostring(write_err))
+            end
+        else
+            logger.warn("open mp_articles cache failed:", tostring(err))
+        end
+    end
+    if file_ok then
+        record.mp_articles = nil -- drop any legacy inline copy
+        record.mp_articles_file = path
+    else
+        -- Fallback: keep the inline list so caching never loses data.
+        record.mp_articles = articles
+        record.mp_articles_file = nil
+    end
+    record.mp_articles_time = os.time()
+    books[book_id] = record
     self.settings:set("books", books)
     self.settings:flush()
 end
