@@ -23,6 +23,7 @@ local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local Paginator = require("weread.ui.thought_popup.paginator")
+local util = require("util")
 local UIManager = require("ui/uimanager")
 local VerticalScrollBar = require("ui/widget/verticalscrollbar")
 local Screen = Device.screen
@@ -37,7 +38,7 @@ local ScrollContainer = InputContainer:extend{
     margin_left = 0,        -- content left margin (doc_margins.left)
     text_w = 0,             -- content draw width
     dialog = nil,
-    -- Page-break boundary table: { {top, bottom, keep_prev} } in y order.
+    -- Page-break boundary table: { {top, bottom, keep_next?} } in y order.
     -- Page steps land only on boundaries so a line is never split across pages.
     boundaries = nil,
     pages = nil,            -- page start list (computed from boundaries + viewport_h)
@@ -113,14 +114,8 @@ end
 function ScrollContainer:_currentPageIndex()
     local pages = self.pages
     if not pages or #pages == 0 then return 1 end
-    local idx = 1
-    for k = 1, #pages do
-        if pages[k] <= self.scroll_offset + 1 then
-            idx = k
-        else
-            break
-        end
-    end
+    local idx = util.bsearch_right(pages, self.scroll_offset + 1) - 1
+    if idx < 1 then return 1 end
     return idx
 end
 

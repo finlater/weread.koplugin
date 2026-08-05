@@ -4,17 +4,53 @@
 
 package.path = "./?.lua;" .. package.path
 
--- Deterministic one-line-per-call xtext mock: every makeLine call consumes the
--- rest of the text as a single line. hard_newline_at_eot is controllable per
--- test through the shared state below.
+local function splitToChars(str)
+    local chars = {}
+    local i = 1
+    while i <= #str do
+        local b = str:byte(i)
+        local rune_len
+        if b < 0x80 then rune_len = 1
+        elseif b < 0xE0 then rune_len = 2
+        elseif b < 0xF0 then rune_len = 3
+        else rune_len = 4 end
+        chars[#chars + 1] = str:sub(i, i + rune_len - 1)
+        i = i + rune_len
+    end
+    return chars
+end
+
+local function bsearch_left(t, v)
+    local lo, hi = 1, #t + 1
+    while lo < hi do
+        local mid = math.floor((lo + hi) / 2)
+        if t[mid] < v then lo = mid + 1 else hi = mid end
+    end
+    return lo
+end
+
+local function bsearch_right(t, v)
+    local lo, hi = 1, #t + 1
+    while lo < hi do
+        local mid = math.floor((lo + hi) / 2)
+        if t[mid] <= v then lo = mid + 1 else hi = mid end
+    end
+    return lo
+end
+
+package.preload["util"] = function()
+    return {
+        splitToChars = splitToChars,
+        bsearch_left = bsearch_left,
+        bsearch_right = bsearch_right,
+    }
+end
+
 local mock_xt_state = { hard_newline_at_eot = false }
 package.preload["libs/libkoreader-xtext"] = function()
     return {
         new = function(text, face, ...)
             local size = #text
-            -- LuaJIT does not honor __len on plain tables, so the mock makes
-            -- #xt work by giving xt a contiguous array part of `size` entries
-            -- (the real xtext object is userdata with a native __len).
             local xt = {}
             for i = 1, size do
                 xt[i] = true
@@ -24,9 +60,6 @@ package.preload["libs/libkoreader-xtext"] = function()
                 if idx > size then
                     return nil
                 end
-                -- A hard newline at end of text reports no continuation offset
-                -- (like the real xtext userdata); otherwise the whole rest of
-                -- the text is one line.
                 local hard = mock_xt_state.hard_newline_at_eot
                 local next_offset = size + 1
                 if hard then
@@ -34,10 +67,20 @@ package.preload["libs/libkoreader-xtext"] = function()
                 end
                 return {
                     offset = idx,
+                    end_offset = size,
                     next_start_offset = next_offset,
                     hard_newline_at_eot = hard,
+                    width = width,
+                    targeted_width = width,
                 }
             end
+            xt.shapeLine = function()
+                return { para_is_rtl = false, width = 0 }
+            end
+            xt.free = function(self)
+                self.freed = true
+            end
+            setmetatable(xt, { __len = function() return size end })
             return xt
         end,
     }
@@ -48,6 +91,10 @@ package.preload["ffi/blitbuffer"] = function()
         COLOR_GRAY_5 = 5,
         COLOR_GRAY_6 = 6,
         COLOR_GRAY_9 = 9,
+        COLOR_BLACK = 0,
+        COLOR_WHITE = 255,
+        isColor8 = function() return true end,
+        new = function() return { fill = function() end } end,
     }
 end
 
@@ -61,7 +108,7 @@ local function eq(got, want, label)
     checks = checks + 1
     if got ~= want then
         failures = failures + 1
-        print(string.format("FAIL [%s] %s: got %s, want %s",
+        io.stderr:write(string.format("FAIL [%s] %s: got %s want %s\n",
             current_test, label, tostring(got), tostring(want)))
     end
 end
@@ -103,29 +150,42 @@ test("page breaks land on line boundaries", function()
     eq(starts[4], 180, "page 4 start")
 end)
 
-test("keep_prev pulls an orphaned protected line to the next page", function()
-    -- 4 lines, 20 px each; protected line is line 3 (index 3). With a 40 px
-    -- viewport the naive break lands at line 3's top, orphaning line 2's
-    -- group; keep_prev must pull the break back one line.
-    local b = boundaries(4, 20)
-    b[3].keep_prev = true
-    local starts = Paginator.computePages(b, 40, 80)
-    eq(#starts, 3, "page count")
-    eq(starts[2], 20, "page 2 start (pulled back before protected line)")
-    eq(starts[3], 60, "page 3 start")
+test("keep_next pulls an orphaned author line to the next page", function()
+    local b = {
+        { top = 0, bottom = 61 },
+        { top = 61, bottom = 122 },
+        { top = 122, bottom = 183 },
+        { top = 183, bottom = 244, keep_next = true },
+        { top = 244, bottom = 305 },
+        { top = 305, bottom = 366 },
+    }
+    local starts = Paginator.computePages(b, 300, 366)
+    eq(#starts, 2, "page count")
+    eq(starts[2], 183, "page 2 start (pulled back before author line)")
 end)
 
-test("keep_prev on the first line never pulls before page start", function()
+test("multi-line author piece stays whole with keep_next", function()
+    local b = {
+        { top = 0, bottom = 61 },
+        { top = 61, bottom = 122 },
+        { top = 122, bottom = 244, keep_next = true },
+        { top = 244, bottom = 305 },
+        { top = 305, bottom = 366 },
+    }
+    local starts = Paginator.computePages(b, 300, 366)
+    eq(#starts, 2, "page count")
+    eq(starts[2], 122, "author block kept together")
+end)
+
+test("keep_next on the first line never pulls before page start", function()
     local b = boundaries(3, 20)
-    b[1].keep_prev = true
+    b[1].keep_next = true
     local starts = Paginator.computePages(b, 60, 60)
     eq(#starts, 1, "page count")
     eq(starts[1], 0, "first page start")
 end)
 
 test("an oversized first line advances without losing tail content", function()
-    -- First "line" is 100 px tall inside a 50 px viewport; the remaining
-    -- content must still appear on a later page.
     local b = {
         { top = 0, bottom = 100 },
         { top = 100, bottom = 120 },
@@ -172,7 +232,7 @@ test("textPieceMetrics folds glyph overhang into the piece height", function()
     local face = {
         size = 20,
         ftsize = {
-            getHeightAndAscender = function() return 30 end,
+            getHeightAndAscender = function() return 30, 24 end,
         },
     }
     local line_h, extra = Paginator.textPieceMetrics(face)
@@ -191,6 +251,33 @@ test("paginateLines adds a trailing line for a hard newline at end of text", fun
     local face = { size = 20 }
     eq(Paginator.paginateLines("hello\n", face, 400), 2, "trailing blank line")
     mock_xt_state.hard_newline_at_eot = false
+end)
+
+test("paginateText returns reusable xtext and lines", function()
+    local face = { size = 20 }
+    local pt = Paginator.paginateText("hello", face, 400)
+    eq(pt.n_lines, 1, "line count")
+    eq(type(pt.xtext), "table", "xtext present")
+    eq(#pt.lines, 1, "lines table length")
+    local piece = { xtext = pt.xtext, lines = pt.lines }
+    local xt_ref = piece.xtext
+    Paginator.freeTextPieces({ piece })
+    eq(piece.xtext, nil, "xtext cleared")
+    eq(piece.lines, nil, "lines cleared")
+    eq(xt_ref.freed, true, "xtext freed")
+end)
+
+test("buildPagePieceIndex maps pieces to pages", function()
+    local pieces = {
+        { y = 0, piece_h = 30 },
+        { y = 50, piece_h = 30 },
+        { y = 120, piece_h = 30 },
+    }
+    local pages = { 0, 60, 120 }
+    local index = Paginator.buildPagePieceIndex(pieces, pages, 150)
+    eq(#index[1], 2, "page 1 has two pieces")
+    eq(#index[2], 1, "page 2 has one piece")
+    eq(#index[3], 1, "page 3 has one piece")
 end)
 
 test("content builder emits quote, meta and content blocks", function()
@@ -238,10 +325,34 @@ test("content builder truncates multi-paragraph and long quotes", function()
         },
     })
     eq(blocks[1].variant, "quote", "quote variant")
-    -- 50 runes + ellipsis + 2 quote marks: bytes are 50 + 3 + 3 + 3.
     eq(#blocks[1].text, 59, "truncated quote byte length")
     eq(blocks[1].text:sub(-6, -1), "…」", "ellipsis closes the quote")
+
+    local cjk = string.rep("汉", 60)
+    blocks = ContentBuilder.build({
+        {
+            abstract = cjk,
+            author = "dan",
+            content = "x",
+            likes_count = 0,
+        },
+    })
+    eq(blocks[1].text, "「" .. string.rep("汉", 50) .. "…」", "cjk quote truncation")
 end)
+
+test("content builder strips unicode trailing whitespace", function()
+    local ZWNJ = "\226\128\140"
+    local blocks = ContentBuilder.build({
+        {
+            abstract = "",
+            author = "a",
+            content = "hello\n" .. ZWNJ,
+            likes_count = 0,
+        },
+    })
+    eq(blocks[2].text, "hello", "trailing zwnj stripped from content")
+end)
+
 
 test("content builder handles empty input", function()
     eq(#ContentBuilder.build({}), 0, "no blocks")
