@@ -290,7 +290,8 @@ expect(failure_log:find("shelf sync failed", 1, true),
     "shelf failure diagnostics were not written")
 
 local review_client = Client:new(settings)
-local ok_review, data_review, err_review = review_client:get_review_comments("")
+local ok_review, data_review, err_review
+ok_review, _, err_review = review_client:get_review_comments("")
 expect(not ok_review and err_review == "empty review_id",
     "review comments rejected an empty review_id")
 
@@ -326,7 +327,7 @@ expect(not ok_review and data_review == "not-json" and err_review == "invalid JS
     "review comments did not surface JSON decode failures")
 
 responses[#responses + 1] = { body = "", code = 200 }
-ok_review, data_review, err_review = review_client:get_review_comments("r3")
+ok_review, _, err_review = review_client:get_review_comments("r3")
 expect(not ok_review and err_review == "empty response",
     "review comments did not reject an empty body")
 
