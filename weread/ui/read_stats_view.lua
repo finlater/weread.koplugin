@@ -25,12 +25,12 @@ local BottomContainer = require("ui/widget/container/bottomcontainer")
 local Button = require("ui/widget/button")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
+local FocusManager = require("ui/widget/focusmanager")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Font = require("ui/font")
 local Geom = require("ui/geometry")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan = require("ui/widget/horizontalspan")
-local InputContainer = require("ui/widget/container/inputcontainer")
 local LineWidget = require("ui/widget/linewidget")
 local RightContainer = require("ui/widget/container/rightcontainer")
 local ScrollableContainer = require("ui/widget/container/scrollablecontainer")
@@ -42,6 +42,7 @@ local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local Screen = Device.screen
+local FocusNav = require("weread.ui.focus_nav")
 local I18n = require("weread.lib.i18n")
 local T = require("ffi/util").template
 
@@ -115,7 +116,7 @@ end
 -- View
 -- ---------------------------------------------------------------------------
 
-local ReadStatsView = InputContainer:extend{
+local ReadStatsView = FocusManager:extend{
     data = nil,
     on_prev = nil,
     on_next = nil,
@@ -451,9 +452,10 @@ function ReadStatsView:buildTabBar()
     local n = #TABS
     local cell_w = math.floor(self.screen_w / n)
     local row = HorizontalGroup:new{}
+    self._tab_buttons = {}
     for _i, tab in ipairs(TABS) do
         local active = (tab.mode == self.data.mode)
-        table.insert(row, Button:new{
+        local button = Button:new{
             text = _(tab.text),
             width = cell_w,
             radius = 0,
@@ -464,7 +466,17 @@ function ReadStatsView:buildTabBar()
             text_font_bold = active,
             show_parent = self,
             callback = function() self:onSwitchMode(tab.mode) end,
-        })
+        }
+        self._tab_buttons[#self._tab_buttons + 1] = button
+        if active then
+            -- Preselect is painted as an inverted frame; without this the
+            -- focus cursor leaving the tab would erase its highlight.
+            button.onUnfocus = function(_self)
+                _self.frame.invert = true
+                return true
+            end
+        end
+        table.insert(row, button)
     end
     return FrameContainer:new{ bordersize = 0, padding = 0, margin = 0, row }
 end
@@ -472,26 +484,30 @@ end
 function ReadStatsView:buildNavRow()
     local d = self.data
     if not d.allow_prev and not d.allow_next then
+        self._nav_buttons = {}
         return nil
     end
     local gap = Size.padding.default
     local btn_w = math.floor((self.screen_w - 3 * gap) / 2)
+    local prev_button = Button:new{
+        text = _("‹ Previous"), width = btn_w, show_parent = self,
+        enabled = d.allow_prev == true,
+        callback = function() self:onPrevPeriod() end,
+    }
+    local next_button = Button:new{
+        text = _("Next ›"), width = btn_w, show_parent = self,
+        enabled = d.allow_next == true,
+        callback = function() self:onNextPeriod() end,
+    }
+    self._nav_buttons = { prev_button, next_button }
     return FrameContainer:new{
         background = Blitbuffer.COLOR_WHITE,
         bordersize = 0,
         padding = gap,
         HorizontalGroup:new{
-            Button:new{
-                text = _("‹ Previous"), width = btn_w, show_parent = self,
-                enabled = d.allow_prev == true,
-                callback = function() self:onPrevPeriod() end,
-            },
+            prev_button,
             HorizontalSpan:new{ width = gap },
-            Button:new{
-                text = _("Next ›"), width = btn_w, show_parent = self,
-                enabled = d.allow_next == true,
-                callback = function() self:onNextPeriod() end,
-            },
+            next_button,
         },
     }
 end
@@ -514,11 +530,7 @@ function ReadStatsView:init()
     self.content_width = usable_w - 2 * self.card_border - 2 * self.card_padding
 
     if Device:hasKeys() then
-        self.key_events = {
-            Close = { { Device.input.group.Back } },
-            PrevPeriod = { { "Left" } },
-            NextPeriod = { { "Right" } },
-        }
+        self.key_events.Close = { { Device.input.group.Back } }
     end
 
     local d = self.data
@@ -537,6 +549,11 @@ function ReadStatsView:init()
 
     local tab_bar = self:buildTabBar()
     local nav_row = self:buildNavRow()
+
+    local rows = { self._tab_buttons }
+    if nav_row then rows[#rows + 1] = self._nav_buttons end
+    FocusNav.apply(self, rows)
+    FocusNav.initialFocus(self, 1, 1)
 
     local top_h = self.title_bar:getHeight() + tab_bar:getSize().h
     local nav_h = nav_row and nav_row:getSize().h or 0

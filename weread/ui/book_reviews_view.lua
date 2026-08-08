@@ -4,11 +4,11 @@
 local Blitbuffer = require("ffi/blitbuffer")
 local Button = require("ui/widget/button")
 local Device = require("device")
+local FocusManager = require("ui/widget/focusmanager")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan = require("ui/widget/horizontalspan")
-local InputContainer = require("ui/widget/container/inputcontainer")
 local ScrollableContainer = require("ui/widget/container/scrollablecontainer")
 local Size = require("ui/size")
 local TextWidget = require("ui/widget/textwidget")
@@ -17,6 +17,7 @@ local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local Screen = Device.screen
+local FocusNav = require("weread.ui.focus_nav")
 local T = require("ffi/util").template
 
 local BookReviews = require("weread.lib.book_reviews")
@@ -31,7 +32,7 @@ local TABS = {
     { mode = "latest", text = "Latest reviews" },
 }
 
-local BookReviewsView = InputContainer:extend{
+local BookReviewsView = FocusManager:extend{
     book_title = nil,
     mode = "recommended",
     result = nil,
@@ -42,9 +43,10 @@ local BookReviewsView = InputContainer:extend{
 function BookReviewsView:buildTabBar()
     local first_width = math.floor(self.screen_w / #TABS)
     local row = HorizontalGroup:new{}
+    self._tab_buttons = {}
     for index, tab in ipairs(TABS) do
         local active = tab.mode == self.mode
-        table.insert(row, Button:new{
+        local button = Button:new{
             text = _(tab.text),
             width = index == #TABS
                 and self.screen_w - first_width * (#TABS - 1)
@@ -61,7 +63,17 @@ function BookReviewsView:buildTabBar()
                     self.on_switch(tab.mode)
                 end
             end,
-        })
+        }
+        self._tab_buttons[#self._tab_buttons + 1] = button
+        if active then
+            -- Preselect is painted as an inverted frame; without this the
+            -- focus cursor leaving the tab would erase its highlight.
+            button.onUnfocus = function(_self)
+                _self.frame.invert = true
+                return true
+            end
+        end
+        table.insert(row, button)
     end
     return FrameContainer:new{
         bordersize = 0,
@@ -93,6 +105,7 @@ function BookReviewsView:buildContent()
         align = "left",
         HorizontalSpan:new{ width = self.content_width },
     }
+    self._review_buttons = {}
     local items = self.result and self.result.items or {}
     if #items == 0 then
         table.insert(content, VerticalSpan:new{ width = Size.padding.large })
@@ -104,7 +117,7 @@ function BookReviewsView:buildContent()
     end
 
     for _i, review in ipairs(items) do
-        table.insert(content, Button:new{
+        local button = Button:new{
             text = self:reviewText(review),
             width = self.content_width,
             height = Screen:scaleBySize(66),
@@ -123,7 +136,9 @@ function BookReviewsView:buildContent()
                     self.on_select(review, self.mode)
                 end
             end,
-        })
+        }
+        self._review_buttons[#self._review_buttons + 1] = button
+        table.insert(content, button)
         table.insert(content, VerticalSpan:new{ width = Size.padding.small })
     end
     return content
@@ -139,9 +154,7 @@ function BookReviewsView:init()
     self.content_width = self.screen_w - 2 * self.outer_margin - scrollbar_reserve
 
     if Device:hasKeys() then
-        self.key_events = {
-            Close = { { Device.input.group.Back } },
-        }
+        self.key_events.Close = { { Device.input.group.Back } }
     end
 
     self.title_bar = TitleBar:new{
@@ -169,6 +182,15 @@ function BookReviewsView:init()
             },
         },
     }
+    local rows = { self._tab_buttons }
+    for _i, review_button in ipairs(self._review_buttons) do
+        rows[#rows + 1] = { review_button }
+    end
+    local outside_scroll = {}
+    for _i, button in ipairs(self._tab_buttons) do outside_scroll[button] = true end
+    FocusNav.apply(self, rows, { scroll = scroll, outside_scroll = outside_scroll })
+    -- Reviews follow the tab row.
+    FocusNav.initialFocus(self, 1, #rows > 1 and 2 or 1)
 
     self[1] = FrameContainer:new{
         background = Blitbuffer.COLOR_WHITE,

@@ -4,6 +4,7 @@ local Blitbuffer = require("ffi/blitbuffer")
 local Button = require("ui/widget/button")
 local Device = require("device")
 local Font = require("ui/font")
+local FocusManager = require("ui/widget/focusmanager")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
@@ -18,6 +19,7 @@ local TitleBar = require("ui/widget/titlebar")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local Screen = Device.screen
+local FocusNav = require("weread.ui.focus_nav")
 local I18n = require("weread.lib.i18n")
 
 local function _(text) return I18n.tr(text) end
@@ -76,7 +78,17 @@ function ChapterRow:onTapChapterRow()
     return true
 end
 
-local ChapterListView = InputContainer:extend{
+function ChapterRow:onFocus()
+    self.frame.invert = true
+    return true
+end
+
+function ChapterRow:onUnfocus()
+    self.frame.invert = false
+    return true
+end
+
+local ChapterListView = FocusManager:extend{
     title = nil,
     chapters = nil,
     on_refresh = nil,
@@ -87,30 +99,30 @@ local ChapterListView = InputContainer:extend{
 
 function ChapterListView:toolbar()
     local half = math.floor(self.screen_w / 2)
-    return HorizontalGroup:new{
-        Button:new{
-            text = _("↻ Refresh chapter list"),
-            width = half,
-            radius = 0, margin = 0,
-            bordersize = Size.border.thin,
-            text_font_size = 19,
-            text_font_bold = false,
-            show_parent = self,
-            callback = function() if self.on_refresh then self.on_refresh() end end,
-        },
-        Button:new{
-            text = _("✓ Select chapters to download"),
-            width = self.screen_w - half,
-            radius = 0, margin = 0,
-            bordersize = Size.border.thin,
-            text_font_size = 19,
-            text_font_bold = false,
-            show_parent = self,
-            callback = function()
-                if self.on_select_download then self.on_select_download() end
-            end,
-        },
+    local refresh_button = Button:new{
+        text = _("↻ Refresh chapter list"),
+        width = half,
+        radius = 0, margin = 0,
+        bordersize = Size.border.thin,
+        text_font_size = 19,
+        text_font_bold = false,
+        show_parent = self,
+        callback = function() if self.on_refresh then self.on_refresh() end end,
     }
+    local select_button = Button:new{
+        text = _("✓ Select chapters to download"),
+        width = self.screen_w - half,
+        radius = 0, margin = 0,
+        bordersize = Size.border.thin,
+        text_font_size = 19,
+        text_font_bold = false,
+        show_parent = self,
+        callback = function()
+            if self.on_select_download then self.on_select_download() end
+        end,
+    }
+    self._toolbar_buttons = { refresh_button, select_button }
+    return HorizontalGroup:new{ refresh_button, select_button }
 end
 
 function ChapterListView:content()
@@ -118,8 +130,9 @@ function ChapterListView:content()
         align = "left",
         HorizontalSpan:new{ width = self.list_width },
     }
+    self._chapter_rows = {}
     for _i, chapter in ipairs(self.chapters or {}) do
-        table.insert(group, ChapterRow:new{
+        local row = ChapterRow:new{
             text = chapter.title,
             status = chapter.status,
             width = self.list_width,
@@ -127,7 +140,9 @@ function ChapterListView:content()
             callback = function()
                 if self.on_select then self.on_select(chapter.source) end
             end,
-        })
+        }
+        self._chapter_rows[#self._chapter_rows + 1] = row
+        table.insert(group, row)
         table.insert(group, HorizontalGroup:new{
             HorizontalSpan:new{ width = Size.padding.large },
             LineWidget:new{
@@ -145,7 +160,7 @@ function ChapterListView:init()
     self.dimen = Geom:new{ x = 0, y = 0, w = self.screen_w, h = self.screen_h }
     self.list_width = self.screen_w - 3 * Screen:scaleBySize(6)
     self.covers_fullscreen = true
-    if Device:hasKeys() then self.key_events = { Close = { { Device.input.group.Back } } } end
+    if Device:hasKeys() then self.key_events.Close = { { Device.input.group.Back } } end
     self.title_bar = TitleBar:new{
         width = self.screen_w,
         title = self.title or _("Chapter list"),
@@ -165,6 +180,15 @@ function ChapterListView:init()
         show_parent = self,
         self:content(),
     }
+    local rows = { self._toolbar_buttons }
+    for _i, chapter_row in ipairs(self._chapter_rows) do
+        rows[#rows + 1] = { chapter_row }
+    end
+    local outside_scroll = {}
+    for _i, button in ipairs(self._toolbar_buttons) do outside_scroll[button] = true end
+    FocusNav.apply(self, rows, { scroll = scroll, outside_scroll = outside_scroll })
+    -- Chapters follow the toolbar row.
+    FocusNav.initialFocus(self, 1, #rows > 1 and 2 or 1)
     self[1] = FrameContainer:new{
         background = Blitbuffer.COLOR_WHITE,
         bordersize = 0, padding = 0, margin = 0,
