@@ -216,6 +216,7 @@ function LibraryView:content()
         table.insert(content, VerticalSpan:new{ width = Size.padding.large })
         table.insert(content, TextWidget:new{
             text = self.keyword and self.keyword ~= "" and _("No shelf matches.") or _("No items."),
+            face = Font:getFace("cfont", 20),
             max_width = self.content_width,
         })
         return content
