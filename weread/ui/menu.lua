@@ -444,6 +444,23 @@ function M:getSettingsMenuItems()
                             self:showEdgeTapRatioPicker(touchmenu_instance)
                         end),
                     },
+                    {
+                        text_func = function()
+                            local height = tonumber(self.settings:get("thought_popup").height_ratio) or 0.62
+                            return T(_("Thought popup height: %1%"), math.floor(height * 100 + 0.5))
+                        end,
+                        keep_menu_open = true,
+                        callback = self:safeCallback(_("Thought popup height"), function(touchmenu_instance)
+                            self:showThoughtPopupHeightPicker(touchmenu_instance)
+                        end),
+                    },
+                    {
+                        text = _("Thought popup font size"),
+                        keep_menu_open = true,
+                        callback = self:safeCallback(_("Thought popup font size"), function()
+                            self:showThoughtPopupFontSizePicker()
+                        end),
+                    },
                 }
             end,
         },
@@ -620,6 +637,110 @@ function M:getUpdateMenuItems()
             end),
     })
     return items
+end
+
+-- Let the user set the thought popup height as a percentage of the screen.
+function M:showThoughtPopupHeightPicker(touchmenu_instance)
+    local SpinWidget = require("ui/widget/spinwidget")
+    local current = math.floor((tonumber(self.settings:get("thought_popup").height_ratio) or 0.62) * 100)
+    local spin = SpinWidget:new{
+        value = current,
+        value_min = 20,
+        value_max = 90,
+        value_step = 5,
+        precision = "%d%%",
+        ok_text = _("Set height"),
+        title_text = _("Thought popup height"),
+        info_text = _("Set the thought popup height as a percentage of the screen height (20%-90%)."),
+        callback = function(spin_widget)
+            local thought_popup = self.settings:get("thought_popup")
+            thought_popup.height_ratio = spin_widget.value / 100
+            self.settings:set("thought_popup", thought_popup)
+            self.settings:flush()
+            logger.info("thought popup height changed:",
+                "ratio=", tostring(thought_popup.height_ratio))
+            if touchmenu_instance then
+                touchmenu_instance:updateItems()
+            end
+        end,
+    }
+    UIManager:show(spin)
+end
+
+-- Set the thought popup font size: a fixed absolute size or a size relative
+-- to the document font. Mirrors KOReader's footnote popup font size setting
+-- (frontend/apps/reader/modules/readerlink.lua).
+function M:showThoughtPopupFontSizePicker()
+    local Screen = require("device").screen
+    local thought_popup = self.settings:get("thought_popup")
+    local spin_widget
+    local get_font_size_widget
+    get_font_size_widget = function(show_absolute_font_size_widget)
+        local SpinWidget = require("ui/widget/spinwidget")
+        if show_absolute_font_size_widget then
+            spin_widget = SpinWidget:new{
+                width = math.floor(Screen:getWidth() * 0.75),
+                value = tonumber(thought_popup.font_size)
+                        or Screen:scaleBySize((self.ui
+                            and self.ui.document
+                            and self.ui.document.configurable
+                            and self.ui.document.configurable.font_size) or 18),
+                value_min = 12,
+                value_max = 255,
+                precision = "%d",
+                ok_text = _("Set font size"),
+                title_text = _("Thought popup font size"),
+                info_text = _([[
+The thought popup font adjusts to the font size you've set for the document, but you can specify here a fixed absolute font size to be used instead.]]),
+                callback = function(spin)
+                    local tp = self.settings:get("thought_popup")
+                    tp.font_size = spin.value
+                    tp.font_size_relative = nil
+                    self.settings:set("thought_popup", tp)
+                    self.settings:flush()
+                    logger.info("thought popup font size changed:", "absolute=", spin.value)
+                end,
+                extra_text = _("Set a relative font size instead"),
+                extra_callback = function()
+                    UIManager:close(spin_widget)
+                    spin_widget = get_font_size_widget(false)
+                    UIManager:show(spin_widget)
+                end,
+            }
+        else
+            spin_widget = SpinWidget:new{
+                width = math.floor(Screen:getWidth() * 0.75),
+                value = tonumber(thought_popup.font_size_relative) or -2,
+                value_min = -10,
+                value_max = 5,
+                precision = "%+d",
+                ok_text = _("Set font size"),
+                title_text = _("Thought popup font size"),
+                info_text = _([[
+The thought popup font adjusts to the font size you've set for the document.
+You can specify here how much smaller or larger it should be relative to the document font size.
+A negative value will make it smaller, while a positive one will make it larger.
+The recommended value is -2.]]),
+                callback = function(spin)
+                    local tp = self.settings:get("thought_popup")
+                    tp.font_size_relative = spin.value
+                    tp.font_size = nil
+                    self.settings:set("thought_popup", tp)
+                    self.settings:flush()
+                    logger.info("thought popup font size changed:", "relative=", spin.value)
+                end,
+                extra_text = _("Set an absolute font size instead"),
+                extra_callback = function()
+                    UIManager:close(spin_widget)
+                    spin_widget = get_font_size_widget(true)
+                    UIManager:show(spin_widget)
+                end,
+            }
+        end
+        return spin_widget
+    end
+    spin_widget = get_font_size_widget(thought_popup.font_size ~= nil)
+    UIManager:show(spin_widget)
 end
 
 -- Let the user pick how wide the left/right page-turn edge zone is (percent of

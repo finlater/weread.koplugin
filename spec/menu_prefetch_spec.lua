@@ -61,6 +61,10 @@ local cache = {
     download_underlines_and_thoughts = false,
     show_prefetch_notifications = true,
 }
+local thought_popup = {
+    height_ratio = 0.62,
+    font_size_relative = -2,
+}
 local available_version
 local host = {
     ui = {},
@@ -68,6 +72,7 @@ local host = {
     settings = {
         get = function(_self, key, default)
             if key == "cache" then return cache end
+            if key == "thought_popup" then return thought_popup end
             return default
         end,
         set = function() end,
@@ -181,6 +186,19 @@ expect(prefetch_items[2].enabled_func(),
     "annotation setting is enabled while automatic prefetch is on")
 expect(prefetch_items[3].enabled_func(),
     "notification setting is enabled while automatic prefetch is on")
+
+local underline_settings
+for _, item in ipairs(settings_items) do
+    if item.text == "Underline settings" then underline_settings = item end
+end
+local underline_items = underline_settings and underline_settings.sub_item_table_func() or {}
+expect(#underline_items == 4,
+    "underline settings contain edge taps, edge zone, and thought popup settings")
+expect(underline_items[3] and type(underline_items[3].text_func) == "function"
+        and underline_items[3].text_func() == "Thought popup height: %1%",
+    "thought popup height entry shows the current percentage")
+expect(underline_items[4] and underline_items[4].text == "Thought popup font size",
+    "thought popup font size entry is present")
 
 print(string.format(
     "menu_prefetch_spec: %d checks, %d failure(s)", checks, failures))
