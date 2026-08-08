@@ -18,9 +18,12 @@ Annotations.UNDERLINE_CSS = [[
 ]]
 
 -- 想法标记（星号）CSS 样式 — 浅色、右上角、小字号
+-- ::before 插入 U+2060 WORD JOINER，避免 CREngine/libunibreak
+-- 在 CJK 字符与 "*" 之间断行导致星号落到行首（KOReader 官方推荐的 glue 写法）。
 Annotations.THOUGHT_CSS = [[
 .wr-thought-link{text-decoration:none;color:inherit;}
 .wr-star{font-size:0.6em;vertical-align:super;line-height:0;color:#aaa;margin-left:1px;}
+.wr-star::before{content:"\2060";}
 ]]
 
 --- 去除字符串开头的 UTF-8 BOM（\ufeff）。
@@ -368,10 +371,11 @@ function Annotations.injectUnderlines(html, underlines, thought_reviews, chapter
             local underline_close = '</span>'
             local underline_close_with_ref = '<span class="wr-star">*</span></span>'
 
-            -- 星号注入到最后一个 underline span 末尾
+            local star_appended = false
             local last_idx = #wrapped
             if wrapped[last_idx] == underline_close then
                 wrapped[last_idx] = underline_close_with_ref
+                star_appended = true
             end
 
             -- 内部锚点（非 noteref）：去掉 epub:type="noteref" 避免 crengine 走专用
@@ -399,6 +403,13 @@ function Annotations.injectUnderlines(html, underlines, thought_reviews, chapter
                 else
                     with_links[#with_links + 1] = item
                 end
+            end
+            if not star_appended then
+                -- 末尾是纯空白段（wrapTextSegments 不包裹空白）：
+                -- 星标追加在 range 末尾（下划线 span 外），保证想法标记不丢失
+                with_links[#with_links + 1] = first_link and open_a_with_id or open_a
+                with_links[#with_links + 1] = '<span class="wr-star">*</span>'
+                with_links[#with_links + 1] = '</a>'
             end
             wrapped = with_links
         end
