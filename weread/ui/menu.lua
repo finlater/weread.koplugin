@@ -16,12 +16,6 @@ local T = PluginUtil.T
 local M = {}
 
 function M:onDispatcherRegisterActions()
-    Dispatcher:registerAction("weread_sync_progress", {
-        category = "none",
-        event = "WeReadSyncProgress",
-        title = _("WeRead · Sync reading progress"),
-        reader = true,
-    })
     Dispatcher:registerAction("weread_quick_menu", {
         category = "none",
         event = "ShowWeReadQuickMenu",
@@ -32,7 +26,25 @@ function M:onDispatcherRegisterActions()
         category = "none",
         event = "ShowWeReadBookshelf",
         title = _("WeRead · Bookshelf"),
-        reader = true,
+        general = true,
+    })
+    Dispatcher:registerAction("weread_local_bookshelf", {
+        category = "none",
+        event = "ShowWeReadLocalBookshelf",
+        title = _("WeRead · Local bookshelf"),
+        general = true,
+    })
+    Dispatcher:registerAction("weread_reading_statistics", {
+        category = "none",
+        event = "ShowWeReadReadingStatistics",
+        title = _("WeRead · Reading statistics"),
+        general = true,
+    })
+    Dispatcher:registerAction("weread_search", {
+        category = "none",
+        event = "ShowWeReadSearch",
+        title = _("WeRead · Search"),
+        general = true,
     })
 end
 

@@ -57,6 +57,17 @@ host.showBookshelf = function() bookshelf_opened = true end
 expect(host:onShowWeReadBookshelf() and bookshelf_opened,
     "bookshelf gesture opens the WeRead bookshelf")
 
+local local_bookshelf_opened, search_opened, action_stats_opened = false, false, false
+host.showWereadCollection = function() local_bookshelf_opened = true end
+host.showSearch = function() search_opened = true end
+host.showReadStats = function() action_stats_opened = true end
+expect(host:onShowWeReadLocalBookshelf() and local_bookshelf_opened,
+    "local-bookshelf action opens the WeRead collection")
+expect(host:onShowWeReadSearch() and search_opened,
+    "search action opens WeRead search")
+expect(host:onShowWeReadReadingStatistics() and action_stats_opened,
+    "reading-statistics action opens WeRead statistics")
+
 local stats_opened = false
 local context_books = {}
 local context_host = {

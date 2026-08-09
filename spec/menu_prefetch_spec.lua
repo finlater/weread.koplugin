@@ -81,23 +81,47 @@ host:onDispatcherRegisterActions()
 expect(registered.weread_show == nil,
     "generic WeRead shortcut action is no longer registered")
 local sync_action = registered.weread_sync_progress
-expect(sync_action and sync_action.title == "WeRead · Sync reading progress",
-    "sync gesture action uses the unified title")
+expect(sync_action == nil,
+    "standalone sync action is no longer registered")
 local quick_action = registered.weread_quick_menu
 expect(quick_action ~= nil, "quick menu dispatcher action is registered")
 expect(quick_action and quick_action.event == "ShowWeReadQuickMenu",
     "quick menu action dispatches the matching reader event")
-expect(quick_action and quick_action.reader == true,
-    "quick menu action is available to reader gestures")
+expect(quick_action and quick_action.reader == true
+        and quick_action.general ~= true,
+    "quick menu action remains reader-only")
 expect(quick_action and quick_action.title == "WeRead · Quick menu",
     "quick menu action has the requested title")
 local bookshelf_action = registered.weread_bookshelf
 expect(bookshelf_action and bookshelf_action.event == "ShowWeReadBookshelf",
     "bookshelf dispatcher action uses the matching event")
-expect(bookshelf_action and bookshelf_action.reader == true,
-    "bookshelf action is available to reader gestures")
+expect(bookshelf_action and bookshelf_action.general == true
+        and bookshelf_action.reader ~= true,
+    "bookshelf action is grouped with the general WeRead actions")
 expect(bookshelf_action and bookshelf_action.title == "WeRead · Bookshelf",
     "bookshelf gesture action has the requested title")
+local general_actions = {
+    weread_local_bookshelf = {
+        event = "ShowWeReadLocalBookshelf",
+        title = "WeRead · Local bookshelf",
+    },
+    weread_reading_statistics = {
+        event = "ShowWeReadReadingStatistics",
+        title = "WeRead · Reading statistics",
+    },
+    weread_search = {
+        event = "ShowWeReadSearch",
+        title = "WeRead · Search",
+    },
+}
+for name, expected in pairs(general_actions) do
+    local action = registered[name]
+    expect(action and action.event == expected.event
+            and action.title == expected.title
+            and action.general == true
+            and action.reader ~= true,
+        name .. " is registered as a prefixed general action")
+end
 
 local settings_items = host:getSettingsMenuItems()
 local download_settings
