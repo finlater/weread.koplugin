@@ -1816,9 +1816,6 @@ function Content.download_mp_images(client, body_html, progress, embed_base64, p
             return "src=" .. quote .. src .. quote
         end
         index = index + 1
-        if progress then
-            progress(index, img_total)
-        end
         local url = src
         if url:match("^//") then
             url = "https:" .. url

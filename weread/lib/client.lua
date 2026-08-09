@@ -11,7 +11,7 @@ if not ok_json then
 end
 
 local DEFAULT_TIMEOUT_SECONDS = 15
-local pack = table.pack or function(...)
+local function pack(...)
     return { n = select("#", ...), ... }
 end
 local Client = {}
