@@ -12,6 +12,45 @@ local log_error = PluginUtil.log_error
 
 local M = {}
 
+-- KOReader v2026.03 assumes ReaderHighlight's visible box cache has already
+-- been populated when a tap arrives. During a fast document switch there is a
+-- short window after ReaderReady where the cache is still nil, and the native
+-- handler crashes while taking its length. Keep the compatibility guard local
+-- to the reader instance and leave KOReader's normal handler unchanged once
+-- the cache has been initialized.
+function M:_installReaderHighlightTapGuard()
+    local highlight = self.ui and self.ui.highlight
+    if not highlight or type(highlight.onTap) ~= "function" then
+        return false
+    end
+    if self._reader_highlight_guard_target == highlight then
+        return true
+    end
+    self:_removeReaderHighlightTapGuard()
+
+    local original = highlight.onTap
+    self._reader_highlight_guard_target = highlight
+    self._reader_highlight_original_on_tap = original
+    highlight.onTap = function(highlight_self, arg, ges)
+        local view_highlight = highlight_self.view and highlight_self.view.highlight
+        if ges and view_highlight and type(view_highlight.visible_boxes) ~= "table" then
+            view_highlight.visible_boxes = {}
+        end
+        return original(highlight_self, arg, ges)
+    end
+    return true
+end
+
+function M:_removeReaderHighlightTapGuard()
+    local highlight = self._reader_highlight_guard_target
+    local original = self._reader_highlight_original_on_tap
+    if highlight and original and highlight.onTap ~= original then
+        highlight.onTap = original
+    end
+    self._reader_highlight_guard_target = nil
+    self._reader_highlight_original_on_tap = nil
+end
+
 function M:onShowWeRead()
     self:showAccountStatus()
 end
@@ -67,6 +106,7 @@ end
 function M:onReaderReady()
     self._reader_session_gen = (self._reader_session_gen or 0) + 1
     self:_teardownThoughtInterception()
+    self:_installReaderHighlightTapGuard()
 
     local weread_book_id = self:detectWeReadBook()
     -- Cache it so the per-tap handler (_onThoughtTap) does not have to re-scan
@@ -123,6 +163,7 @@ function M:onCloseDocument()
     self.downloader:cancelPrefetch("document_closed")
     self._current_weread_book_id = nil
     self:_teardownThoughtInterception()
+    self:_removeReaderHighlightTapGuard()
 
     if self._orig_onEndOfBook and self.ui.status then
         self.ui.status.onEndOfBook = self._orig_onEndOfBook
