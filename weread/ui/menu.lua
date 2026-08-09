@@ -6,6 +6,7 @@ local Dispatcher = require("dispatcher")
 local InfoMessage = require("ui/widget/infomessage")
 local logger = require("weread.lib.logger")
 local UIManager = require("ui/uimanager")
+local Parallel = require("weread.lib.parallel")
 local ThoughtPopup = require("weread.ui.thought_popup")
 local WeRead = require("weread.lib.protocol")
 
@@ -416,6 +417,105 @@ function M:getSettingsMenuItems()
                             }
                         end,
                     },
+                    {
+                        text_func = function()
+                            local config = Parallel.config(self.settings)
+                            return T(_("Concurrent requests: chapters %1 · comments %2 · images %3"),
+                                tostring(config.chapters), tostring(config.comments),
+                                tostring(config.images))
+                        end,
+                        sub_item_table_func = function()
+                            return {
+                                {
+                                    text = _("Automatic concurrency based on device memory"),
+                                    keep_menu_open = true,
+                                    check_callback_updates_menu = true,
+                                    checked_func = function()
+                                        return self.settings:get("cache").concurrency_auto ~= false
+                                    end,
+                                    callback = self:safeCallback(
+                                        _("Automatic concurrency based on device memory"),
+                                        function(touchmenu_instance)
+                                            local cache = self.settings:get("cache")
+                                            if cache.concurrency_auto ~= false then
+                                                local preset = Parallel.config(self.settings)
+                                                cache.chapter_concurrency = preset.chapters
+                                                cache.comment_concurrency = preset.comments
+                                                cache.image_concurrency = preset.images
+                                                cache.concurrency_auto = false
+                                            else
+                                                cache.concurrency_auto = true
+                                            end
+                                            self.settings:set("cache", cache)
+                                            self.settings:flush()
+                                            if touchmenu_instance then
+                                                touchmenu_instance:updateItems()
+                                            end
+                                        end),
+                                },
+                                {
+                                    text_func = function()
+                                        local config = Parallel.config(self.settings)
+                                        local memory = config.memory_mb
+                                            and T(_("Detected memory: %1 MB"),
+                                                tostring(config.memory_mb))
+                                            or _("Detected memory: unavailable")
+                                        if not config.supported then
+                                            memory = memory .. " · " .. _("Subprocess concurrency unavailable")
+                                        end
+                                        return memory
+                                    end,
+                                    keep_menu_open = true,
+                                    callback = function() end,
+                                },
+                                {
+                                    text_func = function()
+                                        return T(_("Chapter requests: %1"),
+                                            tostring(Parallel.config(self.settings).chapters))
+                                    end,
+                                    enabled_func = function()
+                                        return self.settings:get("cache").concurrency_auto == false
+                                    end,
+                                    keep_menu_open = true,
+                                    callback = self:safeCallback(_("Chapter requests"),
+                                        function(touchmenu_instance)
+                                            self:showConcurrencyPicker("chapter_concurrency",
+                                                _("Chapter requests"), touchmenu_instance)
+                                        end),
+                                },
+                                {
+                                    text_func = function()
+                                        return T(_("Comment requests: %1"),
+                                            tostring(Parallel.config(self.settings).comments))
+                                    end,
+                                    enabled_func = function()
+                                        return self.settings:get("cache").concurrency_auto == false
+                                    end,
+                                    keep_menu_open = true,
+                                    callback = self:safeCallback(_("Comment requests"),
+                                        function(touchmenu_instance)
+                                            self:showConcurrencyPicker("comment_concurrency",
+                                                _("Comment requests"), touchmenu_instance)
+                                        end),
+                                },
+                                {
+                                    text_func = function()
+                                        return T(_("Image requests: %1"),
+                                            tostring(Parallel.config(self.settings).images))
+                                    end,
+                                    enabled_func = function()
+                                        return self.settings:get("cache").concurrency_auto == false
+                                    end,
+                                    keep_menu_open = true,
+                                    callback = self:safeCallback(_("Image requests"),
+                                        function(touchmenu_instance)
+                                            self:showConcurrencyPicker("image_concurrency",
+                                                _("Image requests"), touchmenu_instance)
+                                        end),
+                                },
+                            }
+                        end,
+                    },
                 }
             end,
         },
@@ -678,6 +778,43 @@ function M:showEdgeTapRatioPicker(touchmenu_instance)
         buttons = buttons,
     }
     UIManager:show(self._edge_ratio_dialog)
+end
+
+function M:showConcurrencyPicker(setting_key, title, touchmenu_instance)
+    local cache = self.settings:get("cache")
+    local current = tonumber(cache[setting_key]) or 1
+    local buttons = {}
+    for value = 1, Parallel.MAX_CONCURRENCY do
+        local label = tostring(value)
+        if value == current then label = label .. "  ✓" end
+        buttons[#buttons + 1] = {{
+            text = label,
+            callback = function()
+                UIManager:close(self._concurrency_dialog)
+                self._concurrency_dialog = nil
+                local current_cache = self.settings:get("cache")
+                current_cache[setting_key] = value
+                current_cache.concurrency_auto = false
+                self.settings:set("cache", current_cache)
+                self.settings:flush()
+                logger.info("download concurrency changed:",
+                    "target=", setting_key, "workers=", tostring(value))
+                if touchmenu_instance then touchmenu_instance:updateItems() end
+            end,
+        }}
+    end
+    buttons[#buttons + 1] = {{
+        text = _("Cancel"),
+        callback = function()
+            UIManager:close(self._concurrency_dialog)
+            self._concurrency_dialog = nil
+        end,
+    }}
+    self._concurrency_dialog = ButtonDialog:new{
+        title = T(_("%1 concurrency (1–8)"), title),
+        buttons = buttons,
+    }
+    UIManager:show(self._concurrency_dialog)
 end
 
 return M

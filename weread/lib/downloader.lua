@@ -23,6 +23,7 @@ local Content = require("weread.lib.content")
 local DownloadDialog = require("weread.ui.download_dialog")
 local Footnotes = require("weread.lib.footnotes")
 local I18n = require("weread.lib.i18n")
+local Parallel = require("weread.lib.parallel")
 local Thoughts = require("weread.lib.thoughts")
 local WeRead = require("weread.lib.protocol")
 
@@ -115,8 +116,8 @@ function Downloader:_cleanupWorkspace(dl)
     Content.cleanup_download_workspace(workspace)
 end
 
--- Keep the device awake during long book downloads (reference counted so
--- multiple concurrent jobs share a single guard).
+-- Keep the device awake during long book downloads. Network subprocesses are
+-- owned by one active job and share this reference-counted guard.
 function Downloader:_beginStandby()
     self._standby_ref = (self._standby_ref or 0) + 1
     if self._standby_ref == 1 then
@@ -380,6 +381,13 @@ function Downloader:start(book, chapters, suffix, options)
     end
 
     local total = #chapters
+    local parallel_config = Parallel.config(self.settings)
+    logger.info("download concurrency:",
+        "auto=", tostring(parallel_config.automatic),
+        "memory_mb=", tostring(parallel_config.memory_mb or "unknown"),
+        "chapters=", tostring(parallel_config.chapters),
+        "comments=", tostring(parallel_config.comments),
+        "images=", tostring(parallel_config.images))
     local dl = {
         book = book,
         chapters = chapters,
@@ -415,6 +423,8 @@ function Downloader:start(book, chapters, suffix, options)
         on_start = options.on_start,
         on_complete = options.on_complete,
         started_at = time.now(),
+        parallel = parallel_config,
+        parallel_base_dir = (self.settings.data_dir or "/tmp") .. "/parallel",
     }
     self._active_job = dl
 
@@ -505,6 +515,69 @@ function Downloader:_perf(dl, stage, started, ...)
     logger.info("download_perf", "stage=", stage,
         "ms=", string.format("%.1f", elapsed),
         "chapter=", tostring(dl.index) .. "/" .. tostring(dl.total), ...)
+end
+
+function Downloader:_startChapterSourcePool(dl)
+    dl.source_pool_started = true
+    dl.chapter_sources = {}
+    local tasks = {}
+    for index, chapter in ipairs(dl.chapters) do
+        tasks[index] = { index = index, chapter = chapter }
+    end
+    self:_setStage(dl,
+        T(_("Downloading chapters in parallel · %1 workers"),
+            tostring(dl.parallel.chapters)), 0)
+    dl.source_pool = Parallel.start{
+        tasks = tasks,
+        concurrency = dl.parallel.chapters,
+        base_dir = dl.parallel_base_dir,
+        prefix = "chapters",
+        is_cancelled = function() return dl.cancelled end,
+        worker = function(task, dir)
+            local xhtml, css = self.client:without_cookie_persistence(function()
+                local body = Content.fetch_chapter_xhtml(
+                    self.client, self.settings, dl.book, task.chapter)
+                local style
+                if task.index == 1 then
+                    style = Content.fetch_chapter_css(
+                        self.client, self.settings, dl.book, task.chapter)
+                end
+                return body, style
+            end)
+            Parallel.write_file(dir .. "/chapter.xhtml", xhtml)
+            if css then Parallel.write_file(dir .. "/chapter.css", css) end
+        end,
+        load_result = function(_task, dir, ok, err)
+            if not ok then return nil, err end
+            local xhtml = Parallel.read_file(dir .. "/chapter.xhtml")
+            if not xhtml then return nil, "chapter worker returned no content" end
+            return {
+                xhtml = xhtml,
+                css = Parallel.read_file(dir .. "/chapter.css"),
+            }
+        end,
+        on_result = function(task, result, err, current, total_tasks)
+            dl.chapter_sources[task.index] = result or { error = err or "download failed" }
+            self:_setStage(dl,
+                T(_("Downloading chapters in parallel · %1/%2"),
+                    tostring(current), tostring(total_tasks)),
+                total_tasks > 0 and current * dl.total / total_tasks or 0)
+        end,
+        on_complete = function()
+            dl.source_pool = nil
+            dl.source_pool_done = true
+            if not dl.state.css then
+                for index = 1, dl.total do
+                    local source = dl.chapter_sources[index]
+                    if source and source.css then
+                        dl.state.css = source.css
+                        break
+                    end
+                end
+            end
+            self:_scheduleGuarded(dl, function() self:_step(dl) end, 0.01)
+        end,
+    }
 end
 
 function Downloader:_failChapter(dl, err)
@@ -627,29 +700,8 @@ function Downloader:_startFootnotes(dl)
     self:_scheduleGuarded(dl, function() self:_footnoteStep(dl) end)
 end
 
-function Downloader:_finishChapter(dl)
-    if dl.cancelled or not dl.current then return end
+function Downloader:_commitChapter(dl, xhtml, chapter_assets)
     local chapter = dl.current.chapter
-    local cache = self.settings:get("cache")
-    local stage_text
-    if cache.download_book_images then
-        stage_text = T(_("Downloading images · chapter %1/%2"), tostring(dl.index), tostring(dl.total))
-    else
-        stage_text = T(_("Processing chapter %1/%2"), tostring(dl.index), tostring(dl.total))
-    end
-    self:_setStage(dl,
-        stage_text, dl.index - 0.1)
-    local started = time.now()
-    local ok, xhtml, chapter_assets = pcall(function()
-        return Content.finalize_single_chapter_content(
-            self.client, self.settings, dl.book, chapter, dl.current.xhtml, dl.state
-        )
-    end)
-    self:_perf(dl, "images_and_finalize", started, "ok=", tostring(ok))
-    if not ok then
-        self:_failChapter(dl, xhtml)
-        return
-    end
     local uid = tostring(chapter.chapterUid or dl.index)
     dl.bodies[uid] = xhtml
     dl.assets_by_uid = dl.assets_by_uid or {}
@@ -671,6 +723,138 @@ function Downloader:_finishChapter(dl)
         dl.progress_dialog:reportProgress(dl.index - 1)
     end
     self:_scheduleGuarded(dl, function() self:_step(dl) end)
+end
+
+function Downloader:_startImagePool(dl)
+    local chapter = dl.current.chapter
+    local tasks = {}
+    local tar_request = Content.chapter_asset_request(dl.book, chapter)
+    if tar_request then
+        tasks[#tasks + 1] = {
+            kind = "tar",
+            url = tar_request.url,
+            referer = tar_request.referer,
+            required = true,
+        }
+    end
+    local cached_remote = dl.state.used_asset_names
+        and dl.state.used_asset_names.__remote_image_hrefs or {}
+    for _, url in ipairs(Content.collect_remote_image_urls(dl.current.xhtml)) do
+        if not cached_remote[url] then
+            tasks[#tasks + 1] = {
+                kind = "remote",
+                url = url,
+                referer = "https://weread.qq.com/",
+            }
+        end
+    end
+    if #tasks <= 1 then return false end
+
+    local results = { remote = {} }
+    local fatal_error
+    dl.image_pool = Parallel.start{
+        tasks = tasks,
+        concurrency = dl.parallel.images,
+        base_dir = dl.parallel_base_dir,
+        prefix = "images",
+        is_cancelled = function() return dl.cancelled end,
+        worker = function(task, dir)
+            local data = self.client:without_cookie_persistence(function()
+                return self.client:get_binary(task.url, { referer = task.referer })
+            end)
+            Parallel.write_file(dir .. "/data.bin", data)
+        end,
+        load_result = function(_task, dir, ok, err)
+            if not ok then return nil, err end
+            local data = Parallel.read_file(dir .. "/data.bin")
+            if not data then return nil, "image worker returned no data" end
+            return data
+        end,
+        on_result = function(task, data, err, current, total_tasks)
+            if data and #data > 0 then
+                if task.kind == "tar" then
+                    results.tar = data
+                else
+                    results.remote[task.url] = data
+                end
+            elseif task.required then
+                fatal_error = err or "chapter image package download failed"
+            end
+            self:_setStage(dl,
+                T(_("Downloading images in parallel %1/%2 · chapter %3/%4"),
+                    tostring(current), tostring(total_tasks),
+                    tostring(dl.index), tostring(dl.total)),
+                dl.index - 0.1 + 0.1 * current / math.max(1, total_tasks))
+        end,
+        on_complete = function()
+            dl.image_pool = nil
+            self:_scheduleGuarded(dl, function()
+                if dl.cancelled then
+                    self:_step(dl)
+                    return
+                end
+                if fatal_error then
+                    self:_failChapter(dl, fatal_error)
+                    return
+                end
+                local started = time.now()
+                local ok, xhtml, chapter_assets = pcall(function()
+                    dl.state.used_asset_names = dl.state.used_asset_names or {}
+                    local assets, src_map = {}, {}
+                    if results.tar then
+                        assets, src_map = Content.extract_chapter_assets(
+                            results.tar, dl.state.used_asset_names)
+                    end
+                    local rewritten = Content.rewrite_image_sources(
+                        dl.current.xhtml, src_map)
+                    local final_xhtml, remote_assets =
+                        Content.apply_remote_image_results(rewritten,
+                            dl.state.used_asset_names, results.remote)
+                    for _, asset in ipairs(remote_assets) do
+                        assets[#assets + 1] = asset
+                    end
+                    return final_xhtml, assets
+                end)
+                self:_perf(dl, "images_parallel_finalize", started,
+                    "ok=", tostring(ok), "workers=", tostring(dl.parallel.images))
+                if not ok then
+                    self:_failChapter(dl, xhtml)
+                    return
+                end
+                self:_commitChapter(dl, xhtml, chapter_assets)
+            end, 0.01)
+        end,
+    }
+    return true
+end
+
+function Downloader:_finishChapter(dl)
+    if dl.cancelled or not dl.current then return end
+    local chapter = dl.current.chapter
+    local cache = self.settings:get("cache")
+    local stage_text
+    if cache.download_book_images then
+        stage_text = T(_("Downloading images · chapter %1/%2"), tostring(dl.index), tostring(dl.total))
+    else
+        stage_text = T(_("Processing chapter %1/%2"), tostring(dl.index), tostring(dl.total))
+    end
+    self:_setStage(dl, stage_text, dl.index - 0.1)
+    if cache.download_book_images and (dl.parallel and dl.parallel.images or 1) > 1
+        and self:_startImagePool(dl) then
+        return
+    end
+    local started = time.now()
+    local ok, xhtml, chapter_assets = pcall(function()
+        return Content.finalize_single_chapter_content(
+            self.client, self.settings, dl.book, chapter, dl.current.xhtml, dl.state
+        )
+    end)
+    self:_perf(dl, "images_and_finalize", started, "ok=", tostring(ok))
+    if not ok then
+        self:_failChapter(dl, xhtml)
+        return
+    end
+    self:_commitChapter(dl, xhtml, chapter_assets)
 end
 
 function Downloader:_applyAnnotations(dl)
@@ -767,6 +951,87 @@ function Downloader:_annotationBatch(dl)
     self:_scheduleGuarded(dl, function() self:_annotationBatch(dl) end, 0.3)
 end
 
+function Downloader:_startAnnotationPool(dl)
+    local annotation = dl.annotation
+    local tasks = {}
+    for index, batch in ipairs(annotation.batches) do
+        tasks[index] = { index = index, batch = batch }
+    end
+    annotation.batch_results = {}
+    annotation.pool = Parallel.start{
+        tasks = tasks,
+        concurrency = dl.parallel.comments,
+        base_dir = dl.parallel_base_dir,
+        prefix = "comments",
+        is_cancelled = function() return dl.cancelled end,
+        worker = function(task, dir)
+            local socket_ok, socket = pcall(require, "socket")
+            local last_error
+            for attempt = 0, 2 do
+                local ok, result, err = self.client:without_cookie_persistence(function()
+                    return self.client:get_chapter_reviews_batch(
+                        dl.book.book_id or dl.book.bookId,
+                        dl.current.chapter.chapterUid,
+                        task.batch
+                    )
+                end)
+                if ok and result and type(result.reviews) == "table" then
+                    Parallel.write_file(dir .. "/reviews.json",
+                        self.client:json_encode(result.reviews))
+                    return
+                end
+                last_error = err or "comment request failed"
+                if attempt < 2 and socket_ok and socket.sleep then
+                    socket.sleep(0.6 * (attempt + 1))
+                end
+            end
+            error(last_error)
+        end,
+        load_result = function(_task, dir, ok, err)
+            if not ok then return nil, err end
+            local encoded = Parallel.read_file(dir .. "/reviews.json")
+            if not encoded then return nil, "comment worker returned no data" end
+            local decoded_ok, reviews = pcall(self.client.json_decode,
+                self.client, encoded)
+            if not decoded_ok or type(reviews) ~= "table" then
+                return nil, decoded_ok and "invalid comment data" or reviews
+            end
+            return reviews
+        end,
+        on_result = function(task, reviews, err, current, total_tasks)
+            annotation.batch_results[task.index] = reviews or false
+            if not reviews then
+                dl.annotation_failed_batches = dl.annotation_failed_batches + 1
+                logger.warn("thought batch skipped:",
+                    "batch=", tostring(task.index) .. "/" .. tostring(total_tasks),
+                    "error=", log_error(err or "unknown"))
+            end
+            local fractional = dl.index - 0.85
+                + 0.7 * current / math.max(1, total_tasks)
+            self:_setStage(dl,
+                T(_("Downloading thoughts in parallel %1/%2 · chapter %3/%4"),
+                    tostring(current), tostring(total_tasks),
+                    tostring(dl.index), tostring(dl.total)),
+                fractional)
+        end,
+        on_complete = function()
+            annotation.pool = nil
+            self:_scheduleGuarded(dl, function()
+                if dl.cancelled then
+                    self:_step(dl)
+                    return
+                end
+                for index = 1, #annotation.batches do
+                    for _, review in ipairs(annotation.batch_results[index] or {}) do
+                        annotation.reviews[#annotation.reviews + 1] = review
+                    end
+                end
+                self:_applyAnnotations(dl)
+            end, 0.01)
+        end,
+    }
+end
+
 function Downloader:_startAnnotations(dl)
     local chapter = dl.current.chapter
     local book_id = dl.book.book_id or dl.book.bookId
@@ -793,12 +1058,16 @@ function Downloader:_startAnnotations(dl)
     }
     if #dl.annotation.batches == 0 then
         self:_applyAnnotations(dl)
+    elseif (dl.parallel and dl.parallel.comments or 1) > 1
+        and #dl.annotation.batches > 1 then
+        self:_startAnnotationPool(dl)
     else
         self:_scheduleGuarded(dl, function() self:_annotationBatch(dl) end, 0.1)
     end
 end
 
 function Downloader:_step(dl)
+    dl.parallel = dl.parallel or { chapters = 1, comments = 1, images = 1 }
     if dl.cancelled then
         self:_releaseStandby(dl)
         self:_cleanupWorkspace(dl)
@@ -809,6 +1078,13 @@ function Downloader:_step(dl)
         end
         return
     end
+
+    if dl.total > 1 and dl.parallel.chapters > 1
+        and not dl.source_pool_started then
+        self:_startChapterSourcePool(dl)
+        return
+    end
+    if dl.source_pool_started and not dl.source_pool_done then return end
 
     if dl.index > dl.total then
         if #dl.selected == 0 then
@@ -1020,15 +1296,51 @@ function Downloader:_step(dl)
             chapter.title or tostring(chapter.chapterUid)),
         dl.index - 1)
     local started = time.now()
-    local ok, xhtml = pcall(function()
-        return Content.fetch_single_chapter_source(
-            self.client, self.settings, dl.book, chapter, dl.state
-        )
-    end)
+    local source = dl.chapter_sources and dl.chapter_sources[dl.index]
+    local ok, xhtml
+    if source and not source.error then
+        local complete, actual, expected = Content.validate_chapter_source(
+            chapter, source.xhtml)
+        if not complete then
+            logger.warn("parallel chapter source incomplete; retrying serially:",
+                "chapter_uid=", tostring(chapter.chapterUid or dl.index),
+                "actual_chars=", tostring(actual),
+                "expected_words=", tostring(expected))
+            source = nil
+        end
+    end
+    if source then
+        ok = source.error == nil and source.xhtml ~= nil
+        xhtml = ok and source.xhtml or source.error
+        dl.chapter_sources[dl.index] = nil
+    else
+        ok, xhtml = pcall(function()
+            return Content.fetch_single_chapter_source(
+                self.client, self.settings, dl.book, chapter, dl.state
+            )
+        end)
+    end
     self:_perf(dl, "chapter_source", started, "ok=", tostring(ok))
+    if ok then
+        local complete, actual, expected = Content.validate_chapter_source(
+            chapter, xhtml)
+        if not complete then
+            ok = false
+            xhtml = string.format(
+                "incomplete chapter content (actual_chars=%d, expected_words=%d)",
+                actual, expected)
+        end
+    end
     if not ok then
         self:_failChapter(dl, xhtml)
         return
+    end
+    if dl.source_pool_done and not dl.state.css then
+        pcall(function()
+            Content.refresh_reader_state(self.client, dl.book, chapter)
+            dl.state.css = Content.fetch_chapter_css(
+                self.client, self.settings, dl.book, chapter)
+        end)
     end
     local uid = tostring(chapter.chapterUid or dl.index)
     local scan_ok, scan = pcall(Footnotes.scan_chapter, xhtml, chapter)

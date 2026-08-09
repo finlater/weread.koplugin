@@ -38,6 +38,32 @@ end
 package.preload["weread.lib.protocol"] = function()
     return { is_mp_book = function() return false end }
 end
+package.preload["weread.lib.parallel"] = function()
+    return {
+        MAX_CONCURRENCY = 8,
+        config = function(settings)
+            local value = settings:get("cache")
+            if value.concurrency_auto == false then
+                return {
+                    automatic = false,
+                    supported = true,
+                    memory_mb = 1024,
+                    chapters = value.chapter_concurrency,
+                    comments = value.comment_concurrency,
+                    images = value.image_concurrency,
+                }
+            end
+            return {
+                automatic = true,
+                supported = true,
+                memory_mb = 1024,
+                chapters = 2,
+                comments = 3,
+                images = 3,
+            }
+        end,
+    }
+end
 package.preload["weread.lib.plugin_util"] = function()
     return {
         tr = function(text) return text end,
@@ -60,6 +86,10 @@ local cache = {
     auto_prefetch_next_chapter = false,
     download_underlines_and_thoughts = false,
     show_prefetch_notifications = true,
+    concurrency_auto = true,
+    chapter_concurrency = 2,
+    comment_concurrency = 2,
+    image_concurrency = 2,
 }
 local available_version
 local host = {
@@ -173,11 +203,27 @@ expect(cache_items[1] and cache_items[1].keep_menu_open == true
         and cache_items[2] and cache_items[2].keep_menu_open == true,
     "cache dialogs keep the settings menu open")
 local download_items = download_settings and download_settings.sub_item_table_func()
-local prefetch
+local prefetch, concurrency
 for _, item in ipairs(download_items or {}) do
     if item.text == "Chapter prefetch" then prefetch = item end
+    if item.text_func and item.text_func():find("Concurrent requests", 1, true) then
+        concurrency = item
+    end
 end
 expect(prefetch ~= nil, "download settings contain a prefetch submenu")
+expect(concurrency ~= nil, "download settings contain a concurrency submenu")
+
+local concurrency_items = concurrency and concurrency.sub_item_table_func() or {}
+expect(#concurrency_items == 5,
+    "concurrency submenu contains auto, memory, and three manual settings")
+expect(concurrency_items[1].checked_func()
+        and not concurrency_items[3].enabled_func()
+        and concurrency_items[2].text_func():find("Detected memory", 1, true),
+    "automatic concurrency state or memory information was wrong")
+concurrency_items[1].callback({ updateItems = function() end })
+expect(cache.concurrency_auto == false
+        and concurrency_items[3].enabled_func(),
+    "automatic concurrency could not switch to manual mode")
 
 local prefetch_items = prefetch and prefetch.sub_item_table_func() or {}
 expect(#prefetch_items == 3, "prefetch submenu contains exactly three settings")

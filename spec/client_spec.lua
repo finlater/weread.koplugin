@@ -106,9 +106,32 @@ expect(reset_count == 1, "timeout was not reset after successful request")
 expect(merged_cookies[1] == "wr_ticket=new-ticket; Path=/",
     "response cookies were not persisted")
 
+responses[#responses + 1] = {
+    body = "isolated",
+    code = 200,
+    headers = { ["Set-Cookie"] = "wr_ticket=child-ticket; Path=/" },
+}
+responses[#responses + 1] = { body = "isolated-next", code = 200 }
+local isolated_body, isolated_code = client:without_cookie_persistence(function()
+    client:request({ url = "https://weread.qq.com/web/isolated" })
+    return client:request({ url = "https://weread.qq.com/web/isolated-next" })
+end)
+expect(isolated_body == "isolated-next" and isolated_code == 200,
+    "cookie-isolated request lost return values")
+expect(#merged_cookies == 1 and client.persist_response_cookies == nil,
+    "cookie-isolated request persisted cookies or leaked state")
+expect(requests[3].headers.Cookie:find("wr_ticket=child-ticket", 1, true),
+    "cookie-isolated requests did not keep a transient response cookie")
+local isolated_ok, isolated_err = pcall(function()
+    client:without_cookie_persistence(function() error("isolated failure") end)
+end)
+expect(not isolated_ok and tostring(isolated_err):find("isolated failure", 1, true)
+        and client.persist_response_cookies == nil,
+    "cookie isolation was not restored after an error")
+
 responses[#responses + 1] = { body = "public", code = 200 }
 client:request({ url = "https://example.com/public" })
-expect(requests[2].headers.Cookie == nil,
+expect(requests[4].headers.Cookie == nil,
     "WeRead cookie leaked to a non-WeRead host")
 
 responses[#responses + 1] = { raise = "transport failed" }
@@ -117,7 +140,7 @@ local ok, err = pcall(function()
 end)
 expect(not ok and tostring(err):find("transport failed", 1, true),
     "transport error was not propagated")
-expect(reset_count == 3, "timeout was not reset after transport error")
+expect(reset_count == 5, "timeout was not reset after transport error")
 
 responses[#responses + 1] = {
     body = "",
