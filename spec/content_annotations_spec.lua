@@ -55,8 +55,12 @@ expect(trailing_whitespace:find('<span class="wr%-star">%*</span>', 1) ~= nil,
     "thought star survives when range ends with whitespace")
 local star_pos = trailing_whitespace:find('<span class="wr%-star">%*</span>', 1)
 local p_close_pos = trailing_whitespace:find("</p>", 1, true)
-expect(star_pos ~= nil and p_close_pos ~= nil and star_pos > p_close_pos,
-    "thought star is appended after trailing whitespace")
+expect(star_pos ~= nil and p_close_pos ~= nil and star_pos < p_close_pos,
+    "thought star stays inside the paragraph before trailing whitespace")
+expect(trailing_whitespace:find(
+        '<span class="wr%-underline">abc<span class="wr%-star">%*</span></span>',
+        1) ~= nil,
+    "thought star stays inside the final underline span")
 
 local unchanged = Annotations.injectUnderlines("<p>safe</p>", {
     { range = "bad" },

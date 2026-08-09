@@ -371,11 +371,18 @@ function Annotations.injectUnderlines(html, underlines, thought_reviews, chapter
             local underline_close = '</span>'
             local underline_close_with_ref = '<span class="wr-star">*</span></span>'
 
+            -- A range may end in whitespace or closing block tags, which
+            -- wrapTextSegments leaves outside the final underline span. Find
+            -- the last actual text span instead of assuming it is the final
+            -- wrapped item, so the marker remains attached to the underlined
+            -- text rather than being emitted after </p> on a new line.
             local star_appended = false
-            local last_idx = #wrapped
-            if wrapped[last_idx] == underline_close then
-                wrapped[last_idx] = underline_close_with_ref
-                star_appended = true
+            for index = #wrapped, 1, -1 do
+                if wrapped[index] == underline_close then
+                    wrapped[index] = underline_close_with_ref
+                    star_appended = true
+                    break
+                end
             end
 
             -- 内部锚点（非 noteref）：去掉 epub:type="noteref" 避免 crengine 走专用
@@ -405,8 +412,8 @@ function Annotations.injectUnderlines(html, underlines, thought_reviews, chapter
                 end
             end
             if not star_appended then
-                -- 末尾是纯空白段（wrapTextSegments 不包裹空白）：
-                -- 星标追加在 range 末尾（下划线 span 外），保证想法标记不丢失
+                -- A whitespace-only range has no underline span to attach to;
+                -- keep a standalone marker as the defensive fallback.
                 with_links[#with_links + 1] = first_link and open_a_with_id or open_a
                 with_links[#with_links + 1] = '<span class="wr-star">*</span>'
                 with_links[#with_links + 1] = '</a>'
