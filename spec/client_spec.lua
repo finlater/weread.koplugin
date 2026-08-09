@@ -349,7 +349,7 @@ expect(saved_body == "streamed-asset" and saved_bytes == #saved_body,
 os.remove(download_path)
 
 responses[#responses + 1] = { body = "too-large", code = 200 }
-ok, err = pcall(function()
+ok = pcall(function()
     client:download_to_file(
         "https://weread.qq.com/large", download_path, { max_bytes = 2 })
 end)
