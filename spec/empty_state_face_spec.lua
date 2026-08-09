@@ -98,6 +98,14 @@ package.preload["ui/widget/textwidget"] = function()
     end
     return TextWidget
 end
+package.preload["ui/widget/focusmanager"] = function()
+    local FocusManager = widget_module()
+    FocusManager.FOCUS_ONLY_ON_NT = 0
+    FocusManager.NOT_UNFOCUS = 1
+    function FocusManager:moveFocusTo() return true end
+    function FocusManager.onFocusMove() return true end
+    return FocusManager
+end
 
 for _, name in ipairs({
     "ui/gesturerange",

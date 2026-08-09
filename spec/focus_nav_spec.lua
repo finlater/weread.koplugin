@@ -177,6 +177,26 @@ expect(end_view.onNextPage(end_view) == true,
 expect(end_view.selected.y == 6,
     "paging past the end stops at the last row")
 
+-- Paging from a multi-column toolbar into single-column content keeps the
+-- closest valid column instead of asking FocusManager for a missing widget.
+focus_flags = {}
+local multi_view, multi_w1, multi_w2 = make_view()
+multi_w1.dimen = { y = 0, h = 100 }
+multi_w2.dimen = { y = 0, h = 100 }
+local list_w1 = { name = "list1", dimen = { y = 150, h = 30 } }
+local list_w2 = { name = "list2", dimen = { y = 180, h = 30 } }
+multi_view.layout = { { multi_w1, multi_w2 }, { list_w1 }, { list_w2 } }
+multi_view.selected.x = 2
+multi_view.selected.y = 1
+FocusNav.apply(multi_view, multi_view.layout, { scroll = make_scroll() })
+expect(multi_view.onNextPage(multi_view) == true,
+    "multi-column onNextPage reports handled")
+expect(multi_view.selected.x == 1 and multi_view.selected.y == 3,
+    "paging into a narrower row selects its closest valid column")
+expect(#focus_flags == 1 and focus_flags[1].x == 1
+    and focus_flags[1].y == 3,
+    "paging never asks FocusManager to focus a missing column")
+
 -- Short lists without row heights fall back to single-row moves
 focus_moves = {}
 local short_view, s1, s2 = make_view()

@@ -62,7 +62,9 @@ function M.pageFocus(view, direction)
     -- instead of jumping back to the top of the list.
     local target_y = math.max(1, math.min(view.selected.y + direction * step, #view.layout))
     if target_y ~= view.selected.y then
-        view:moveFocusTo(view.selected.x, target_y, FocusManager.FORCED_FOCUS)
+        local target_row = view.layout[target_y]
+        local target_x = math.min(view.selected.x, #target_row)
+        view:moveFocusTo(target_x, target_y, FocusManager.FORCED_FOCUS)
     end
     M.scrollFocusedToTop(view)
     return true
