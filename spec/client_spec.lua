@@ -331,4 +331,29 @@ ok_review, _, err_review = review_client:get_review_comments("r3")
 expect(not ok_review and err_review == "empty response",
     "review comments did not reject an empty body")
 
+local download_path = os.tmpname()
+os.remove(download_path)
+responses[#responses + 1] = {
+    body = "redirect-body-must-be-discarded",
+    code = 302,
+    headers = { location = "https://cdn.example.net/asset" },
+}
+responses[#responses + 1] = { body = "streamed-asset", code = 200 }
+local saved_path, saved_bytes = client:download_to_file(
+    "https://weread.qq.com/resource", download_path, { max_bytes = 1024 })
+local saved_file = assert(io.open(saved_path, "rb"))
+local saved_body = saved_file:read("*a")
+saved_file:close()
+expect(saved_body == "streamed-asset" and saved_bytes == #saved_body,
+    "file download retained a redirect body or returned the wrong size")
+os.remove(download_path)
+
+responses[#responses + 1] = { body = "too-large", code = 200 }
+ok, err = pcall(function()
+    client:download_to_file(
+        "https://weread.qq.com/large", download_path, { max_bytes = 2 })
+end)
+expect(not ok and io.open(download_path .. ".part", "rb") == nil,
+    "oversized file download did not remove its partial output")
+
 print(("client_spec: %d checks"):format(checks))

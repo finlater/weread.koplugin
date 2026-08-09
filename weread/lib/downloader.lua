@@ -66,6 +66,15 @@ local function allowOsStandby()
     end
 end
 
+local function recoverOsStandby()
+    -- Only Kindle keeps this guard in an external powerd process. Kobo and
+    -- Cervantes use an in-process shared flag which may currently be owned by
+    -- another component and must not be reset during plugin initialization.
+    if Device:isKindle() then
+        os.execute("lipc-set-prop com.lab126.powerd preventScreenSaver 0")
+    end
+end
+
 local Downloader = {}
 Downloader.__index = Downloader
 
@@ -80,6 +89,30 @@ function Downloader:new(o)
     o = o or {}
     setmetatable(o, self)
     return o
+end
+
+function Downloader:recover()
+    -- A SIGKILL/OOM cannot run the normal finally path. A fresh plugin process
+    -- owns no active download, so it is safe to clear the persistent Kindle
+    -- powerd flag and remove disk artifacts left by the previous process.
+    recoverOsStandby()
+    local ok, removed = pcall(Content.cleanup_stale_downloads, self.settings)
+    if not ok then
+        logger.warn("stale download recovery failed:", log_error(removed))
+        return false
+    end
+    if tonumber(removed) and removed > 0 then
+        logger.info("stale download artifacts removed:", tostring(removed))
+    end
+    return true
+end
+
+function Downloader:_cleanupWorkspace(dl)
+    if not dl or not dl.workspace then return end
+    local workspace = dl.workspace
+    dl.workspace = nil
+    if dl.state then dl.state.workspace = nil end
+    Content.cleanup_download_workspace(workspace)
 end
 
 -- Keep the device awake during long book downloads (reference counted so
@@ -262,6 +295,7 @@ function Downloader:_scheduleGuarded(dl, step_fn, delay)
         local ok, err = xpcall(step_fn, debug.traceback)
         if not ok and dl.standby_guard then
             self:_releaseStandby(dl)
+            self:_cleanupWorkspace(dl)
             if dl.progress_dialog then
                 dl.progress_dialog:close()
                 dl.progress_dialog = nil
@@ -403,9 +437,17 @@ function Downloader:start(book, chapters, suffix, options)
         end
         local ok_init, err_init = pcall(function()
             Content.ensure_reader_state(self.client, book)
+            local cache = self.settings.get
+                and self.settings:get("cache", {}) or {}
+            if cache.download_book_images and Content.create_download_workspace then
+                dl.workspace = Content.create_download_workspace(
+                    self.settings, book)
+                dl.state.workspace = dl.workspace
+            end
         end)
         if not ok_init then
             logger.err("initialize book download failed:", log_error(err_init))
+            self:_cleanupWorkspace(dl)
             if dl.progress_dialog then
                 dl.progress_dialog:close()
                 dl.progress_dialog = nil
@@ -496,6 +538,7 @@ end
 function Downloader:_footnoteStep(dl)
     if dl.cancelled then
         self:_releaseStandby(dl)
+        self:_cleanupWorkspace(dl)
         self:_notifyCompletion(dl, false, dl.cancel_reason or "cancelled")
         self:_finishJob(dl)
         if not dl.prefetch then
@@ -614,7 +657,13 @@ function Downloader:_finishChapter(dl)
     table.insert(dl.selected, chapter)
     for _i, asset in ipairs(chapter_assets or {}) do
         table.insert(dl.assets, asset)
+        dl.asset_bytes = (dl.asset_bytes or 0) + (tonumber(asset.size) or 0)
     end
+    logger.info("download assets staged:",
+        "chapter=", tostring(dl.index) .. "/" .. tostring(dl.total),
+        "chapter_assets=", tostring(#(chapter_assets or {})),
+        "total_asset_bytes=", tostring(dl.asset_bytes or 0),
+        "lua_kb=", string.format("%.1f", collectgarbage("count")))
     dl.current = nil
     dl.annotation = nil
     dl.index = dl.index + 1
@@ -657,6 +706,7 @@ end
 function Downloader:_annotationBatch(dl)
     if dl.cancelled then
         self:_releaseStandby(dl)
+        self:_cleanupWorkspace(dl)
         self:_notifyCompletion(dl, false, dl.cancel_reason or "cancelled")
         self:_finishJob(dl)
         if not dl.prefetch then
@@ -751,6 +801,7 @@ end
 function Downloader:_step(dl)
     if dl.cancelled then
         self:_releaseStandby(dl)
+        self:_cleanupWorkspace(dl)
         self:_notifyCompletion(dl, false, dl.cancel_reason or "cancelled")
         self:_finishJob(dl)
         if not dl.prefetch then
@@ -766,6 +817,7 @@ function Downloader:_step(dl)
                 dl.progress_dialog = nil
             end
             self:_releaseStandby(dl)
+            self:_cleanupWorkspace(dl)
             logger.err("book download failed: no chapters downloaded")
             self:_notifyCompletion(dl, false, "no_chapters_downloaded")
             self:_finishJob(dl)
@@ -812,6 +864,7 @@ function Downloader:_step(dl)
                 dl.suffix, dl.assets, dl.state.css, cover_data
             )
         end)
+        self:_cleanupWorkspace(dl)
         self:_perf(dl, "save_epub", save_started, "ok=", tostring(ok),
             "single=", tostring(dl.single_chapter))
         if dl.progress_dialog then

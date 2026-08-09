@@ -321,6 +321,8 @@ end
 
 function Client:request_follow(opts, max_redirects)
     local request_opts = deepcopy(opts or {})
+    local on_redirect = request_opts.on_redirect
+    request_opts.on_redirect = nil
     max_redirects = max_redirects or request_opts.maxredirects or 5
     request_opts.maxredirects = nil
     local url = request_opts.url
@@ -337,6 +339,9 @@ function Client:request_follow(opts, max_redirects)
         local next_url = absolute_url(url, header_value(headers, "location"))
         if not next_url then
             return text, code, headers, status, url
+        end
+        if on_redirect then
+            on_redirect(url, next_url, code)
         end
         if url_origin(url) ~= url_origin(next_url) then
             clear_cross_origin_headers(request_opts.headers)
@@ -357,6 +362,78 @@ function Client:request_follow(opts, max_redirects)
         url = next_url
     end
     error("Too many redirects")
+end
+
+-- Download a response directly to disk. The sink deliberately stays open when
+-- LuaSocket signals end-of-response because request_follow may need to reuse it
+-- after a redirect. On every redirect the partial response body is discarded.
+function Client:download_to_file(url, path, opts)
+    opts = opts or {}
+    local part_path = path .. ".part"
+    pcall(os.remove, part_path)
+    local handle, open_err = io.open(part_path, "wb")
+    if not handle then error(open_err or "could not create download file") end
+
+    local bytes = 0
+    local max_bytes = tonumber(opts.max_bytes)
+    local function reopen()
+        if handle then handle:close() end
+        handle, open_err = io.open(part_path, "wb")
+        if not handle then error(open_err or "could not reset download file") end
+        bytes = 0
+    end
+    local function sink(chunk)
+        if not chunk then return 1 end
+        if max_bytes and bytes + #chunk > max_bytes then
+            return nil, "download exceeds size limit"
+        end
+        local ok, err = handle:write(chunk)
+        if not ok then return nil, err end
+        bytes = bytes + #chunk
+        return 1
+    end
+
+    local request_opts = merge_req_opts(opts, {
+        url = url,
+        method = "GET",
+        maxredirects = 5,
+        sink = sink,
+        on_redirect = function()
+            reopen()
+        end,
+        headers = {
+            ["Accept"] = header_value(opts.headers, "Accept") or opts.accept or "*/*",
+            ["Referer"] = header_value(opts.headers, "Referer") or opts.referer or "https://weread.qq.com/",
+        },
+    })
+    request_opts.max_bytes = nil
+    request_opts.accept = nil
+    request_opts.referer = nil
+
+    local ok, text, code, resp_headers = pcall(function()
+        return self:request_follow(request_opts)
+    end)
+    if handle then handle:close() end
+    handle = nil
+    if not ok then
+        pcall(os.remove, part_path)
+        error(text, 0)
+    end
+    if not code or code < 200 or code >= 300 then
+        pcall(os.remove, part_path)
+        error(http_error(self, code, text, resp_headers))
+    end
+    if bytes == 0 then
+        pcall(os.remove, part_path)
+        error("download returned an empty body")
+    end
+    pcall(os.remove, path)
+    local renamed, rename_err = os.rename(part_path, path)
+    if not renamed then
+        pcall(os.remove, part_path)
+        error(rename_err or "could not commit downloaded file")
+    end
+    return path, bytes, resp_headers
 end
 
 function Client:post_json(url, data, opts)
@@ -794,4 +871,3 @@ function Client:get_review_comments(review_id, count, opts)
     return true, parsed, nil
 end
 return Client
-
