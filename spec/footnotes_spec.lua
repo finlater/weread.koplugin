@@ -18,17 +18,16 @@ end
 local Footnotes = require("weread.lib.footnotes")
 
 expect(Footnotes.FOOTNOTES_CSS:find(
-    "aside.wr%-book%-footnote{%-cr%-hint:footnote;display:block") ~= nil,
-    "generated footnotes must stay out of KOReader's normal text flow")
-expect(not Footnotes.FOOTNOTES_CSS:find(
-    "aside.wr%-book%-footnote{[^}]-display:none"),
-    "display:none would make KOReader merge adjacent popup footnotes")
+    "aside.wr%-book%-footnote{%-cr%-hint:footnote%-inpage") ~= nil,
+    "generated footnotes must use KOReader's default in-page flow")
+expect(not Footnotes.FOOTNOTES_CSS:find("visibility:hidden", 1, true),
+    "generated in-page footnotes must remain visible to CREngine")
 expect(Footnotes.FOOTNOTES_CSS:find(
     "wr%-fn%-ref a{%-cr%-hint:noteref") ~= nil,
     "generated references must be explicit KOReader noterefs")
 expect(Footnotes.FOOTNOTES_CSS:find(
     "div.wr%-footnotes>hr{display:none") ~= nil,
-    "the hidden footnote container must not leave a visible separator")
+    "the generated footnote container must not leave a visible separator")
 
 local source = [[
 <p>正文<a epub:type="noteref" href="#note-1"><sup>[1]</sup></a></p>

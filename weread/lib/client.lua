@@ -752,4 +752,46 @@ function Client:get_chapter_reviews(book_id, chapter_uid, ranges)
     return true, { reviews = all_reviews }
 end
 
+function Client:get_review_comments(review_id, count, opts)
+    opts = opts or {}
+    if type(review_id) ~= "string" or review_id == "" then
+        return false, nil, "empty review_id"
+    end
+
+    local comments_count = count or 20
+    local url = "https://weread.qq.com/web/review/single"
+        .. "?reviewId=" .. WeRead.urlencode(review_id)
+        .. "&commentsCount=" .. tostring(comments_count)
+        .. "&commentsDirection=" .. tostring(opts.comments_direction or 0)
+        .. "&likesCount=" .. tostring(opts.likes_count or 0)
+        .. "&synckey=" .. tostring(opts.synckey or 0)
+
+    local ok, text, code, headers = pcall(function()
+        return self:get_text(url, {
+            accept = "application/json, text/plain, */*",
+            referer = opts.referer or "https://weread.qq.com/",
+            timeout = opts.timeout,
+        })
+    end)
+    if not ok then
+        return false, nil, tostring(text)
+    end
+    if not text or text == "" then
+        return false, nil, "empty response"
+    end
+
+    local decode_ok, parsed = pcall(function()
+        return self:decode_http_json(text, {
+            method = "GET",
+            url = url,
+            code = code,
+            headers = headers,
+        })
+    end)
+    if not decode_ok or type(parsed) ~= "table" then
+        return false, text, "invalid JSON"
+    end
+    return true, parsed, nil
+end
 return Client
+

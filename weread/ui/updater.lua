@@ -128,9 +128,9 @@ function UpdaterUI:_show_release(release)
     local notes = release.notes or _("No release notes were provided.")
     local viewer
     viewer = TextViewer:new{
-        title = T(_("Update available · v%1"), release.version),
-        text = T(_("Current version: v%1\n\n%2"),
-            self.updater.current_version, notes),
+        title = T(_("v%1 -> v%2"),
+            self.updater.current_version, release.version),
+        text = notes,
         text_type = "general",
         auto_para_direction = true,
         buttons_table = {

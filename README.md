@@ -129,12 +129,6 @@ koreader/plugins/weread.koplugin/
 │       └── 更新时优先使用代理（默认开启；代理失败会自动回退 GitHub）
 ```
 
-## TODO
-
-- [ ] 书签/笔记展示
-- [ ] 更丰富的书籍详情（热门划线等）
-- [ ] 阅读时间上报手动选择目标书籍时支持搜索
-
 ## 贡献
 
 欢迎提交 issue 和 PR。提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
