@@ -22,11 +22,14 @@ function M:getReadReportMenuItems()
             checked_func = function()
                 return self.settings:get("read_report").enabled
             end,
-            callback = self:safeCallback(_("Enable reading time report"), function()
+            callback = self:safeCallback(_("Enable reading time report"), function(touchmenu_instance)
                 local cur = self.settings:get("read_report")
                 cur.enabled = not cur.enabled
                 self.settings:set("read_report", cur)
                 self.settings:flush()
+                if touchmenu_instance then
+                    touchmenu_instance:updateItems()
+                end
                 if cur.enabled then
                     if cur.mode == "auto" then
                         self:maybeStartReadReport()
@@ -48,11 +51,14 @@ function M:getReadReportMenuItems()
             checked_func = function()
                 return self.settings:get("read_report").report_on_open ~= false
             end,
-            callback = self:safeCallback(_("Only report when reading"), function()
+            callback = self:safeCallback(_("Only report when reading"), function(touchmenu_instance)
                 local cur = self.settings:get("read_report")
                 cur.report_on_open = cur.report_on_open == false
                 self.settings:set("read_report", cur)
                 self.settings:flush()
+                if touchmenu_instance then
+                    touchmenu_instance:updateItems()
+                end
                 self:stopReadReport("trigger_mode_changed")
                 if cur.enabled then
                     self:maybeStartReadReport()
@@ -111,13 +117,16 @@ function M:getReportTargetMenuItems()
             checked_func = function()
                 return self.settings:get("read_report").mode == "auto"
             end,
-            callback = self:safeCallback(_("Auto-associate with WeRead book"), function()
+            callback = self:safeCallback(_("Auto-associate with WeRead book"), function(touchmenu_instance)
                 local cur = self.settings:get("read_report")
                 cur.mode = "auto"
                 cur.book_id = ""
                 cur.book_title = ""
                 self.settings:set("read_report", cur)
                 self.settings:flush()
+                if touchmenu_instance then
+                    touchmenu_instance:updateItems()
+                end
                 self:stopReadReport("target_changed")
                 if cur.enabled then
                     self:maybeStartReadReport()
@@ -132,11 +141,14 @@ function M:getReportTargetMenuItems()
                 return self.settings:get("read_report").mode == "manual"
             end,
             post_text = rr.mode == "manual" and rr.book_title ~= "" and rr.book_title or "",
-            callback = self:safeCallback(_("Manually set report book"), function()
+            callback = self:safeCallback(_("Manually set report book"), function(touchmenu_instance)
                 local cur = self.settings:get("read_report")
                 cur.mode = "manual"
                 self.settings:set("read_report", cur)
                 self.settings:flush()
+                if touchmenu_instance then
+                    touchmenu_instance:updateItems()
+                end
                 self:stopReadReport("target_changed")
                 self:showReadReportBookPicker()
             end),
