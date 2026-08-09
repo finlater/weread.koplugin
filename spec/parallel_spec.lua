@@ -7,6 +7,7 @@ local function expect(condition, message)
 end
 
 local subprocess_supported = true
+local android = false
 package.preload["ui/uimanager"] = function()
     return { scheduleIn = function(_self, _delay, callback) callback() end }
 end
@@ -21,6 +22,9 @@ package.preload["ffi/util"] = function()
             end
         end,
     })
+end
+package.preload["device"] = function()
+    return { isAndroid = function() return android end }
 end
 package.preload["libs/libkoreader-lfs"] = function()
     return {}
@@ -72,6 +76,22 @@ local unknown_memory = Parallel.config({ get = function() return {} end })
 expect(unknown_memory.supported and unknown_memory.chapters == 1
         and unknown_memory.comments == 1 and unknown_memory.images == 1,
     "unknown memory should use the conservative serial preset")
+
+android = true
+local android_config = Parallel.config({
+    get = function()
+        return {
+            concurrency_auto = false,
+            chapter_concurrency = 8,
+            comment_concurrency = 8,
+            image_concurrency = 8,
+        }
+    end,
+})
+expect(not android_config.supported and android_config.chapters == 1
+        and android_config.comments == 1 and android_config.images == 1,
+    "Android should not fork network workers that may enter ART/JNI")
+android = false
 
 subprocess_supported = false
 local unsupported = Parallel.config({ get = function() return {} end })

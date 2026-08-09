@@ -12,6 +12,8 @@ local ok_ffi, ffiUtil = pcall(require, "ffi/util")
 if not ok_ffi then ffiUtil = {} end
 local ok_lfs, lfs = pcall(require, "libs/libkoreader-lfs")
 if not ok_lfs then lfs = {} end
+local ok_device, Device = pcall(require, "device")
+if not ok_device then Device = nil end
 
 local Parallel = {}
 Parallel.MAX_CONCURRENCY = 8
@@ -155,6 +157,10 @@ function Parallel.config(settings)
 end
 
 function Parallel.available()
+    if Device and type(Device.isAndroid) == "function" then
+        local ok, is_android = pcall(Device.isAndroid, Device)
+        if ok and is_android then return false end
+    end
     return type(ffiUtil.runInSubProcess) == "function"
         and type(ffiUtil.isSubProcessDone) == "function"
         and type(ffiUtil.terminateSubProcess) == "function"
