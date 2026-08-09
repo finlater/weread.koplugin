@@ -1323,7 +1323,7 @@ function Downloader:_step(dl)
     self:_perf(dl, "chapter_source", started, "ok=", tostring(ok))
     if ok then
         local complete, actual, expected = Content.validate_chapter_source(
-            chapter, xhtml)
+            chapter, xhtml, false)
         if not complete then
             ok = false
             xhtml = string.format(

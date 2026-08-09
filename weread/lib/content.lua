@@ -1470,7 +1470,7 @@ local function visible_character_count(xhtml)
     return count
 end
 
-function Content.validate_chapter_source(chapter, xhtml)
+function Content.validate_chapter_source(chapter, xhtml, check_catalog_length)
     xhtml = tostring(xhtml or "")
     local actual = visible_character_count(xhtml)
     local expected = tonumber(chapter and chapter.wordCount or 0) or 0
@@ -1478,7 +1478,8 @@ function Content.validate_chapter_source(chapter, xhtml)
         or not xhtml:find("</body>", 1, true) then
         return false, actual, expected
     end
-    if expected >= 200 and actual < math.max(64, math.floor(expected * 0.60)) then
+    if check_catalog_length ~= false and expected >= 200
+        and actual < math.max(64, math.floor(expected * 0.60)) then
         return false, actual, expected
     end
     return true, actual, expected

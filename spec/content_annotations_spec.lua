@@ -144,6 +144,10 @@ local truncated = Content.validate_chapter_source(
     { wordCount = 4000 }, '<html><body><p>' .. string.rep("文", 100)
         .. '</p></body></html>')
 expect(not truncated, "truncated chapter source passed validation")
+expect(Content.validate_chapter_source(
+        { wordCount = 4000 }, '<html><body><p>' .. string.rep("文", 100)
+            .. '</p></body></html>', false),
+    "catalog word-count mismatch should not discard a serial chapter")
 expect(not Content.validate_chapter_source({ wordCount = 10 }, "fragment"),
     "malformed chapter source passed validation")
 
