@@ -998,6 +998,17 @@ function Content.collect_remote_image_urls(xhtml)
     return urls
 end
 
+function Content.rewrite_remote_image_sources(xhtml, href_by_url)
+    href_by_url = href_by_url or {}
+    return tostring(xhtml or ""):gsub('src=(["\'])(.-)%1', function(quote, src)
+        local url = tostring(src or "")
+        if url:match("^//") then url = "https:" .. url end
+        local href = href_by_url[url]
+        if not href then return "src=" .. quote .. src .. quote end
+        return "src=" .. quote .. "../" .. href .. quote
+    end)
+end
+
 function Content.apply_remote_image_results(xhtml, used_names, data_by_url)
     local assets = {}
     used_names = used_names or {}
@@ -1077,6 +1088,13 @@ function Content.extract_chapter_assets(raw, used_names)
     return assets, src_map
 end
 
+function Content.download_chapter_assets(client, book, chapter, used_names)
+    local request = Content.chapter_asset_request(book, chapter)
+    if not request then return {}, {} end
+    local raw = client:get_binary(request.url, { referer = request.referer })
+    return Content.extract_chapter_assets(raw, used_names)
+end
+
 local MAX_TAR_ENTRY_BYTES = 512 * 1024 * 1024
 local FILE_COPY_CHUNK_BYTES = 64 * 1024
 
@@ -1150,6 +1168,50 @@ local function extract_tar_images(tar_path, asset_dir, used_names)
     return assets, src_map
 end
 
+function Content.extract_chapter_assets_file(tar_path, used_names, workspace)
+    if not workspace or not workspace.asset_dir then
+        error("download workspace is required")
+    end
+    return extract_tar_images(tar_path, workspace.asset_dir, used_names or {})
+end
+
+function Content.stage_remote_image_file(input_path, url, used_names, workspace, index)
+    if not workspace or not workspace.asset_dir then
+        error("download workspace is required")
+    end
+    used_names = used_names or {}
+    used_names.__remote_image_hrefs = used_names.__remote_image_hrefs or {}
+    local remote_image_hrefs = used_names.__remote_image_hrefs
+    local normalized_url = tostring(url or "")
+    if normalized_url:match("^//") then normalized_url = "https:" .. normalized_url end
+    if remote_image_hrefs[normalized_url] then
+        return nil, remote_image_hrefs[normalized_url]
+    end
+
+    local ext, media_type, media_err = media_type_for_file(input_path)
+    if not media_type then error(media_err or "could not inspect downloaded image") end
+    if not media_type:match("^image/") then error("downloaded file is not an image") end
+    local seed = basename((normalized_url:match("^[^%?#]+") or normalized_url))
+    local filename = unique_asset_name(used_names,
+        seed ~= "" and seed or ("img" .. tostring(index or 1)), ext)
+    local output_path = workspace.asset_dir .. "/" .. filename
+    local renamed, rename_err = os.rename(input_path, output_path)
+    if not renamed then error(rename_err or "could not stage downloaded image") end
+    local file, open_err = io.open(output_path, "rb")
+    if not file then error(open_err or "could not inspect staged image") end
+    local size = file:seek("end") or 0
+    file:close()
+    local href = "images/" .. filename
+    remote_image_hrefs[normalized_url] = href
+    return {
+        href = href,
+        media_type = media_type,
+        path = output_path,
+        size = size,
+        store = true,
+    }, href
+end
+
 function Content.download_chapter_assets_to_files(client, book, chapter, used_names, workspace)
     if not chapter or not chapter.tar or chapter.tar == "" then return {}, {} end
     used_names = used_names or {}
@@ -1168,7 +1230,7 @@ function Content.download_chapter_assets_to_files(client, book, chapter, used_na
         max_bytes = MAX_TAR_ENTRY_BYTES,
     })
     local ok, assets, src_map = pcall(
-        extract_tar_images, tar_path, workspace.asset_dir, used_names)
+        Content.extract_chapter_assets_file, tar_path, used_names, workspace)
     pcall(os.remove, tar_path)
     if not ok then error(assets, 0) end
     return assets, src_map
@@ -1474,8 +1536,16 @@ function Content.validate_chapter_source(chapter, xhtml, check_catalog_length)
     xhtml = tostring(xhtml or "")
     local actual = visible_character_count(xhtml)
     local expected = tonumber(chapter and chapter.wordCount or 0) or 0
-    if #xhtml < 128 or not xhtml:find("<body", 1, true)
-        or not xhtml:find("</body>", 1, true) then
+    local body_start
+    local cursor = 1
+    while true do
+        local found = xhtml:find("<body", cursor, true)
+        if not found then break end
+        body_start = found
+        cursor = found + 5
+    end
+    if #xhtml < 128 or not body_start
+        or not xhtml:find("</body>", body_start, true) then
         return false, actual, expected
     end
     if check_catalog_length ~= false and expected >= 200

@@ -147,6 +147,36 @@ first:close()
 expect(io.open(workspace.incoming_dir .. "/chapter-7.tar", "rb") == nil,
     "source TAR was not removed after extraction")
 
+local legacy_image = "\137PNG\r\n\26\nlegacy"
+local legacy_padding = (512 - #legacy_image % 512) % 512
+local legacy_tar = tar_header("legacy.png", #legacy_image)
+    .. legacy_image .. string.rep("\0", legacy_padding) .. string.rep("\0", 1024)
+local legacy_assets = Content.download_chapter_assets({
+    get_binary = function() return legacy_tar end,
+}, { book_id = "book" }, {
+    chapterUid = 8,
+    tar = "https://example.test/legacy.tar",
+}, {})
+expect(#legacy_assets == 1 and legacy_assets[1].data == legacy_image,
+    "in-memory chapter asset fallback was lost during the rebase")
+
+local remote_input = workspace.incoming_dir .. "/remote-image.bin"
+local remote_file = assert(io.open(remote_input, "wb"))
+remote_file:write("\137PNG\r\n\26\nremote")
+remote_file:close()
+local remote_asset, remote_href = Content.stage_remote_image_file(
+    remote_input, "https://cdn.example/remote.png", {}, workspace, 1)
+expect(remote_asset and remote_asset.data == nil
+        and remote_asset.path:match("/images/[^/]+$") ~= nil,
+    "parallel remote image was not staged as a file-backed asset")
+expect(io.open(remote_input, "rb") == nil,
+    "staged remote image was left in the incoming directory")
+local rewritten_remote = Content.rewrite_remote_image_sources(
+    '<img src="https://cdn.example/remote.png"/>',
+    { ["https://cdn.example/remote.png"] = remote_href })
+expect(rewritten_remote:find("../" .. remote_href, 1, true) ~= nil,
+    "file-backed remote image source was not rewritten")
+
 local settings = {
     cache_dir = root,
     get = function(_self, _key, default) return default end,

@@ -150,6 +150,10 @@ expect(Content.validate_chapter_source(
     "catalog word-count mismatch should not discard a serial chapter")
 expect(not Content.validate_chapter_source({ wordCount = 10 }, "fragment"),
     "malformed chapter source passed validation")
+expect(not Content.validate_chapter_source({ wordCount = 10 },
+        '<html><body><p>title</p></body></html>'
+            .. '<html><body><p>' .. string.rep("文", 100)),
+    "truncated trailing XHTML body passed validation")
 
 local articles = Content.parse_mp_articles({
     reviews = {{

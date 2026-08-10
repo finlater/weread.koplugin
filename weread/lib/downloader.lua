@@ -27,6 +27,10 @@ local Parallel = require("weread.lib.parallel")
 local Thoughts = require("weread.lib.thoughts")
 local WeRead = require("weread.lib.protocol")
 
+local MAX_SERIAL_CHAPTER_ATTEMPTS = 3
+local MAX_CHAPTER_ASSET_BYTES = 512 * 1024 * 1024
+local MAX_REMOTE_IMAGE_BYTES = 64 * 1024 * 1024
+
 local function _(text)
     return I18n.tr(text)
 end
@@ -153,6 +157,23 @@ function Downloader:_notifyCompletion(dl, ok, value)
     if not called then
         logger.warn("download completion callback failed:",
             log_error(err))
+    end
+end
+
+function Downloader:_abortDownload(dl, err)
+    if not dl or dl.aborted then return end
+    dl.aborted = true
+    self:_releaseStandby(dl)
+    self:_cleanupWorkspace(dl)
+    if dl.progress_dialog then
+        pcall(dl.progress_dialog.close, dl.progress_dialog)
+        dl.progress_dialog = nil
+    end
+    logger.err("book download aborted:", log_error(err))
+    self:_notifyCompletion(dl, false, err)
+    self:_finishJob(dl)
+    if not dl.prefetch then
+        self.show_info(T(_("Download failed:\n%1"), display_error(err)))
     end
 end
 
@@ -590,6 +611,12 @@ function Downloader:_failChapter(dl, err)
     logger.warn("chapter download failed:",
         "index=", tostring(dl.index) .. "/" .. tostring(dl.total),
         "chapter_uid=", uid, "error=", log_error(err))
+    if not dl.separate_chapters then
+        self:_abortDownload(dl, string.format(
+            "chapter %s failed after %d serial attempt(s): %s",
+            uid, MAX_SERIAL_CHAPTER_ATTEMPTS, tostring(err)))
+        return
+    end
     dl.current = nil
     dl.annotation = nil
     dl.index = dl.index + 1
@@ -597,6 +624,25 @@ function Downloader:_failChapter(dl, err)
         dl.progress_dialog:reportProgress(dl.index - 1)
     end
     self:_scheduleGuarded(dl, function() self:_step(dl) end)
+end
+
+function Downloader:_retryChapterSource(dl, err)
+    local chapter = dl.chapters[dl.index]
+    local uid = tostring(chapter and chapter.chapterUid or dl.index)
+    dl.chapter_source_attempts = dl.chapter_source_attempts or {}
+    local attempt = (dl.chapter_source_attempts[uid] or 0) + 1
+    dl.chapter_source_attempts[uid] = attempt
+    if attempt >= MAX_SERIAL_CHAPTER_ATTEMPTS then
+        self:_failChapter(dl, err)
+        return
+    end
+    logger.warn("serial chapter source failed; retrying:",
+        "index=", tostring(dl.index) .. "/" .. tostring(dl.total),
+        "chapter_uid=", uid,
+        "attempt=", tostring(attempt) .. "/" .. tostring(MAX_SERIAL_CHAPTER_ATTEMPTS),
+        "error=", log_error(err))
+    self:_scheduleGuarded(dl, function() self:_step(dl) end,
+        math.min(3, 0.75 * attempt))
 end
 
 local function add_footnote_stats(total, current)
@@ -734,7 +780,7 @@ function Downloader:_startImagePool(dl)
             kind = "tar",
             url = tar_request.url,
             referer = tar_request.referer,
-            required = true,
+            max_bytes = MAX_CHAPTER_ASSET_BYTES,
         }
     end
     local cached_remote = dl.state.used_asset_names
@@ -745,40 +791,76 @@ function Downloader:_startImagePool(dl)
                 kind = "remote",
                 url = url,
                 referer = "https://weread.qq.com/",
+                max_bytes = MAX_REMOTE_IMAGE_BYTES,
             }
         end
     end
     if #tasks <= 1 then return false end
 
-    local results = { remote = {} }
-    local fatal_error
+    dl.state.used_asset_names = dl.state.used_asset_names or {}
+    local results = { assets = {}, src_map = {} }
     dl.image_pool = Parallel.start{
         tasks = tasks,
         concurrency = dl.parallel.images,
-        base_dir = dl.parallel_base_dir,
+        base_dir = dl.workspace.incoming_dir,
         prefix = "images",
         is_cancelled = function() return dl.cancelled end,
         worker = function(task, dir)
-            local data = self.client:without_cookie_persistence(function()
-                return self.client:get_binary(task.url, { referer = task.referer })
+            self.client:without_cookie_persistence(function()
+                self.client:download_to_file(task.url, dir .. "/payload", {
+                    referer = task.referer,
+                    max_bytes = task.max_bytes,
+                })
             end)
-            Parallel.write_file(dir .. "/data.bin", data)
         end,
         load_result = function(_task, dir, ok, err)
             if not ok then return nil, err end
-            local data = Parallel.read_file(dir .. "/data.bin")
-            if not data then return nil, "image worker returned no data" end
-            return data
+            local path = dir .. "/payload"
+            local file = io.open(path, "rb")
+            if not file then return nil, "image worker returned no file" end
+            local size = file:seek("end") or 0
+            file:close()
+            if size <= 0 then return nil, "image worker returned an empty file" end
+            return path
         end,
-        on_result = function(task, data, err, current, total_tasks)
-            if data and #data > 0 then
+        on_result = function(task, path, err, current, total_tasks)
+            if path then
                 if task.kind == "tar" then
-                    results.tar = data
+                    local extracted, assets, src_map = pcall(
+                        Content.extract_chapter_assets_file, path,
+                        dl.state.used_asset_names, dl.workspace)
+                    if extracted then
+                        for _, asset in ipairs(assets) do
+                            results.assets[#results.assets + 1] = asset
+                        end
+                        for name, href in pairs(src_map) do
+                            results.src_map[name] = href
+                        end
+                    else
+                        logger.warn("chapter image package skipped:",
+                            "chapter_uid=", tostring(chapter.chapterUid or dl.index),
+                            "error=", log_error(assets))
+                    end
                 else
-                    results.remote[task.url] = data
+                    local staged, asset, href = pcall(
+                        Content.stage_remote_image_file, path, task.url,
+                        dl.state.used_asset_names, dl.workspace, current)
+                    if staged and asset then
+                        results.assets[#results.assets + 1] = asset
+                    elseif not staged then
+                        logger.warn("remote chapter image skipped:",
+                            "url=", tostring(task.url),
+                            "error=", log_error(asset))
+                    end
+                    if staged and href then
+                        dl.state.used_asset_names.__remote_image_hrefs[task.url] = href
+                    end
                 end
-            elseif task.required then
-                fatal_error = err or "chapter image package download failed"
+            else
+                logger.warn("chapter image download skipped:",
+                    "kind=", tostring(task.kind),
+                    "url=", tostring(task.url),
+                    "error=", log_error(err or "download failed"))
             end
             self:_setStage(dl,
                 T(_("Downloading images in parallel %1/%2 · chapter %3/%4"),
@@ -786,39 +868,33 @@ function Downloader:_startImagePool(dl)
                     tostring(dl.index), tostring(dl.total)),
                 dl.index - 0.1 + 0.1 * current / math.max(1, total_tasks))
         end,
-        on_complete = function()
+        on_complete = function(_pool_ok, pool_err)
             dl.image_pool = nil
             self:_scheduleGuarded(dl, function()
                 if dl.cancelled then
                     self:_step(dl)
                     return
                 end
-                if fatal_error then
-                    self:_failChapter(dl, fatal_error)
-                    return
+                if pool_err then
+                    logger.warn("parallel image pool completed with errors:",
+                        log_error(pool_err))
                 end
                 local started = time.now()
                 local ok, xhtml, chapter_assets = pcall(function()
-                    dl.state.used_asset_names = dl.state.used_asset_names or {}
-                    local assets, src_map = {}, {}
-                    if results.tar then
-                        assets, src_map = Content.extract_chapter_assets(
-                            results.tar, dl.state.used_asset_names)
-                    end
                     local rewritten = Content.rewrite_image_sources(
-                        dl.current.xhtml, src_map)
-                    local final_xhtml, remote_assets =
-                        Content.apply_remote_image_results(rewritten,
-                            dl.state.used_asset_names, results.remote)
-                    for _, asset in ipairs(remote_assets) do
-                        assets[#assets + 1] = asset
-                    end
-                    return final_xhtml, assets
+                        dl.current.xhtml, results.src_map)
+                    local remote_hrefs =
+                        dl.state.used_asset_names.__remote_image_hrefs or {}
+                    return Content.rewrite_remote_image_sources(
+                        rewritten, remote_hrefs), results.assets
                 end)
                 self:_perf(dl, "images_parallel_finalize", started,
                     "ok=", tostring(ok), "workers=", tostring(dl.parallel.images))
                 if not ok then
-                    self:_failChapter(dl, xhtml)
+                    logger.warn("parallel image finalization failed; keeping chapter text:",
+                        "chapter_uid=", tostring(chapter.chapterUid or dl.index),
+                        "error=", log_error(xhtml))
+                    self:_commitChapter(dl, dl.current.xhtml, {})
                     return
                 end
                 self:_commitChapter(dl, xhtml, chapter_assets)
@@ -839,7 +915,8 @@ function Downloader:_finishChapter(dl)
         stage_text = T(_("Processing chapter %1/%2"), tostring(dl.index), tostring(dl.total))
     end
     self:_setStage(dl, stage_text, dl.index - 0.1)
-    if cache.download_book_images and (dl.parallel and dl.parallel.images or 1) > 1
+    if cache.download_book_images and dl.workspace
+        and (dl.parallel and dl.parallel.images or 1) > 1
         and self:_startImagePool(dl) then
         return
     end
@@ -851,7 +928,10 @@ function Downloader:_finishChapter(dl)
     end)
     self:_perf(dl, "images_and_finalize", started, "ok=", tostring(ok))
     if not ok then
-        self:_failChapter(dl, xhtml)
+        logger.warn("chapter image processing failed; keeping chapter text:",
+            "chapter_uid=", tostring(chapter.chapterUid or dl.index),
+            "error=", log_error(xhtml))
+        self:_commitChapter(dl, dl.current.xhtml, {})
         return
     end
     self:_commitChapter(dl, xhtml, chapter_assets)
@@ -875,7 +955,10 @@ function Downloader:_applyAnnotations(dl)
     self:_perf(dl, "apply_annotations", started, "ok=", tostring(ok),
         "reviews=", tostring(#annotation.reviews))
     if not ok then
-        self:_failChapter(dl, processed)
+        logger.warn("chapter annotations failed; keeping original chapter:",
+            "chapter_uid=", tostring(chapter.chapterUid or dl.index),
+            "error=", log_error(processed))
+        self:_finishChapter(dl)
         return
     end
     dl.current.xhtml = processed
@@ -1068,6 +1151,7 @@ end
 
 function Downloader:_step(dl)
     dl.parallel = dl.parallel or { chapters = 1, comments = 1, images = 1 }
+    if dl.aborted then return end
     if dl.cancelled then
         self:_releaseStandby(dl)
         self:_cleanupWorkspace(dl)
@@ -1100,6 +1184,12 @@ function Downloader:_step(dl)
             if not dl.prefetch then
                 self.show_info(_("No chapters were downloaded."))
             end
+            return
+        end
+        if not dl.separate_chapters and #dl.selected ~= dl.total then
+            self:_abortDownload(dl, string.format(
+                "book completeness check failed: downloaded %d of %d chapters",
+                #dl.selected, dl.total))
             return
         end
         if dl.footnote_scans and not dl.footnotes_done then
@@ -1298,7 +1388,13 @@ function Downloader:_step(dl)
     local started = time.now()
     local source = dl.chapter_sources and dl.chapter_sources[dl.index]
     local ok, xhtml
-    if source and not source.error then
+    if source and source.error then
+        logger.warn("parallel chapter source failed; retrying serially:",
+            "chapter_uid=", tostring(chapter.chapterUid or dl.index),
+            "error=", log_error(source.error))
+        dl.chapter_sources[dl.index] = nil
+        source = nil
+    elseif source then
         local complete, actual, expected = Content.validate_chapter_source(
             chapter, source.xhtml)
         if not complete then
@@ -1306,6 +1402,7 @@ function Downloader:_step(dl)
                 "chapter_uid=", tostring(chapter.chapterUid or dl.index),
                 "actual_chars=", tostring(actual),
                 "expected_words=", tostring(expected))
+            dl.chapter_sources[dl.index] = nil
             source = nil
         end
     end
@@ -1332,8 +1429,12 @@ function Downloader:_step(dl)
         end
     end
     if not ok then
-        self:_failChapter(dl, xhtml)
+        self:_retryChapterSource(dl, xhtml)
         return
+    end
+    local uid = tostring(chapter.chapterUid or dl.index)
+    if dl.chapter_source_attempts then
+        dl.chapter_source_attempts[uid] = nil
     end
     if dl.source_pool_done and not dl.state.css then
         pcall(function()
@@ -1342,7 +1443,6 @@ function Downloader:_step(dl)
                 self.client, self.settings, dl.book, chapter)
         end)
     end
-    local uid = tostring(chapter.chapterUid or dl.index)
     local scan_ok, scan = pcall(Footnotes.scan_chapter, xhtml, chapter)
     dl.footnote_scans = dl.footnote_scans or {}
     if scan_ok then
