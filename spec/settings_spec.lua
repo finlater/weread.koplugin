@@ -104,6 +104,10 @@ expect(values.cache.download_book_images == false
     and values.cache.download_mp_images == false
     and values.cache.auto_prefetch_next_chapter == false
     and values.cache.show_prefetch_notifications == true
+    and values.cache.concurrency_auto == true
+    and values.cache.chapter_concurrency == 2
+    and values.cache.comment_concurrency == 2
+    and values.cache.image_concurrency == 2
     and values.cache.show_annotations == true
     and values.cache.download_images == nil,
     "legacy cache preferences were not migrated")

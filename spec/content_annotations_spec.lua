@@ -110,6 +110,51 @@ expect(not stripped:lower():find("<img", 1, true)
     and stripped:find("before", 1, true) and stripped:find("after", 1, true),
     "MP image stripping removed text or kept media")
 
+local remote_urls = Content.collect_remote_image_urls(
+    '<img src="//cdn.example/a.png"/><img src="https://cdn.example/a.png"/>'
+        .. '<img src="local.png"/>')
+expect(#remote_urls == 1 and remote_urls[1] == "https://cdn.example/a.png",
+    "remote image collection did not normalize and deduplicate URLs")
+local image_data = "\137PNG\r\n\26\nimage"
+local embedded_xhtml, embedded_assets = Content.apply_remote_image_results(
+    '<img src="//cdn.example/a.png"/><img src="https://cdn.example/a.png"/>',
+    {}, { ["https://cdn.example/a.png"] = image_data })
+expect(#embedded_assets == 1
+        and embedded_xhtml:find("../images/", 1, true),
+    "parallel image results were not rewritten or deduplicated")
+
+local mp_requests = 0
+local mp_body = Content.download_mp_images({
+    get_binary = function()
+        mp_requests = mp_requests + 1
+        return image_data
+    end,
+}, '<img src="//mmbiz.qpic.cn/a.png"/><img src="https://mmbiz.qpic.cn/a.png"/>',
+nil, true)
+expect(mp_requests == 1 and mp_body:find("data:image/png;base64,", 1, true),
+    "public article images were not deduplicated before download")
+
+local complete_source = '<html><body><p>' .. string.rep("文", 300)
+    .. '</p></body></html>'
+local complete, actual, expected = Content.validate_chapter_source(
+    { wordCount = 400 }, complete_source)
+expect(complete and actual == 300 and expected == 400,
+    "complete chapter source failed validation")
+local truncated = Content.validate_chapter_source(
+    { wordCount = 4000 }, '<html><body><p>' .. string.rep("文", 100)
+        .. '</p></body></html>')
+expect(not truncated, "truncated chapter source passed validation")
+expect(Content.validate_chapter_source(
+        { wordCount = 4000 }, '<html><body><p>' .. string.rep("文", 100)
+            .. '</p></body></html>', false),
+    "catalog word-count mismatch should not discard a serial chapter")
+expect(not Content.validate_chapter_source({ wordCount = 10 }, "fragment"),
+    "malformed chapter source passed validation")
+expect(not Content.validate_chapter_source({ wordCount = 10 },
+        '<html><body><p>title</p></body></html>'
+            .. '<html><body><p>' .. string.rep("文", 100)),
+    "truncated trailing XHTML body passed validation")
+
 local articles = Content.parse_mp_articles({
     reviews = {{
         subReviews = {{

@@ -1,4 +1,5 @@
 local Crypto = require("weread.lib.crypto")
+local Parallel = require("weread.lib.parallel")
 local ReaderState = require("weread.lib.reader_state")
 local WeRead = require("weread.lib.protocol")
 local Thoughts = require("weread.lib.thoughts")
@@ -980,11 +981,79 @@ function Content.download_remote_images(client, xhtml, used_names, progress)
     return body, assets
 end
 
-function Content.download_chapter_assets(client, book, chapter, used_names)
-    if not chapter or not chapter.tar or chapter.tar == "" then
-        return {}, {}
+function Content.collect_remote_image_urls(xhtml)
+    local urls, seen = {}, {}
+    local function normalize(src)
+        local url = tostring(src or "")
+        if url:match("^//") then url = "https:" .. url end
+        if url:match("^https?://") then return url end
     end
+    tostring(xhtml or ""):gsub('src=(["\'])(.-)%1', function(_, src)
+        local url = normalize(src)
+        if url and not seen[url] then
+            seen[url] = true
+            urls[#urls + 1] = url
+        end
+    end)
+    return urls
+end
+
+function Content.rewrite_remote_image_sources(xhtml, href_by_url)
+    href_by_url = href_by_url or {}
+    return tostring(xhtml or ""):gsub('src=(["\'])(.-)%1', function(quote, src)
+        local url = tostring(src or "")
+        if url:match("^//") then url = "https:" .. url end
+        local href = href_by_url[url]
+        if not href then return "src=" .. quote .. src .. quote end
+        return "src=" .. quote .. "../" .. href .. quote
+    end)
+end
+
+function Content.apply_remote_image_results(xhtml, used_names, data_by_url)
+    local assets = {}
     used_names = used_names or {}
+    data_by_url = data_by_url or {}
+    used_names.__remote_image_hrefs = used_names.__remote_image_hrefs or {}
+    local remote_image_hrefs = used_names.__remote_image_hrefs
+    local index = 0
+    local body = tostring(xhtml or ""):gsub('src=(["\'])(.-)%1', function(quote, src)
+        local url = tostring(src or "")
+        if url:match("^//") then url = "https:" .. url end
+        if not url:match("^https?://") then
+            return "src=" .. quote .. src .. quote
+        end
+        index = index + 1
+        local cached_href = remote_image_hrefs[url]
+        if cached_href then
+            return "src=" .. quote .. "../" .. cached_href .. quote
+        end
+        local data = data_by_url[url]
+        if not data or #data == 0 then
+            return "src=" .. quote .. src .. quote
+        end
+        local ext, media_type = media_type_for(data)
+        if not media_type:match("^image/") then
+            return "src=" .. quote .. src .. quote
+        end
+        local seed = basename((url:match("^[^%?#]+") or url))
+        local filename = unique_asset_name(used_names,
+            seed ~= "" and seed or ("img" .. tostring(index)), ext)
+        local href = "images/" .. filename
+        remote_image_hrefs[url] = href
+        assets[#assets + 1] = {
+            href = href,
+            media_type = media_type,
+            data = data,
+        }
+        return "src=" .. quote .. "../" .. href .. quote
+    end)
+    return body, assets
+end
+
+function Content.chapter_asset_request(book, chapter)
+    if not chapter or not chapter.tar or chapter.tar == "" then
+        return nil
+    end
     local book_id = book.book_id or book.bookId
     local referer = WeRead.reader_url(book_id, chapter.chapterUid)
     local tar_url = tostring(chapter.tar)
@@ -993,10 +1062,14 @@ function Content.download_chapter_assets(client, book, chapter, used_names)
     elseif tar_url:match("^/") then
         tar_url = "https://weread.qq.com" .. tar_url
     end
-    local raw = client:get_binary(tar_url, { referer = referer })
+    return { url = tar_url, referer = referer }
+end
+
+function Content.extract_chapter_assets(raw, used_names)
+    used_names = used_names or {}
     local assets = {}
     local src_map = {}
-    for entry_index, entry in ipairs(tar_entries(raw)) do
+    for _entry_index, entry in ipairs(tar_entries(raw or "")) do
         local ext, media_type = media_type_for(entry.data)
         if media_type:match("^image/") then
             local stem = basename(entry.name)
@@ -1013,6 +1086,13 @@ function Content.download_chapter_assets(client, book, chapter, used_names)
         end
     end
     return assets, src_map
+end
+
+function Content.download_chapter_assets(client, book, chapter, used_names)
+    local request = Content.chapter_asset_request(book, chapter)
+    if not request then return {}, {} end
+    local raw = client:get_binary(request.url, { referer = request.referer })
+    return Content.extract_chapter_assets(raw, used_names)
 end
 
 local MAX_TAR_ENTRY_BYTES = 512 * 1024 * 1024
@@ -1088,6 +1168,50 @@ local function extract_tar_images(tar_path, asset_dir, used_names)
     return assets, src_map
 end
 
+function Content.extract_chapter_assets_file(tar_path, used_names, workspace)
+    if not workspace or not workspace.asset_dir then
+        error("download workspace is required")
+    end
+    return extract_tar_images(tar_path, workspace.asset_dir, used_names or {})
+end
+
+function Content.stage_remote_image_file(input_path, url, used_names, workspace, index)
+    if not workspace or not workspace.asset_dir then
+        error("download workspace is required")
+    end
+    used_names = used_names or {}
+    used_names.__remote_image_hrefs = used_names.__remote_image_hrefs or {}
+    local remote_image_hrefs = used_names.__remote_image_hrefs
+    local normalized_url = tostring(url or "")
+    if normalized_url:match("^//") then normalized_url = "https:" .. normalized_url end
+    if remote_image_hrefs[normalized_url] then
+        return nil, remote_image_hrefs[normalized_url]
+    end
+
+    local ext, media_type, media_err = media_type_for_file(input_path)
+    if not media_type then error(media_err or "could not inspect downloaded image") end
+    if not media_type:match("^image/") then error("downloaded file is not an image") end
+    local seed = basename((normalized_url:match("^[^%?#]+") or normalized_url))
+    local filename = unique_asset_name(used_names,
+        seed ~= "" and seed or ("img" .. tostring(index or 1)), ext)
+    local output_path = workspace.asset_dir .. "/" .. filename
+    local renamed, rename_err = os.rename(input_path, output_path)
+    if not renamed then error(rename_err or "could not stage downloaded image") end
+    local file, open_err = io.open(output_path, "rb")
+    if not file then error(open_err or "could not inspect staged image") end
+    local size = file:seek("end") or 0
+    file:close()
+    local href = "images/" .. filename
+    remote_image_hrefs[normalized_url] = href
+    return {
+        href = href,
+        media_type = media_type,
+        path = output_path,
+        size = size,
+        store = true,
+    }, href
+end
+
 function Content.download_chapter_assets_to_files(client, book, chapter, used_names, workspace)
     if not chapter or not chapter.tar or chapter.tar == "" then return {}, {} end
     used_names = used_names or {}
@@ -1106,7 +1230,7 @@ function Content.download_chapter_assets_to_files(client, book, chapter, used_na
         max_bytes = MAX_TAR_ENTRY_BYTES,
     })
     local ok, assets, src_map = pcall(
-        extract_tar_images, tar_path, workspace.asset_dir, used_names)
+        Content.extract_chapter_assets_file, tar_path, used_names, workspace)
     pcall(os.remove, tar_path)
     if not ok then error(assets, 0) end
     return assets, src_map
@@ -1389,7 +1513,46 @@ function Content.fetch_single_chapter_source(client, settings, book, chapter, st
     if not state.css then
         state.css = Content.fetch_chapter_css(client, settings, book, chapter)
     end
-    return xhtml
+    return xhtml, state.css
+end
+
+local function visible_character_count(xhtml)
+    local text = body_fragment(xhtml)
+    text = text:gsub("<!%-%-.-%-%->", "")
+    text = text:gsub("<[sS][cC][rR][iI][pP][tT][^>]*>.-</[sS][cC][rR][iI][pP][tT]>", "")
+    text = text:gsub("<[sS][tT][yY][lL][eE][^>]*>.-</[sS][tT][yY][lL][eE]>", "")
+    text = text:gsub("<[^>]*>", "")
+    text = text:gsub("&[#%w]+;", "x")
+    text = text:gsub("%s+", "")
+    local count = 0
+    for index = 1, #text do
+        local byte = text:byte(index)
+        if byte < 128 or byte >= 192 then count = count + 1 end
+    end
+    return count
+end
+
+function Content.validate_chapter_source(chapter, xhtml, check_catalog_length)
+    xhtml = tostring(xhtml or "")
+    local actual = visible_character_count(xhtml)
+    local expected = tonumber(chapter and chapter.wordCount or 0) or 0
+    local body_start
+    local cursor = 1
+    while true do
+        local found = xhtml:find("<body", cursor, true)
+        if not found then break end
+        body_start = found
+        cursor = found + 5
+    end
+    if #xhtml < 128 or not body_start
+        or not xhtml:find("</body>", body_start, true) then
+        return false, actual, expected
+    end
+    if check_catalog_length ~= false and expected >= 200
+        and actual < math.max(64, math.floor(expected * 0.60)) then
+        return false, actual, expected
+    end
+    return true, actual, expected
 end
 
 function Content.finalize_single_chapter_content(client, settings, book, chapter, xhtml, state)
@@ -1666,32 +1829,70 @@ local function strip_blank_mp_blocks(html)
     return html
 end
 
-function Content.download_mp_images(client, body_html, progress, embed_base64)
+function Content.download_mp_images(client, body_html, progress, embed_base64, parallel_options)
     local assets = {}
     local used_names = {}
-    local img_total = 0
-    body_html:gsub('src=(["\'])(.-)%1', function(quote, src)
+    local urls, seen = {}, {}
+    body_html:gsub('src=(["\'])(.-)%1', function(_, src)
         if src:match("mmbiz%.qpic%.cn") or src:match("mmbiz%.qlogo%.cn") then
-            img_total = img_total + 1
+            local url = src:match("^//") and ("https:" .. src) or src
+            if not seen[url] then
+                seen[url] = true
+                urls[#urls + 1] = url
+            end
         end
     end)
+    local data_by_url = {}
+    local concurrency = tonumber(parallel_options and parallel_options.concurrency) or 1
+    if concurrency > 1 and #urls > 1 and Parallel.available() then
+        local tasks = {}
+        for index, url in ipairs(urls) do
+            tasks[index] = { index = index, url = url }
+        end
+        Parallel.map_blocking{
+            tasks = tasks,
+            concurrency = concurrency,
+            base_dir = assert(parallel_options.base_dir),
+            prefix = "mp-images",
+            worker = function(task, dir)
+                local data = client:without_cookie_persistence(function()
+                    return client:get_binary(task.url, {
+                        referer = "https://weread.qq.com/",
+                    })
+                end)
+                Parallel.write_file(dir .. "/data.bin", data)
+            end,
+            load_result = function(_task, dir, ok, err)
+                if not ok then return nil, err end
+                return Parallel.read_file(dir .. "/data.bin")
+            end,
+            on_result = function(task, data, _err, current, total)
+                if data and #data > 0 then data_by_url[task.url] = data end
+                if progress then progress(current, total) end
+            end,
+        }
+    else
+        for index, url in ipairs(urls) do
+            if progress then progress(index, #urls) end
+            local ok, data = pcall(function()
+                return client:get_binary(url, { referer = "https://weread.qq.com/" })
+            end)
+            if ok and data and #data > 0 then data_by_url[url] = data end
+        end
+    end
+
     local index = 0
     local body = body_html:gsub('src=(["\'])(.-)%1', function(quote, src)
         if not src:match("mmbiz%.qpic%.cn") and not src:match("mmbiz%.qlogo%.cn") then
             return "src=" .. quote .. src .. quote
         end
         index = index + 1
-        if progress then
-            progress(index, img_total)
-        end
         local url = src
         if url:match("^//") then
             url = "https:" .. url
         end
-        local ok, data = pcall(function()
-            return client:get_binary(url, { referer = "https://weread.qq.com/" })
-        end)
-        if not ok or not data or #data == 0 then
+        local data = data_by_url[url]
+        if not data or #data == 0 then
             return "src=" .. quote .. src .. quote
         end
         local ext, mt = media_type_for(data)
@@ -1898,7 +2099,11 @@ function Content.fetch_mp_article_html(client, settings, book, article, opts)
     end
     local cache = settings:get("cache", {})
     if cache.download_mp_images then
-        body = Content.download_mp_images(client, body, opts.progress, true)
+        local parallel = Parallel.config(settings)
+        body = Content.download_mp_images(client, body, opts.progress, true, {
+            concurrency = parallel.images,
+            base_dir = settings.data_dir .. "/parallel",
+        })
     else
         body = Content.strip_mp_images(body)
     end

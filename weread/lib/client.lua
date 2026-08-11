@@ -11,6 +11,9 @@ if not ok_json then
 end
 
 local DEFAULT_TIMEOUT_SECONDS = 15
+local function pack(...)
+    return { n = select("#", ...), ... }
+end
 local Client = {}
 Client.__index = Client
 
@@ -184,6 +187,21 @@ function Client:new(settings)
     }, self)
 end
 
+function Client:without_cookie_persistence(callback)
+    local previous = self.persist_response_cookies
+    local previous_transient = self.transient_response_cookies
+    self.persist_response_cookies = false
+    if not previous_transient then
+        self.transient_response_cookies = deepcopy(
+            self.settings:get("cookies", {}))
+    end
+    local results = pack(xpcall(callback, debug.traceback))
+    self.persist_response_cookies = previous
+    self.transient_response_cookies = previous_transient
+    if not results[1] then error(results[2], 0) end
+    return unpack(results, 2, results.n)
+end
+
 function Client:json_encode(data)
     if not ok_json then
         error("JSON module is not available")
@@ -234,7 +252,8 @@ function Client:request(opts)
     local is_handle_cookie = not opts.skip_cookie and is_weread_url(opts.url)
 
     if is_handle_cookie then
-        local cookies = self.settings:get("cookies", {})
+        local cookies = self.transient_response_cookies
+            or self.settings:get("cookies", {})
         local cookie_header = Cookie.to_header(cookies)
         if cookie_header ~= "" then
             headers["Cookie"] = cookie_header
@@ -293,7 +312,12 @@ function Client:request(opts)
     if is_handle_cookie and opts.persist_response_cookies ~= false then
         local set_cookie = header_value(resp_headers, "set-cookie")
         if set_cookie then
-            self.settings:merge_set_cookie(set_cookie)
+            if self.transient_response_cookies then
+                self.transient_response_cookies = Cookie.merge_set_cookie(
+                    self.transient_response_cookies, set_cookie)
+            elseif self.persist_response_cookies ~= false then
+                self.settings:merge_set_cookie(set_cookie)
+            end
         end
     end
 

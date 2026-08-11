@@ -34,6 +34,10 @@ local defaults = {
         download_underlines_and_thoughts = false,
         auto_prefetch_next_chapter = false,
         show_prefetch_notifications = true,
+        concurrency_auto = true,
+        chapter_concurrency = 2,
+        comment_concurrency = 2,
+        image_concurrency = 2,
         show_annotations = true,
         -- When true, taps in the left/right edge zones never open thought popups
         -- (and native #wrthought link follow is suppressed there too).
@@ -129,6 +133,21 @@ function Settings:new()
     if cache.show_prefetch_notifications == nil then
         cache.show_prefetch_notifications = true
         cache_changed = true
+    end
+    if cache.concurrency_auto == nil then
+        cache.concurrency_auto = true
+        cache_changed = true
+    end
+    for _, key in ipairs({
+        "chapter_concurrency", "comment_concurrency", "image_concurrency",
+    }) do
+        local value = math.floor(tonumber(cache[key]) or 2)
+        if value < 1 then value = 1 end
+        if value > 8 then value = 8 end
+        if cache[key] ~= value then
+            cache[key] = value
+            cache_changed = true
+        end
     end
     if cache.show_annotations == nil then
         cache.show_annotations = true
