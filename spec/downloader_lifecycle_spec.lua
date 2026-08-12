@@ -53,6 +53,9 @@ end
 package.preload["weread.lib.content"] = function()
     return {
         ensure_reader_state = function() end,
+        fetch_single_chapter_source = function()
+            error("injected transient timeout")
+        end,
     }
 end
 package.preload["weread.ui.download_dialog"] = function()
@@ -155,5 +158,25 @@ expect(downloader._standby_ref == 0 and allowed == 2,
     "guarded failure leaked the standby guard")
 expect(#messages >= 2, "lifecycle failures were not surfaced to the user")
 expect(prevented == 0, "test unexpectedly acquired a standby guard")
+
+local retry_download = {
+    book = { book_id = "book" },
+    chapters = { { chapterUid = 30, title = "Chapter 30" } },
+    index = 1,
+    total = 1,
+    failed = {},
+}
+local scheduled_before_retry = #scheduled
+downloader:_step(retry_download)
+expect(retry_download.index == 1 and #retry_download.failed == 0,
+    "first transient chapter failure was not retained for retry")
+expect(#scheduled == scheduled_before_retry + 1,
+    "first chapter retry was not scheduled")
+scheduled[#scheduled]()
+expect(retry_download.index == 1 and #retry_download.failed == 0,
+    "second transient chapter failure was not retained for retry")
+scheduled[#scheduled]()
+expect(retry_download.index == 2 and retry_download.failed[1] == "30",
+    "chapter was not skipped after exhausting two retries")
 
 print(("downloader_lifecycle_spec: %d checks"):format(checks))

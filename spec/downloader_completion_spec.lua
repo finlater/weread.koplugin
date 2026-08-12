@@ -43,10 +43,15 @@ package.preload["ffi/util"] = function()
         end,
     }
 end
+local full_book_save_count = 0
 package.preload["weread.lib.content"] = function()
     return {
         save_chapter_epub = function(_settings, _book, chapter)
             return "/cache/book/chapter-" .. tostring(chapter.chapterUid) .. ".epub"
+        end,
+        save_book_epub = function()
+            full_book_save_count = full_book_save_count + 1
+            return "/cache/book/replacement-full.epub"
         end,
     }
 end
@@ -87,6 +92,7 @@ local live_books = {
     },
 }
 local opened
+local info_messages = {}
 local completion_count = 0
 local completion_ok
 local completion_path
@@ -107,7 +113,8 @@ local downloader = Downloader:new{
     client = {},
     refresh_shelf = function() end,
     open_file = function(path) opened = path end,
-    show_info = function() end,
+    show_info = function(text) info_messages[#info_messages + 1] = text end,
+    show_transient = function() end,
 }
 local chapter = { chapterUid = 22, title = "Target" }
 local download = {
@@ -178,6 +185,49 @@ eq(stored_books.book.cached_chapters["33"],
     "/cache/book/chapter-33.epub", "second selected chapter persisted separately")
 eq(stored_books.book.cached_full_book, "/cache/book/full.epub",
     "partial download preserved the full-book cache")
+
+local incomplete_full_completion_count = 0
+local incomplete_full_completion_ok
+local incomplete_full_completion_value
+local incomplete_full = {
+    book = {
+        book_id = "book",
+        title = "Book",
+        cached_file = "/cache/book/full.epub",
+        cached_full_book = "/cache/book/full.epub",
+    },
+    chapters = { chapter, chapter_33 },
+    selected = { chapter },
+    bodies = { ["22"] = "<p>22</p>" },
+    assets = {},
+    state = { css = "" },
+    suffix = "full",
+    index = 3,
+    total = 2,
+    failed = { "33" },
+    annotation_failed_batches = 0,
+    started_at = 999,
+    on_complete = function(ok, value)
+        incomplete_full_completion_count = incomplete_full_completion_count + 1
+        incomplete_full_completion_ok = ok
+        incomplete_full_completion_value = value
+    end,
+}
+downloader:_step(incomplete_full)
+eq(full_book_save_count, 0,
+    "incomplete full-book download did not build a partial EPUB")
+eq(stored_books.book.cached_full_book, "/cache/book/full.epub",
+    "incomplete full-book download preserved the existing full cache")
+eq(stored_books.book.cached_file, "/cache/book/full.epub",
+    "incomplete full-book download preserved the compatibility cache alias")
+eq(incomplete_full_completion_count, 1,
+    "incomplete full-book completion callback count")
+eq(incomplete_full_completion_ok, false,
+    "incomplete full-book completion reported failure")
+eq(incomplete_full_completion_value, "incomplete_full_book",
+    "incomplete full-book completion reason")
+eq(#info_messages, 1,
+    "incomplete full-book failure was shown to the user")
 
 print(string.format(
     "downloader_completion_spec: %d checks, %d failure(s)", checks, failures))

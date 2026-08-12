@@ -526,6 +526,29 @@ function Downloader:_failChapter(dl, err)
     self:_scheduleGuarded(dl, function() self:_step(dl) end)
 end
 
+function Downloader:_retryChapterSource(dl, err)
+    local chapter = dl.chapters[dl.index]
+    local uid = tostring(chapter and chapter.chapterUid or dl.index)
+    dl.chapter_source_retries = dl.chapter_source_retries or {}
+    local attempt = (dl.chapter_source_retries[uid] or 0) + 1
+    dl.chapter_source_retries[uid] = attempt
+    if attempt > 2 then
+        dl.chapter_source_retries[uid] = nil
+        self:_failChapter(dl, err)
+        return false
+    end
+    logger.warn("chapter source download failed; retrying:",
+        "index=", tostring(dl.index) .. "/" .. tostring(dl.total),
+        "chapter_uid=", uid, "attempt=", tostring(attempt),
+        "error=", log_error(err))
+    self:_setStage(dl,
+        T(_("Retrying chapter %1/%2 · attempt %3"),
+            tostring(dl.index), tostring(dl.total), tostring(attempt)),
+        dl.index - 1)
+    self:_scheduleGuarded(dl, function() self:_step(dl) end, 0.8 * attempt)
+    return true
+end
+
 local function add_footnote_stats(total, current)
     for _i, key in ipairs({
         "candidates", "converted", "image_notes", "backlinks",
@@ -826,6 +849,32 @@ function Downloader:_step(dl)
             end
             return
         end
+        -- A full-book cache must be complete. Saving the chapters that happened
+        -- to succeed under the stable `full.epub` path makes KOReader present a
+        -- structurally valid but truncated book and replaces any previous good
+        -- cache. Explicit single- or multi-chapter jobs remain best-effort.
+        if dl.suffix == "full" and #dl.failed > 0 then
+            if dl.progress_dialog then
+                dl.progress_dialog:close()
+                dl.progress_dialog = nil
+            end
+            self:_releaseStandby(dl)
+            self:_cleanupWorkspace(dl)
+            logger.warn(
+                "full-book download aborted after chapter failures:",
+                "success=", tostring(#dl.selected),
+                "failed=", tostring(#dl.failed),
+                "total=", tostring(dl.total)
+            )
+            self:_notifyCompletion(dl, false, "incomplete_full_book")
+            self:_finishJob(dl)
+            if not dl.prefetch then
+                self.show_info(T(_(
+                    "Full-book download stopped: %1 of %2 chapters failed.\n\nNo incomplete EPUB was saved. Please retry the download."
+                ), tostring(#dl.failed), tostring(dl.total)))
+            end
+            return
+        end
         if dl.footnote_scans and not dl.footnotes_done then
             self:_startFootnotes(dl)
             return
@@ -1009,8 +1058,11 @@ function Downloader:_step(dl)
     end)
     self:_perf(dl, "chapter_source", started, "ok=", tostring(ok))
     if not ok then
-        self:_failChapter(dl, xhtml)
+        self:_retryChapterSource(dl, xhtml)
         return
+    end
+    if dl.chapter_source_retries then
+        dl.chapter_source_retries[tostring(chapter.chapterUid or dl.index)] = nil
     end
     local uid = tostring(chapter.chapterUid or dl.index)
     local scan_ok, scan = pcall(Footnotes.scan_chapter, xhtml, chapter)
