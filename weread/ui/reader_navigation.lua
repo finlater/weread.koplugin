@@ -21,11 +21,6 @@ function M:onShowWeReadBookshelf()
     return true
 end
 
-function M:onShowWeReadLocalBookshelf()
-    self:showWereadCollection()
-    return true
-end
-
 function M:onShowWeReadReadingStatistics()
     self:showReadStats()
     return true

@@ -81,8 +81,10 @@ host:onDispatcherRegisterActions()
 expect(registered.weread_show == nil,
     "generic WeRead shortcut action is no longer registered")
 local sync_action = registered.weread_sync_progress
-expect(sync_action == nil,
-    "standalone sync action is no longer registered")
+expect(sync_action and sync_action.event == "WeReadSyncProgress"
+        and sync_action.title == "WeRead · Sync reading progress"
+        and sync_action.reader == true,
+    "standalone sync action remains available in reader context")
 local quick_action = registered.weread_quick_menu
 expect(quick_action ~= nil, "quick menu dispatcher action is registered")
 expect(quick_action and quick_action.event == "ShowWeReadQuickMenu",
@@ -101,10 +103,6 @@ expect(bookshelf_action and bookshelf_action.general == true
 expect(bookshelf_action and bookshelf_action.title == "WeRead · Bookshelf",
     "bookshelf gesture action has the requested title")
 local general_actions = {
-    weread_local_bookshelf = {
-        event = "ShowWeReadLocalBookshelf",
-        title = "WeRead · Local bookshelf",
-    },
     weread_reading_statistics = {
         event = "ShowWeReadReadingStatistics",
         title = "WeRead · Reading statistics",
@@ -114,6 +112,8 @@ local general_actions = {
         title = "WeRead · Search",
     },
 }
+expect(registered.weread_local_bookshelf == nil,
+    "fork does not expose the skipped upstream local-bookshelf action")
 for name, expected in pairs(general_actions) do
     local action = registered[name]
     expect(action and action.event == expected.event

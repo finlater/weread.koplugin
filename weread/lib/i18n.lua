@@ -339,7 +339,6 @@ local zh = {
     ["Current book is not from WeRead, reading time not reported"] = "当前书籍非微信读书书籍，不上报阅读时间",
     ["WeRead · Quick menu"] = "微信读书·快捷菜单",
     ["WeRead · Bookshelf"] = "微信读书·书架",
-    ["WeRead · Local bookshelf"] = "微信读书·本地书架",
     ["WeRead · Reading statistics"] = "微信读书·阅读统计",
     ["WeRead · Search"] = "微信读书·搜索",
     ["Next chapter"] = "下一章",
