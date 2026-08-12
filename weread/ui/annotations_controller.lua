@@ -66,6 +66,11 @@ function M:applyAnnotationVisibility()
     if not self.ui or not self.ui.document then
         return
     end
+    local show = self.settings:get("cache").show_annotations ~= false
+    if self._xpointer_overlay then
+        self._xpointer_overlay:setEnabled(show)
+        UIManager:setDirty(self.dialog, "ui")
+    end
     if not self:detectWeReadBook() then
         return
     end
@@ -74,7 +79,6 @@ function M:applyAnnotationVisibility()
         logger.warn("applyAnnotationVisibility: typeset stylesheet unavailable")
         return
     end
-    local show = self.settings:get("cache").show_annotations ~= false
     local tweaks = ""
     local styletweak = self.ui.styletweak
     if styletweak and type(styletweak.getCssText) == "function" then
@@ -90,6 +94,26 @@ function M:applyAnnotationVisibility()
     if not ok then
         logger.warn("applyAnnotationVisibility failed:", err)
     end
+end
+
+function M:toggleAnnotationVisibility()
+    local cache = self.settings:get("cache")
+    cache.show_annotations = not (cache.show_annotations ~= false)
+    self.settings:set("cache", cache)
+    self.settings:flush()
+    if not cache.show_annotations then
+        ThoughtPopup.closeVisible()
+        self._thought_popup_open = nil
+    end
+    self:applyAnnotationVisibility()
+    self:showTransientInfo(cache.show_annotations
+        and _("Underlines and thoughts shown")
+        or _("Underlines and thoughts hidden"), 1)
+    return true
+end
+
+function M:onToggleWeReadAnnotations()
+    return self:toggleAnnotationVisibility()
 end
 
 -- True when the tap falls in the configured left/right page-turn edge zone.

@@ -17,6 +17,7 @@ local Screen = Device.screen
 
 local DownloadDialog = InputContainer:extend{
     title = "",
+    description = nil,
     progress_max = 100,
     buttons = nil,
     refresh_time_seconds = 3,
@@ -44,6 +45,23 @@ function DownloadDialog:init()
         self.title_widget,
     }
     table.insert(vertical_group, self.title_container)
+
+    if self.description and self.description ~= "" then
+        self.description_widget = TextWidget:new{
+            text = self.description,
+            face = Font:getFace("xx_smallinfofont"),
+            max_width = width,
+        }
+        self.description_container = CenterContainer:new{
+            dimen = Geom:new{
+                w = width,
+                h = self.description_widget:getSize().h,
+            },
+            self.description_widget,
+        }
+        table.insert(vertical_group, VerticalSpan:new{ width = Size.padding.small })
+        table.insert(vertical_group, self.description_container)
+    end
 
     if self.progress_max and self.progress_max > 0 then
         self.progress_bar = ProgressWidget:new{

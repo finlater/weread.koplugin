@@ -36,7 +36,7 @@ package.preload["weread.ui.thought_popup"] = function()
     return { closeVisible = function() end }
 end
 package.preload["weread.lib.protocol"] = function()
-    return { is_mp_book = function() return false end }
+    return { is_mp_book = function(book_id) return book_id == "mp-book" end }
 end
 package.preload["weread.lib.plugin_util"] = function()
     return {
@@ -94,6 +94,15 @@ expect(quick_action and quick_action.reader == true
     "quick menu action remains reader-only")
 expect(quick_action and quick_action.title == "WeRead · Quick menu",
     "quick menu action has the requested title")
+local toggle_action = registered.weread_toggle_annotations
+expect(toggle_action and toggle_action.event == "ToggleWeReadAnnotations",
+    "annotation visibility action dispatches the matching reader event")
+expect(toggle_action and toggle_action.reader == true
+        and toggle_action.general ~= true,
+    "annotation visibility action is reader-only")
+expect(toggle_action
+        and toggle_action.title == "WeRead · Toggle underlines and thoughts",
+    "annotation visibility action has a gesture-friendly title")
 local bookshelf_action = registered.weread_bookshelf
 expect(bookshelf_action and bookshelf_action.event == "ShowWeReadBookshelf",
     "bookshelf dispatcher action uses the matching event")
@@ -124,6 +133,44 @@ for name, expected in pairs(general_actions) do
 end
 
 local settings_items = host:getSettingsMenuItems()
+local function menu_has(items, text)
+    for _, item in ipairs(items or {}) do
+        if item.text == text then return true end
+    end
+    return false
+end
+
+local main_items_no_doc = host:getMainMenuItems()
+expect(not menu_has(main_items_no_doc, "WeRead favorites")
+        and not menu_has(main_items_no_doc, "Local bookshelf"),
+    "fork does not expose the skipped upstream local collection entry")
+expect(menu_has(main_items_no_doc, "Plugin update"),
+    "fork keeps the standalone plugin update menu")
+
+host.ui.document = { file = "/books/local.epub" }
+host.detectWeReadBook = function() return nil end
+local local_reader_items = host:getMainMenuItems()
+expect(not menu_has(local_reader_items, "Sync progress now")
+        and not menu_has(local_reader_items, "Book details")
+        and menu_has(local_reader_items, "Local-book underlines and thoughts"),
+    "local document menu retained WeRead-only book actions")
+
+host.detectWeReadBook = function() return "book-1" end
+local weread_reader_items = host:getMainMenuItems()
+expect(menu_has(weread_reader_items, "Sync progress now")
+        and menu_has(weread_reader_items, "Book details")
+        and not menu_has(weread_reader_items, "Local-book underlines and thoughts"),
+    "WeRead book menu retained the local-book annotation submenu")
+
+host.detectWeReadBook = function() return "mp-book" end
+local mp_reader_items = host:getMainMenuItems()
+expect(not menu_has(mp_reader_items, "Sync progress now")
+        and menu_has(mp_reader_items, "Book details")
+        and not menu_has(mp_reader_items, "Local-book underlines and thoughts"),
+    "public-account menu exposed unsupported progress or local-book actions")
+
+host.ui.document = nil
+host.detectWeReadBook = nil
 local download_settings
 local cache_management
 for _, item in ipairs(settings_items) do

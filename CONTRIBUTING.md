@@ -134,6 +134,7 @@ Feature PRs must describe:
 - If menu items are added, removed, renamed, or moved, update `weread/ui/menu.lua` (or the owning feature UI module), `weread/lib/i18n.lua`, and the README menu tree together.
 - For non-public WeRead Web APIs, include a standalone reproducible Python verification script in `scripts/` before implementing it in Lua.
 - Do not commit KOReader `settings/weread.lua`, generated EPUB/cache files, API keys, cookies, anti-abuse headers, or private book content.
+- Keep `settings/weread.lua` limited to small, bounded configuration and critical state. Downloaded content, annotations, thoughts, catalogs, history, and other growing collections must use dedicated SQLite databases under the plugin data directory.
 
 项目约定：
 
@@ -145,6 +146,7 @@ Feature PRs must describe:
 - 如果新增、删除、重命名或移动菜单项，需要同时更新 `weread/ui/menu.lua`（或对应功能的 UI 模块）、`weread/lib/i18n.lua` 和 README 菜单结构。
 - 涉及非公开 WeRead Web API 时，必须先在 `scripts/` 中提交可独立运行、可复现的 Python 验证脚本，再实现 Lua 版本。
 - 不要提交 KOReader 的 `settings/weread.lua`、生成的 EPUB/cache、API key、cookie、反滥用请求头或私人书籍内容。
+- `settings/weread.lua` 只能保存少量、有明确大小上限的配置和关键状态。下载内容、划线、想法、目录、历史记录及其他会持续增长的数据集合，必须存入插件数据目录下相互隔离的 SQLite 数据库。
 
 ## Local checks / 本地检查
 

@@ -6,7 +6,6 @@ local Dispatcher = require("dispatcher")
 local InfoMessage = require("ui/widget/infomessage")
 local logger = require("weread.lib.logger")
 local UIManager = require("ui/uimanager")
-local ThoughtPopup = require("weread.ui.thought_popup")
 local WeRead = require("weread.lib.protocol")
 
 local PluginUtil = require("weread.lib.plugin_util")
@@ -45,6 +44,12 @@ function M:onDispatcherRegisterActions()
         event = "ShowWeReadSearch",
         title = _("WeRead · Search"),
         general = true,
+    })
+    Dispatcher:registerAction("weread_toggle_annotations", {
+        category = "none",
+        event = "ToggleWeReadAnnotations",
+        title = _("WeRead · Toggle underlines and thoughts"),
+        reader = true,
     })
 end
 
@@ -138,48 +143,50 @@ function M:getMainMenuItems()
     }
 
     if self.ui.document then
-        table.insert(items, 2, {
-            text = _("Sync progress now"),
-            keep_menu_open = true,
-            enabled_func = function()
-                local book_id = self:detectWeReadBook()
-                return book_id ~= nil and not WeRead.is_mp_book(book_id)
-            end,
-            callback = self:safeCallback(_("Sync progress now"), function()
-                self:onWeReadSyncProgress()
-            end),
-        })
-        table.insert(items, 3, {
-            text = _("Book details"),
-            keep_menu_open = true,
-            callback = self:safeCallback(_("Book details"), function()
-                self:showCurrentBookDetails()
-            end),
-        })
-        table.insert(items, 4, {
+        local book_id = self:detectWeReadBook()
+        local reader_items = {}
+        if book_id ~= nil then
+            if not WeRead.is_mp_book(book_id) then
+                reader_items[#reader_items + 1] = {
+                    text = _("Sync progress now"),
+                    keep_menu_open = true,
+                    callback = self:safeCallback(_("Sync progress now"), function()
+                        self:onWeReadSyncProgress()
+                    end),
+                }
+            end
+            reader_items[#reader_items + 1] = {
+                text = _("Book details"),
+                keep_menu_open = true,
+                callback = self:safeCallback(_("Book details"), function()
+                    self:showCurrentBookDetails()
+                end),
+            }
+        end
+        reader_items[#reader_items + 1] = {
             text = _("Show underlines and thoughts"),
             checked_func = function()
                 return self.settings:get("cache").show_annotations ~= false
             end,
             keep_menu_open = true,
             callback = self:safeCallback(_("Show underlines and thoughts"), function()
-                local cache = self.settings:get("cache")
-                cache.show_annotations = not (cache.show_annotations ~= false)
-                self.settings:set("cache", cache)
-                self.settings:flush()
-                logger.info(
-                    "annotation visibility changed:",
-                    "show=", tostring(cache.show_annotations)
-                )
-                -- Keep the tap interception registered in both states; hiding is
-                -- handled by _onThoughtTap. Just close any popup already showing.
-                if not cache.show_annotations then
-                    ThoughtPopup.closeVisible()
-                    self._thought_popup_open = nil
-                end
-                self:applyAnnotationVisibility()
+                self:toggleAnnotationVisibility()
             end),
-        })
+        }
+        if book_id == nil then
+            reader_items[#reader_items + 1] = {
+                text = _("Local-book underlines and thoughts"),
+                enabled_func = function()
+                    return self:_xpointerOverlayPrototypeAvailable()
+                end,
+                sub_item_table_func = function()
+                    return self:getXPointerOverlayPrototypeMenuItems()
+                end,
+            }
+        end
+        for index = #reader_items, 1, -1 do
+            table.insert(items, 2, reader_items[index])
+        end
     end
 
     return items

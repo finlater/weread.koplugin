@@ -118,6 +118,10 @@ expect(saved_books["7"].title == "Seven",
     "book was not persisted through BookStore")
 expect(values.books["7"].cache_dir == "/saved/7",
     "settings did not store the minimal book index")
+values.large_runtime_data = { "temporary" }
+settings:delete("large_runtime_data")
+expect(values.large_runtime_data == nil,
+    "settings delete did not remove the requested key")
 expect(settings:has_legacy_book_records(),
     "legacy book record check was not delegated")
 expect(minimal_index_checked, "book index was not passed to BookStore")

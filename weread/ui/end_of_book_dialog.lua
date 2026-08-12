@@ -21,10 +21,11 @@ local M = {}
 --   opts.show_chapter_nav : boolean — show the chapter-list/next-chapter row
 --                           (true only for single-chapter files, not full books)
 --   opts.show_next_chapter : boolean — show the "next chapter" button
---   opts.show_sync_progress : boolean — show the full-width progress sync row
+--   opts.enable_* : boolean — whether each context-dependent action is enabled
+--   opts.annotations_visible : boolean — current annotation visibility state
 --   callbacks             : { on_bookshelf, on_search, on_chapter_list, on_next,
 --                             on_book_details, on_read_stats, on_sync_progress,
---                             on_close_book }
+--                             on_toggle_annotations, on_close_book }
 -- Returns the dialog widget instance.
 function M.show(opts, callbacks)
     opts = opts or {}
@@ -51,12 +52,14 @@ function M.show(opts, callbacks)
         local nav_row = {
             {
                 text = _("Chapter list"),
+                enabled = opts.enable_chapter_list ~= false,
                 callback = function() dismiss_then(callbacks.on_chapter_list) end,
             },
         }
         if opts.show_next_chapter then
             table.insert(nav_row, {
                 text = _("Next chapter"),
+                enabled = opts.enable_next_chapter ~= false,
                 callback = function() dismiss_then(callbacks.on_next) end,
             })
         end
@@ -67,6 +70,7 @@ function M.show(opts, callbacks)
     table.insert(buttons, {
         {
             text = _("Book details"),
+            enabled = opts.enable_book_details ~= false,
             callback = function() dismiss_then(callbacks.on_book_details) end,
         },
         {
@@ -87,15 +91,22 @@ function M.show(opts, callbacks)
         },
     })
 
-    -- Penultimate row: one full-width action, only for a regular WeRead book.
-    if opts.show_sync_progress then
-        table.insert(buttons, {
-            {
-                text = _("Sync progress now"),
-                callback = function() dismiss_then(callbacks.on_sync_progress) end,
-            },
-        })
-    end
+    -- Penultimate row: progress sync and the shared annotation visibility
+    -- toggle. Keep both visible; unsupported context is represented by a
+    -- disabled sync button instead of a no-op/error after tapping.
+    table.insert(buttons, {
+        {
+            text = _("Sync progress now"),
+            enabled = opts.enable_sync_progress ~= false,
+            callback = function() dismiss_then(callbacks.on_sync_progress) end,
+        },
+        {
+            text = opts.annotations_visible == false
+                and _("Show underlines and thoughts")
+                or _("Hide underlines and thoughts"),
+            callback = function() dismiss_then(callbacks.on_toggle_annotations) end,
+        },
+    })
 
     -- Final row: cancel / close book
     table.insert(buttons, {

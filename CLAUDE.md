@@ -27,6 +27,7 @@ weread/lib/crypto.lua         SHA-256, MD5 (pure Lua)
 weread/lib/downloader.lua     Book/chapter download engine (state machine + standby guard)
 weread/lib/i18n.lua           Chinese translations (zh table, _() wrapper)
 weread/lib/position_mapper.lua Pure KOReader ↔ WeRead chapter/offset mapping
+weread/lib/external_annotations_db.lua Per-local-book SQLite annotation storage and migration
 weread/lib/progress_sync.lua  Automatic progress-sync state machine and safety gate
 weread/lib/read_report.lua    Reading-report state machine, context refresh, retries
 weread/lib/reader_state.lua   Web Reader session and position extraction
@@ -67,6 +68,12 @@ weread/ui/thought_popup.lua   Native underline/thought TextViewer with previous/
 - Menu has built-in pagination (swipe, page indicators, search via page indicator tap)
 
 ### Settings Pattern
+
+`settings/weread.lua` is reserved for small, bounded configuration and critical
+state only. Never store downloaded content, annotations, thoughts, catalogs,
+history, or other user-data collections there. Persist growing/queryable data
+in dedicated SQLite databases under the plugin data directory instead, and
+migrate legacy settings data before deleting its old key.
 
 ```lua
 local val = self.settings:get("key")  -- reads with default from defaults table

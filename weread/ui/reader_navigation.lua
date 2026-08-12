@@ -59,7 +59,11 @@ function M:showEndOfBookDialog(book_id)
     EndOfBookDialog.show({
         show_chapter_nav = true,
         show_next_chapter = true,
-        show_sync_progress = true,
+        enable_chapter_list = chapters ~= nil,
+        enable_next_chapter = next_chapter ~= nil,
+        enable_book_details = book ~= nil,
+        enable_sync_progress = is_regular_weread_book,
+        annotations_visible = self.settings:get("cache", {}).show_annotations ~= false,
     }, {
         on_bookshelf = function()
             self:showBookshelf()
@@ -99,6 +103,9 @@ function M:showEndOfBookDialog(book_id)
             else
                 show_context_required()
             end
+        end,
+        on_toggle_annotations = function()
+            self:toggleAnnotationVisibility()
         end,
         on_close_book = function()
             -- Mirror KOReader's ReaderStatus:openFileBrowser(): closing the

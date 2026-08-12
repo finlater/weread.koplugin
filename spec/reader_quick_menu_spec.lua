@@ -67,6 +67,7 @@ expect(host:onShowWeReadReadingStatistics() and action_stats_opened,
 
 local stats_opened = false
 local context_books = {}
+local annotations_toggled = false
 local context_host = {
     ui = { document = { file = "/books/local.epub" } },
     settings = {
@@ -80,6 +81,7 @@ local context_host = {
     showBookshelf = function() end,
     showSearch = function() end,
     showReadStats = function() stats_opened = true end,
+    toggleAnnotationVisibility = function() annotations_toggled = true end,
 }
 for key, value in pairs(Navigation) do
     if context_host[key] == nil then context_host[key] = value end
@@ -88,14 +90,20 @@ end
 expect(context_host:showEndOfBookDialog(nil),
     "global quick menu builds without a WeRead book")
 expect(dialog_options.show_chapter_nav and dialog_options.show_next_chapter
-        and dialog_options.show_sync_progress,
-    "all quick-menu actions remain visible for local documents")
+        and dialog_options.enable_chapter_list == false
+        and dialog_options.enable_next_chapter == false
+        and dialog_options.enable_book_details == false
+        and dialog_options.enable_sync_progress == false,
+    "context-dependent actions are visible but disabled for local documents")
 dialog_callbacks.on_chapter_list()
 expect(notice and notice.timeout == 1,
     "context-dependent action explains why it is unavailable")
 dialog_callbacks.on_read_stats()
 expect(stats_opened,
     "reading statistics remains available for local documents")
+dialog_callbacks.on_toggle_annotations()
+expect(annotations_toggled,
+    "quick menu annotation button delegates to the shared visibility toggle")
 
 context_books["mp-book"] = { book_id = "mp-book", title = "Article" }
 context_host.ensureChaptersLoaded = function()
@@ -103,6 +111,11 @@ context_host.ensureChaptersLoaded = function()
 end
 expect(context_host:showEndOfBookDialog("mp-book"),
     "quick menu opens for a public account article")
+expect(dialog_options.enable_book_details == true
+        and dialog_options.enable_chapter_list == false
+        and dialog_options.enable_next_chapter == false
+        and dialog_options.enable_sync_progress == false,
+    "public account articles only enable supported contextual actions")
 notice = nil
 dialog_callbacks.on_sync_progress()
 expect(notice and notice.timeout == 1,

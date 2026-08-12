@@ -12,8 +12,6 @@
 -- threw would leak the guard and leave the device unable to sleep until reboot.
 
 local ConfirmBox = require("ui/widget/confirmbox")
-local Device = require("device")
-local PluginShare = require("pluginshare")
 local UIManager = require("ui/uimanager")
 local logger = require("weread.lib.logger")
 local time = require("ui/time")
@@ -23,6 +21,7 @@ local Content = require("weread.lib.content")
 local DownloadDialog = require("weread.ui.download_dialog")
 local Footnotes = require("weread.lib.footnotes")
 local I18n = require("weread.lib.i18n")
+local StandbyGuard = require("weread.lib.standby_guard")
 local Thoughts = require("weread.lib.thoughts")
 local WeRead = require("weread.lib.protocol")
 
@@ -47,34 +46,6 @@ local function display_error(err)
     return text
 end
 
--- Block OS-level standby (Kindle powerd, Kobo lid/menu-suspend, etc.)
-local function preventOsStandby()
-    if Device:isKindle() then
-        os.execute("lipc-set-prop com.lab126.powerd preventScreenSaver 1")
-    end
-    if Device:isCervantes() or Device:isKobo() then
-        PluginShare.pause_auto_suspend = true
-    end
-end
-
-local function allowOsStandby()
-    if Device:isKindle() then
-        os.execute("lipc-set-prop com.lab126.powerd preventScreenSaver 0")
-    end
-    if Device:isCervantes() or Device:isKobo() then
-        PluginShare.pause_auto_suspend = false
-    end
-end
-
-local function recoverOsStandby()
-    -- Only Kindle keeps this guard in an external powerd process. Kobo and
-    -- Cervantes use an in-process shared flag which may currently be owned by
-    -- another component and must not be reset during plugin initialization.
-    if Device:isKindle() then
-        os.execute("lipc-set-prop com.lab126.powerd preventScreenSaver 0")
-    end
-end
-
 local Downloader = {}
 Downloader.__index = Downloader
 
@@ -95,7 +66,7 @@ function Downloader:recover()
     -- A SIGKILL/OOM cannot run the normal finally path. A fresh plugin process
     -- owns no active download, so it is safe to clear the persistent Kindle
     -- powerd flag and remove disk artifacts left by the previous process.
-    recoverOsStandby()
+    StandbyGuard.recover()
     local ok, removed = pcall(Content.cleanup_stale_downloads, self.settings)
     if not ok then
         logger.warn("stale download recovery failed:", log_error(removed))
@@ -120,8 +91,7 @@ end
 function Downloader:_beginStandby()
     self._standby_ref = (self._standby_ref or 0) + 1
     if self._standby_ref == 1 then
-        UIManager:preventStandby()
-        preventOsStandby()
+        self._standby_token = StandbyGuard.acquire()
     end
 end
 
@@ -132,8 +102,8 @@ function Downloader:_endStandby()
     end
     self._standby_ref = ref - 1
     if self._standby_ref == 0 then
-        UIManager:allowStandby()
-        allowOsStandby()
+        StandbyGuard.release(self._standby_token)
+        self._standby_token = nil
     end
 end
 

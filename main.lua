@@ -6,6 +6,7 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local Client = require("weread.lib.client")
 local Content = require("weread.lib.content")
 local Downloader = require("weread.lib.downloader")
+local ExternalAnnotationsDB = require("weread.lib.external_annotations_db")
 local Integrations = require("integrations.init")
 local LibraryDB = require("weread.lib.library_db")
 local Mixin = require("weread.lib.mixin")
@@ -62,6 +63,7 @@ end
 function WeReadPlugin:init()
     math.randomseed(os.time())
     self.settings = Settings:new()
+    self.external_annotations_db = ExternalAnnotationsDB:new(self.settings)
     self.library_db = LibraryDB:new(self.settings)
     self.client = Client:new(self.settings)
     self.downloader = Downloader:new{
@@ -86,6 +88,7 @@ function WeReadPlugin:init()
         end,
     }
     Migrations.run(self.settings, self.client)
+    self.external_annotations_db:migrateLegacySettings()
     if self.downloader.recover then
         self.downloader:recover()
     end
@@ -223,6 +226,7 @@ Mixin.apply(WeReadPlugin, {
     (require("weread.ui.read_report")),
     (require("weread.ui.library")),
     (require("weread.ui.annotations_controller")),
+    (require("weread.ui.xpointer_overlay_controller")),
     (require("weread.ui.reader_navigation")),
     (require("weread.lib.reader_lifecycle")),
 })

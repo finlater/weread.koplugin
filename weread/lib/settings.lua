@@ -230,6 +230,14 @@ function Settings:set(key, value)
     self.store:saveSetting(key, value)
 end
 
+function Settings:delete(key)
+    if type(self.store.delSetting) == "function" then
+        self.store:delSetting(key)
+    else
+        self.store:saveSetting(key, nil)
+    end
+end
+
 function Settings:has_legacy_book_records()
     local books = self.store:readSetting("books", {})
     return not BookStore.is_minimal_index(books)

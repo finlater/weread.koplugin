@@ -140,6 +140,12 @@ function M:onReaderReady()
         end
     end
 
+    -- Register the EPUB-safe external annotation prototype for any CREngine
+    -- document. The view module remains empty until the user adds a prototype
+    -- range, so unsupported/non-participating books pay only an empty module
+    -- function call during paint.
+    self:_setupXPointerOverlayPrototype()
+
     self.progress_sync:on_reader_ready()
     -- Auto mode silently skips non-WeRead documents; no toast (still logged by ReadReport).
     local prefetch_session_gen = self._reader_session_gen
@@ -163,6 +169,7 @@ function M:onCloseDocument()
     self.downloader:cancelPrefetch("document_closed")
     self._current_weread_book_id = nil
     self:_teardownThoughtInterception()
+    self:_teardownXPointerOverlayPrototype()
     self:_removeReaderHighlightTapGuard()
 
     if self._orig_onEndOfBook and self.ui.status then

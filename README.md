@@ -183,6 +183,10 @@ koreader/plugins/weread.koplugin/
 ├── 立即同步进度       （阅读微信读书缓存书籍时显示）
 ├── 书籍详情           （阅读微信读书缓存书籍时显示）
 ├── 显示划线和想法     （阅读书籍时显示，开关）
+├── 本地书划线和想法   （阅读非微信读书的可重排文档时显示；不修改 EPUB/KOReader 笔记）
+│   ├── 匹配微信读书书目 / 已匹配：书名
+│   ├── 同步划线与想法（同步后显示已匹配条数）
+│   └── 清除数据
 ├── 书架               书籍 / 公众号 Tab；书架内搜索、离线缓存、手动更新
 ├── 搜索               搜索微信读书
 ├── 阅读时间上报        后台上报阅读时长
@@ -236,6 +240,9 @@ koreader/plugins/weread.koplugin/
 ## 贡献
 
 欢迎提交 issue 和 PR。提交前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+XPointer 外部标注层仍是实验性功能，测试步骤和限制见
+[原型说明](docs/xpointer-overlay-prototype.md)。
 
 ## 许可证
 
