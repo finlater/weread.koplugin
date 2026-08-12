@@ -826,6 +826,32 @@ function Downloader:_step(dl)
             end
             return
         end
+        -- A full-book cache must be complete. Saving the chapters that happened
+        -- to succeed under the stable `full.epub` path makes KOReader present a
+        -- structurally valid but truncated book and replaces any previous good
+        -- cache. Explicit single- or multi-chapter jobs remain best-effort.
+        if dl.suffix == "full" and #dl.failed > 0 then
+            if dl.progress_dialog then
+                dl.progress_dialog:close()
+                dl.progress_dialog = nil
+            end
+            self:_releaseStandby(dl)
+            self:_cleanupWorkspace(dl)
+            logger.warn(
+                "full-book download aborted after chapter failures:",
+                "success=", tostring(#dl.selected),
+                "failed=", tostring(#dl.failed),
+                "total=", tostring(dl.total)
+            )
+            self:_notifyCompletion(dl, false, "incomplete_full_book")
+            self:_finishJob(dl)
+            if not dl.prefetch then
+                self.show_info(T(_(
+                    "Full-book download stopped: %1 of %2 chapters failed.\n\nNo incomplete EPUB was saved. Please retry the download."
+                ), tostring(#dl.failed), tostring(dl.total)))
+            end
+            return
+        end
         if dl.footnote_scans and not dl.footnotes_done then
             self:_startFootnotes(dl)
             return
