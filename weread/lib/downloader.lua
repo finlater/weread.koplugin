@@ -526,6 +526,29 @@ function Downloader:_failChapter(dl, err)
     self:_scheduleGuarded(dl, function() self:_step(dl) end)
 end
 
+function Downloader:_retryChapterSource(dl, err)
+    local chapter = dl.chapters[dl.index]
+    local uid = tostring(chapter and chapter.chapterUid or dl.index)
+    dl.chapter_source_retries = dl.chapter_source_retries or {}
+    local attempt = (dl.chapter_source_retries[uid] or 0) + 1
+    dl.chapter_source_retries[uid] = attempt
+    if attempt > 2 then
+        dl.chapter_source_retries[uid] = nil
+        self:_failChapter(dl, err)
+        return false
+    end
+    logger.warn("chapter source download failed; retrying:",
+        "index=", tostring(dl.index) .. "/" .. tostring(dl.total),
+        "chapter_uid=", uid, "attempt=", tostring(attempt),
+        "error=", log_error(err))
+    self:_setStage(dl,
+        T(_("Retrying chapter %1/%2 · attempt %3"),
+            tostring(dl.index), tostring(dl.total), tostring(attempt)),
+        dl.index - 1)
+    self:_scheduleGuarded(dl, function() self:_step(dl) end, 0.8 * attempt)
+    return true
+end
+
 local function add_footnote_stats(total, current)
     for _i, key in ipairs({
         "candidates", "converted", "image_notes", "backlinks",
@@ -1053,8 +1076,11 @@ function Downloader:_step(dl)
     end)
     self:_perf(dl, "chapter_source", started, "ok=", tostring(ok))
     if not ok then
-        self:_failChapter(dl, xhtml)
+        self:_retryChapterSource(dl, xhtml)
         return
+    end
+    if dl.chapter_source_retries then
+        dl.chapter_source_retries[tostring(chapter.chapterUid or dl.index)] = nil
     end
     local uid = tostring(chapter.chapterUid or dl.index)
     local scan_ok, scan = pcall(Footnotes.scan_chapter, xhtml, chapter)

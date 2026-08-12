@@ -24,6 +24,28 @@ package.preload["weread.lib.thoughts"] = function() return {} end
 local archive_calls = {}
 local archive_should_fail = false
 package.preload["ffi/archiver"] = function()
+    local Reader = {}
+    function Reader:new() return setmetatable({}, { __index = self }) end
+    function Reader:open(path)
+        self.path = path
+        self.index = 0
+        return true
+    end
+    function Reader:iterate()
+        local entries = {
+            { path = "converted/page-1.jpeg", mode = "file", size = 7 },
+            { path = "converted/metadata.json", mode = "file", size = 2 },
+        }
+        return function()
+            self.index = self.index + 1
+            return entries[self.index]
+        end
+    end
+    function Reader:extractToMemory(path)
+        if path:match("[.]jpeg$") then return "\255\216\255jpeg" end
+        return "{}"
+    end
+    function Reader:close() end
     local Writer = {}
     function Writer:new() return setmetatable({}, { __index = self }) end
     function Writer:open(path)
@@ -56,7 +78,7 @@ package.preload["ffi/archiver"] = function()
         return false
     end
     function Writer:close() end
-    return { Writer = Writer }
+    return { Reader = Reader, Writer = Writer }
 end
 package.preload["ffi/util"] = function()
     return {
@@ -146,6 +168,26 @@ expect(first:read(3) == "\255\216\255", "extracted image bytes were corrupted")
 first:close()
 expect(io.open(workspace.incoming_dir .. "/chapter-7.tar", "rb") == nil,
     "source TAR was not removed after extraction")
+
+function fake_client:download_to_file(_url, path)
+    local file = assert(io.open(path, "wb"))
+    file:write("PK\003\004fake converted-book ZIP")
+    file:close()
+    return path
+end
+local zip_assets, zip_src_map = Content.download_chapter_assets_to_files(
+    fake_client, { book_id = "converted-book" },
+    { chapterUid = 1, tar = "https://example.test/resources" },
+    {}, workspace)
+expect(#zip_assets == 1, "ZIP image resources were not extracted")
+local zip_image = assert(io.open(zip_assets[1].path, "rb"))
+expect(zip_image:read(3) == "\255\216\255",
+    "ZIP image was not staged on disk")
+zip_image:close()
+expect(zip_src_map["page-1.jpeg"] == "../" .. zip_assets[1].href,
+    "ZIP image map was wrong")
+expect(io.open(workspace.incoming_dir .. "/chapter-1.tar", "rb") == nil,
+    "source ZIP was not removed after extraction")
 
 local settings = {
     cache_dir = root,

@@ -256,6 +256,7 @@ local zh = {
     ["Downloading underlines · chapter %1/%2"] = "正在下载划线 · 章节 %1/%2",
     ["Downloading thoughts %1/%2 · chapter %3/%4"] = "正在下载想法 %1/%2 · 章节 %3/%4",
     ["Retrying thoughts %1/%2 · attempt %3"] = "正在重试想法 %1/%2 · 第 %3 次",
+    ["Retrying chapter %1/%2 · attempt %3"] = "正在重试章节 %1/%2 · 第 %3 次",
     ["Processing underlines and thoughts · chapter %1/%2"] = "正在处理划线和想法 · 章节 %1/%2",
     ["Downloading images · chapter %1/%2"] = "正在下载图片 · 章节 %1/%2",
     ["Processing chapter %1/%2"] = "正在处理章节 %1/%2",

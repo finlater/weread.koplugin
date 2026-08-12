@@ -1018,6 +1018,57 @@ end
 local MAX_TAR_ENTRY_BYTES = 512 * 1024 * 1024
 local FILE_COPY_CHUNK_BYTES = 64 * 1024
 
+-- WeRead's catalog field is named `tar`, but cloud-converted documents may
+-- point it at a ZIP archive instead. KOReader already ships libarchive, so use
+-- its format auto-detection for those resources while keeping the small TAR
+-- reader below for the common streaming path.
+local function extract_zip_images(archive_path, asset_dir, used_names)
+    local Archiver = require("ffi/archiver")
+    local archive = Archiver.Reader:new()
+    local assets = {}
+    local src_map = {}
+    local ok, err = xpcall(function()
+        if not archive:open(archive_path) then
+            error(archive.err or "could not open chapter resource archive")
+        end
+        for entry in archive:iterate() do
+            if entry.mode == "file" and entry.size > 0 then
+                if entry.size > MAX_TAR_ENTRY_BYTES then
+                    error("chapter resource archive entry is too large")
+                end
+                local data = archive:extractToMemory(entry.path)
+                if not data then
+                    error(archive.err or "could not extract chapter resource")
+                end
+                local ext, media_type = media_type_for(data)
+                if media_type:match("^image/") then
+                    local stem = basename(entry.path)
+                    local filename = unique_asset_name(used_names, stem, ext)
+                    local href = "images/" .. filename
+                    local asset = { href = href, media_type = media_type }
+                    if asset_dir then
+                        local output = assert(io.open(asset_dir .. "/" .. filename, "wb"))
+                        assert(output:write(data))
+                        output:close()
+                        asset.path = asset_dir .. "/" .. filename
+                        asset.size = #data
+                        asset.store = true
+                    else
+                        asset.data = data
+                    end
+                    table.insert(assets, asset)
+                    local epub_relative = "../" .. href
+                    src_map[stem] = epub_relative
+                    src_map[filename] = epub_relative
+                end
+            end
+        end
+    end, debug.traceback)
+    archive:close()
+    if not ok then error(err, 0) end
+    return assets, src_map
+end
+
 local function extract_tar_images(tar_path, asset_dir, used_names)
     local input, open_err = io.open(tar_path, "rb")
     if not input then error(open_err or "could not open chapter resource archive") end
@@ -1105,8 +1156,13 @@ function Content.download_chapter_assets_to_files(client, book, chapter, used_na
         referer = referer,
         max_bytes = MAX_TAR_ENTRY_BYTES,
     })
+    local input = assert(io.open(tar_path, "rb"))
+    local signature = input:read(4) or ""
+    input:close()
+    local extractor = signature:sub(1, 2) == "PK"
+        and extract_zip_images or extract_tar_images
     local ok, assets, src_map = pcall(
-        extract_tar_images, tar_path, workspace.asset_dir, used_names)
+        extractor, tar_path, workspace.asset_dir, used_names)
     pcall(os.remove, tar_path)
     if not ok then error(assets, 0) end
     return assets, src_map
