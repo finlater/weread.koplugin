@@ -450,9 +450,18 @@ function Content.cleanup_stale_downloads(settings)
     if not ok_lfs then ok_lfs, lfs = pcall(require, "lfs") end
     if not ok_lfs or not lfs then return 0 end
     local dirs = {}
+    -- Full-book EPUBs and their atomic .part/.weread-backup files live in the
+    -- flat user-facing library root in this fork, while staged assets live in
+    -- each book's sidecar directory. Scan both locations during recovery.
+    local content_dir = Content.book_content_dir(settings)
+    if type(content_dir) == "string" and content_dir ~= "" then
+        dirs[content_dir:gsub("/+$", "")] = true
+    end
     for book_id, book in pairs(settings:get("books", {}) or {}) do
         local dir = Content.book_resolved_dir(settings, book_id, book)
-        dirs[dir] = true
+        if type(dir) == "string" and dir ~= "" then
+            dirs[dir:gsub("/+$", "")] = true
+        end
     end
     local removed = 0
     for dir in pairs(dirs) do

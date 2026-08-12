@@ -1251,25 +1251,6 @@ function M:showChapterDownloadSelection(book, chapters, on_downloaded)
         _("No chapters."), { items_per_page = perpage })
 end
 
--- Dismiss every full-screen WeRead UI (bookshelf, book details, chapter
--- list) still sitting on top of the file manager before opening a document.
--- KOReader only tears down once its window stack is empty, so a leftover
--- shelf view would block quitting until the user manually closes it.
-function M:closeWeReadUI()
-    if self.shelf_view then
-        UIManager:close(self.shelf_view)
-        self.shelf_view = nil
-    end
-    if self._book_detail_view then
-        UIManager:close(self._book_detail_view)
-        self._book_detail_view = nil
-    end
-    if self._chapter_list_view then
-        UIManager:close(self._chapter_list_view)
-        self._chapter_list_view = nil
-    end
-end
-
 function M:openFile(path)
     if not path or path == "" then
         self:showInfo(_("No cached file."))
