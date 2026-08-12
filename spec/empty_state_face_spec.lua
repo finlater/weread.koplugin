@@ -140,6 +140,44 @@ local ok, error_message = pcall(function()
 end)
 expect(ok, "empty bookshelf failed to build: " .. tostring(error_message))
 
+local books = {}
+for index = 1, 25 do
+    books[index] = { bookId = tostring(index), title = "Book " .. tostring(index) }
+end
+local changed_page
+local paged_view = LibraryView.show({
+    mode = "books", books = books, accounts = {},
+    paged = true, page = 2, page_size = 10,
+}, {
+    on_page_changed = function(page) changed_page = page end,
+})
+expect(paged_view.page == 2 and paged_view.page_count == 3,
+    "bookshelf page metadata was wrong")
+expect(#paged_view._item_rows == 10,
+    "paged bookshelf created rows outside the current page")
+expect(#paged_view._page_buttons == 3,
+    "paged bookshelf did not create navigation controls")
+paged_view._page_buttons[3].callback()
+expect(changed_page == 3, "next-page button returned the wrong page")
+
+local clamped_view = LibraryView.show({
+    mode = "books", books = books, accounts = {},
+    paged = true, page = 99, page_size = 10,
+}, {})
+expect(clamped_view.page == 3 and #clamped_view._item_rows == 5,
+    "last bookshelf page was not clamped and sliced correctly")
+
+local large_shelf = {}
+for index = 1, 1000 do
+    large_shelf[index] = { bookId = tostring(index), title = "Book " .. tostring(index) }
+end
+local large_view = LibraryView.show({
+    mode = "books", books = large_shelf, accounts = {},
+    paged = true, page = 50, page_size = 10,
+}, {})
+expect(large_view.page_count == 100 and #large_view._item_rows == 10,
+    "large bookshelf created more than one page of row widgets")
+
 local BookReviewsView = require("weread.ui.book_reviews_view")
 ok, error_message = pcall(function()
     BookReviewsView.show({
@@ -149,6 +187,6 @@ ok, error_message = pcall(function()
     }, {})
 end)
 expect(ok, "empty review list failed to build: " .. tostring(error_message))
-expect(#shown == 2, "both empty-state views should be shown")
+expect(#shown == 5, "all bookshelf and empty-state views should be shown")
 
 print(("empty_state_face_spec: %d checks"):format(checks))

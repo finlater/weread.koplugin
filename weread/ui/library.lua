@@ -21,6 +21,11 @@ local file_exists = PluginUtil.file_exists
 local M = {}
 local sortBooks
 
+local function is_kindle()
+    local ok, device = pcall(require, "device")
+    return ok and device and device.isKindle and device:isKindle() or false
+end
+
 local local_cache_fields = {
     cache_dir = true,
     cached_file = true,
@@ -90,6 +95,7 @@ function M:onWeReadAccountChanged()
     self.shelf_mp = nil
     self.shelf_books = nil
     self.shelf_search_keyword = nil
+    self.shelf_view_pages = nil
 end
 
 function M:applyShelfSnapshot(all_books)
@@ -162,6 +168,7 @@ function M:showShelfView(mode, keyword, old_view, options)
     options.keyword = keyword
     self.shelf_view_mode = mode
     self.shelf_search_keyword = keyword
+    self.shelf_view_pages = self.shelf_view_pages or { books = 1, public_account = 1 }
     local saved_books = self.settings:get("books", {})
     local downloaded_cache = {}
     local function filtered(source, with_download_state)
@@ -179,8 +186,12 @@ function M:showShelfView(mode, keyword, old_view, options)
         end
         return result
     end
-    local books = filtered(self.shelf_regular, true)
-    local accounts = filtered(self.shelf_mp, false)
+    local prepared = options.prepared_shelf
+    local books = prepared and prepared.books or filtered(self.shelf_regular, true)
+    local accounts = prepared and prepared.accounts or filtered(self.shelf_mp, false)
+    local paged = is_kindle()
+    local page = paged and (options.page or self.shelf_view_pages[mode] or 1) or 1
+    local page_size = math.max(4, list_items_per_page() - 4)
     if old_view then UIManager:close(old_view) end
     local view
     view = LibraryView.show({
@@ -192,23 +203,41 @@ function M:showShelfView(mode, keyword, old_view, options)
         keyword = keyword,
         sort_label = self:shelfSortSummary(),
         filter_label = self:shelfFilterSummary(),
+        paged = paged,
+        page = page,
+        page_size = page_size,
     }, {
         on_switch = function(new_mode)
-            self:showShelfView(new_mode, keyword, view, options)
+            local next_options = {}
+            for key, value in pairs(options) do next_options[key] = value end
+            next_options.prepared_shelf = { books = books, accounts = accounts }
+            next_options.page = self.shelf_view_pages[new_mode] or 1
+            self:showShelfView(new_mode, keyword, view, next_options)
         end,
         on_search = function()
             self:showShelfSearchDialog(view, mode, keyword, options)
         end,
         on_refresh = function()
-            self:refreshBookshelf(view, options)
+            self.shelf_view_pages = { books = 1, public_account = 1 }
+            local refresh_options = {}
+            for key, value in pairs(options) do refresh_options[key] = value end
+            refresh_options.prepared_shelf = nil
+            refresh_options.page = 1
+            self:refreshBookshelf(view, refresh_options)
         end,
         on_sort = function()
             self:showShelfSortOptions(function()
+                self.shelf_view_pages = { books = 1, public_account = 1 }
+                options.prepared_shelf = nil
+                options.page = 1
                 self:showShelfView(mode, keyword, view, options)
             end)
         end,
         on_filter = function()
             self:showShelfFilterOptions(function()
+                self.shelf_view_pages = { books = 1, public_account = 1 }
+                options.prepared_shelf = nil
+                options.page = 1
                 self:showShelfView(mode, keyword, view, options)
             end)
         end,
@@ -221,7 +250,16 @@ function M:showShelfView(mode, keyword, old_view, options)
                 self:showBookRecord(book)
             end
         end,
+        on_page_changed = function(new_page)
+            self.shelf_view_pages[mode] = new_page
+            local next_options = {}
+            for key, value in pairs(options) do next_options[key] = value end
+            next_options.prepared_shelf = { books = books, accounts = accounts }
+            next_options.page = new_page
+            self:showShelfView(mode, keyword, view, next_options)
+        end,
     })
+    if paged then self.shelf_view_pages[mode] = view.page end
     self.shelf_view = view
 end
 
@@ -236,6 +274,9 @@ function M:showShelfSearchDialog(view, mode, keyword, options)
                 text = _("Clear"),
                 callback = self:safeCallback(_("Clear"), function()
                     UIManager:close(dialog)
+                    self.shelf_view_pages = { books = 1, public_account = 1 }
+                    options.prepared_shelf = nil
+                    options.page = 1
                     self:showShelfView(mode, nil, view, options)
                 end),
             },
@@ -245,6 +286,9 @@ function M:showShelfSearchDialog(view, mode, keyword, options)
                 callback = self:safeCallback(_("Search"), function()
                     local value = dialog:getInputText()
                     UIManager:close(dialog)
+                    self.shelf_view_pages = { books = 1, public_account = 1 }
+                    options.prepared_shelf = nil
+                    options.page = 1
                     self:showShelfView(
                         mode, value ~= "" and value or nil, view, options
                     )

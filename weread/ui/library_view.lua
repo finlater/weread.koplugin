@@ -111,6 +111,10 @@ local LibraryView = FocusManager:extend{
     on_sort = nil,
     on_filter = nil,
     on_select = nil,
+    paged = false,
+    page = 1,
+    page_size = 10,
+    on_page_changed = nil,
 }
 
 function LibraryView:tabBar()
@@ -241,7 +245,16 @@ function LibraryView:content()
         })
         return content
     end
-    for _i, book in ipairs(source) do
+    local first = 1
+    local last = #source
+    if self.paged then
+        self.page_count = math.max(1, math.ceil(#source / self.page_size))
+        self.page = math.max(1, math.min(tonumber(self.page) or 1, self.page_count))
+        first = (self.page - 1) * self.page_size + 1
+        last = math.min(#source, first + self.page_size - 1)
+    end
+    for index = first, last do
+        local book = source[index]
         local shelf_row = ShelfRow:new{
             text = book.title or book.bookId or book.book_id or _("Untitled"),
             status = self:itemStatus(book),
@@ -263,6 +276,37 @@ function LibraryView:content()
         })
     end
     return content
+end
+
+function LibraryView:pageBar()
+    if not self.paged or (self.page_count or 1) <= 1 then return nil end
+    local cell_w = math.floor(self.screen_w / 3)
+    local previous = Button:new{
+        text = _("Previous"), width = cell_w, radius = 0, margin = 0,
+        bordersize = 0, enabled = self.page > 1, show_parent = self,
+        callback = function()
+            if self.page > 1 and self.on_page_changed then
+                self.on_page_changed(self.page - 1)
+            end
+        end,
+    }
+    local page_text = Button:new{
+        text = T(_("Page %1 of %2"), tostring(self.page), tostring(self.page_count)),
+        width = cell_w, radius = 0, margin = 0, bordersize = 0,
+        enabled = false, show_parent = self,
+    }
+    local next_page = Button:new{
+        text = _("Next"), width = self.screen_w - 2 * cell_w,
+        radius = 0, margin = 0, bordersize = 0,
+        enabled = self.page < self.page_count, show_parent = self,
+        callback = function()
+            if self.page < self.page_count and self.on_page_changed then
+                self.on_page_changed(self.page + 1)
+            end
+        end,
+    }
+    self._page_buttons = { previous, page_text, next_page }
+    return HorizontalGroup:new{ previous, page_text, next_page }
 end
 
 function LibraryView:init()
@@ -287,12 +331,17 @@ function LibraryView:init()
     }
     local tabs = self:tabBar()
     local actions = self:actionBar()
+    -- Build the content first: pagination computes the clamped page count and
+    -- creates only the current page's rows.
+    local content = self:content()
+    local page_bar = self:pageBar()
     local scroll_h = self.screen_h - self.title_bar:getHeight()
         - tabs:getSize().h - actions:getSize().h
+        - (page_bar and page_bar:getSize().h or 0)
     local scroll = ScrollableContainer:new{
         dimen = Geom:new{ w = self.screen_w, h = scroll_h },
         show_parent = self,
-        VerticalGroup:new{ align = "left", self:content() },
+        VerticalGroup:new{ align = "left", content },
     }
     local rows = {
         self._tab_buttons,
@@ -306,6 +355,10 @@ function LibraryView:init()
     for _i, button in ipairs(self._tab_buttons) do outside_scroll[button] = true end
     for _i, button in ipairs(self._action_secondary) do outside_scroll[button] = true end
     for _i, button in ipairs(self._action_primary) do outside_scroll[button] = true end
+    if self._page_buttons then
+        rows[#rows + 1] = self._page_buttons
+        for _i, button in ipairs(self._page_buttons) do outside_scroll[button] = true end
+    end
     FocusNav.apply(self, rows, { scroll = scroll, outside_scroll = outside_scroll })
     -- Items follow the three fixed rows (tabs, secondary, primary actions).
     FocusNav.initialFocus(self, 1, #rows > 3 and 4 or 1)
@@ -313,8 +366,25 @@ function LibraryView:init()
         background = Blitbuffer.COLOR_WHITE,
         bordersize = 0, padding = 0, margin = 0,
         dimen = self.dimen:copy(),
-        VerticalGroup:new{ align = "left", self.title_bar, tabs, actions, scroll },
+        VerticalGroup:new{
+            align = "left", self.title_bar, tabs, actions, scroll,
+            page_bar or VerticalSpan:new{ width = 0 },
+        },
     }
+    if self.paged and Device:hasKeys() then
+        self.onNextPage = function(view)
+            if view.page < view.page_count and view.on_page_changed then
+                view.on_page_changed(view.page + 1)
+            end
+            return true
+        end
+        self.onPrevPage = function(view)
+            if view.page > 1 and view.on_page_changed then
+                view.on_page_changed(view.page - 1)
+            end
+            return true
+        end
+    end
 end
 
 function LibraryView:onShow()
@@ -343,12 +413,16 @@ function M.show(data, callbacks)
         keyword = data.keyword,
         sort_label = data.sort_label,
         filter_label = data.filter_label,
+        paged = data.paged == true,
+        page = data.page,
+        page_size = data.page_size,
         on_switch = callbacks.on_switch,
         on_search = callbacks.on_search,
         on_refresh = callbacks.on_refresh,
         on_sort = callbacks.on_sort,
         on_filter = callbacks.on_filter,
         on_select = callbacks.on_select,
+        on_page_changed = callbacks.on_page_changed,
     }
     UIManager:show(view)
     return view
