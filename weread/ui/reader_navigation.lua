@@ -21,6 +21,16 @@ function M:onShowWeReadBookshelf()
     return true
 end
 
+function M:onShowWeReadReadingStatistics()
+    self:showReadStats()
+    return true
+end
+
+function M:onShowWeReadSearch()
+    self:showSearch()
+    return true
+end
+
 function M:showEndOfBookDialog(book_id)
     local file_path = self.ui.document and self.ui.document.file
     if not file_path then return false end

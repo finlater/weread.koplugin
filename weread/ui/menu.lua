@@ -32,7 +32,19 @@ function M:onDispatcherRegisterActions()
         category = "none",
         event = "ShowWeReadBookshelf",
         title = _("WeRead · Bookshelf"),
-        reader = true,
+        general = true,
+    })
+    Dispatcher:registerAction("weread_reading_statistics", {
+        category = "none",
+        event = "ShowWeReadReadingStatistics",
+        title = _("WeRead · Reading statistics"),
+        general = true,
+    })
+    Dispatcher:registerAction("weread_search", {
+        category = "none",
+        event = "ShowWeReadSearch",
+        title = _("WeRead · Search"),
+        general = true,
     })
 end
 

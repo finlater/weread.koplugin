@@ -18,9 +18,12 @@ Annotations.UNDERLINE_CSS = [[
 ]]
 
 -- 想法标记（星号）CSS 样式 — 浅色、右上角、小字号
+-- ::before 插入 U+2060 WORD JOINER，避免 CREngine/libunibreak
+-- 在 CJK 字符与 "*" 之间断行导致星号落到行首（KOReader 官方推荐的 glue 写法）。
 Annotations.THOUGHT_CSS = [[
 .wr-thought-link{text-decoration:none;color:inherit;}
 .wr-star{font-size:0.6em;vertical-align:super;line-height:0;color:#aaa;margin-left:1px;}
+.wr-star::before{content:"\2060";}
 ]]
 
 --- 去除字符串开头的 UTF-8 BOM（\ufeff）。
@@ -368,10 +371,18 @@ function Annotations.injectUnderlines(html, underlines, thought_reviews, chapter
             local underline_close = '</span>'
             local underline_close_with_ref = '<span class="wr-star">*</span></span>'
 
-            -- 星号注入到最后一个 underline span 末尾
-            local last_idx = #wrapped
-            if wrapped[last_idx] == underline_close then
-                wrapped[last_idx] = underline_close_with_ref
+            -- A range may end in whitespace or closing block tags, which
+            -- wrapTextSegments leaves outside the final underline span. Find
+            -- the last actual text span instead of assuming it is the final
+            -- wrapped item, so the marker remains attached to the underlined
+            -- text rather than being emitted after </p> on a new line.
+            local star_appended = false
+            for index = #wrapped, 1, -1 do
+                if wrapped[index] == underline_close then
+                    wrapped[index] = underline_close_with_ref
+                    star_appended = true
+                    break
+                end
             end
 
             -- 内部锚点（非 noteref）：去掉 epub:type="noteref" 避免 crengine 走专用
@@ -399,6 +410,13 @@ function Annotations.injectUnderlines(html, underlines, thought_reviews, chapter
                 else
                     with_links[#with_links + 1] = item
                 end
+            end
+            if not star_appended then
+                -- A whitespace-only range has no underline span to attach to;
+                -- keep a standalone marker as the defensive fallback.
+                with_links[#with_links + 1] = first_link and open_a_with_id or open_a
+                with_links[#with_links + 1] = '<span class="wr-star">*</span>'
+                with_links[#with_links + 1] = '</a>'
             end
             wrapped = with_links
         end

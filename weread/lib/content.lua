@@ -323,6 +323,14 @@ local function media_type_for(data)
     return ".bin", "application/octet-stream"
 end
 
+local function media_type_for_file(path)
+    local file, err = io.open(path, "rb")
+    if not file then return nil, nil, err end
+    local head = file:read(12) or ""
+    file:close()
+    return media_type_for(head)
+end
+
 local function trim_nulls(value)
     return tostring(value or ""):gsub("%z.*$", ""):gsub("%s+$", "")
 end
@@ -381,33 +389,206 @@ local function write_file(path, data)
     file:close()
 end
 
+local function make_path(path)
+    local ok, util = pcall(require, "util")
+    if ok and util and util.makePath then
+        local made, err = util.makePath(path)
+        if not made then error(err or ("could not create directory: " .. path)) end
+        return
+    end
+    local result = os.execute("mkdir -p " .. string.format("%q", path))
+    if result ~= true and result ~= 0 then
+        error("could not create directory: " .. path)
+    end
+end
+
+local function remove_tree(path)
+    if type(path) ~= "string"
+        or not path:match("/%.weread%-download%-%d+%-%d+$") then
+        return nil, "refusing to remove an invalid download workspace"
+    end
+    local ok, ffiutil = pcall(require, "ffi/util")
+    if not ok or not ffiutil or not ffiutil.purgeDir then
+        return nil, "directory cleanup unavailable"
+    end
+    local called, removed, err = pcall(ffiutil.purgeDir, path)
+    if not called then return nil, removed end
+    if removed == false then return nil, err end
+    return true
+end
+
+function Content.create_download_workspace(settings, book)
+    local book_id = book.book_id or book.bookId
+    local book_dir = Content.book_resolved_dir(settings, book_id, book)
+    make_path(book_dir)
+    book.cache_dir = book_dir
+    local workspace = string.format("%s/.weread-download-%d-%d",
+        book_dir, os.time(), math.random(100000, 999999))
+    local incoming_dir = workspace .. "/incoming"
+    local asset_dir = workspace .. "/images"
+    make_path(incoming_dir)
+    make_path(asset_dir)
+    return {
+        path = workspace,
+        incoming_dir = incoming_dir,
+        asset_dir = asset_dir,
+    }
+end
+
+function Content.cleanup_download_workspace(workspace)
+    local path = type(workspace) == "table" and workspace.path or workspace
+    if not path then return true end
+    local ok, err = remove_tree(path)
+    if not ok then
+        logger.warn("download workspace cleanup failed:", tostring(err))
+    end
+    return ok, err
+end
+
+function Content.cleanup_stale_downloads(settings)
+    local ok_lfs, lfs = pcall(require, "libs/libkoreader-lfs")
+    if not ok_lfs then ok_lfs, lfs = pcall(require, "lfs") end
+    if not ok_lfs or not lfs then return 0 end
+    local dirs = {}
+    -- Full-book EPUBs and their atomic .part/.weread-backup files live in the
+    -- flat user-facing library root in this fork, while staged assets live in
+    -- each book's sidecar directory. Scan both locations during recovery.
+    local content_dir = Content.book_content_dir(settings)
+    if type(content_dir) == "string" and content_dir ~= "" then
+        dirs[content_dir:gsub("/+$", "")] = true
+    end
+    for book_id, book in pairs(settings:get("books", {}) or {}) do
+        local dir = Content.book_resolved_dir(settings, book_id, book)
+        if type(dir) == "string" and dir ~= "" then
+            dirs[dir:gsub("/+$", "")] = true
+        end
+    end
+    local removed = 0
+    for dir in pairs(dirs) do
+        if lfs.attributes(dir, "mode") == "directory" then
+            for name in lfs.dir(dir) do
+                if name:match("^%.weread%-download%-%d+%-%d+$") then
+                    local cleaned = remove_tree(dir .. "/" .. name)
+                    if cleaned then removed = removed + 1 end
+                elseif name:match("%.epub%.part$") then
+                    if os.remove(dir .. "/" .. name) then removed = removed + 1 end
+                elseif name:match("%.epub%.weread%-backup$") then
+                    local backup = dir .. "/" .. name
+                    local final = backup:gsub("%.weread%-backup$", "")
+                    local current = io.open(final, "rb")
+                    if current then
+                        current:close()
+                        if os.remove(backup) then removed = removed + 1 end
+                    elseif os.rename(backup, final) then
+                        removed = removed + 1
+                    end
+                end
+            end
+        end
+    end
+    return removed
+end
+
+local function commit_file(part_path, path)
+    local renamed, rename_err = os.rename(part_path, path)
+    if renamed then return true end
+    local old = io.open(path, "rb")
+    if not old then return nil, rename_err end
+    old:close()
+    local backup = path .. ".weread-backup"
+    pcall(os.remove, backup)
+    local backed_up, backup_err = os.rename(path, backup)
+    if not backed_up then return nil, backup_err or rename_err end
+    renamed, rename_err = os.rename(part_path, path)
+    if not renamed then
+        os.rename(backup, path)
+        return nil, rename_err
+    end
+    pcall(os.remove, backup)
+    return true
+end
+
 local function write_epub(path, entries)
     local Archiver = require("ffi/archiver")
     local archive = Archiver.Writer:new{}
-    if not archive:open(path, "epub") then
+    local part_path = path .. ".part"
+    pcall(os.remove, part_path)
+    if not archive:open(part_path, "epub") then
         error("failed to open archive for writing: " .. tostring(archive.err))
     end
-
     local mtime = os.time()
+    local ok, err = xpcall(function()
+        assert(archive:setZipCompression("store"), archive.err)
+        local mimetype_data = "application/epub+zip"
+        for _, entry in ipairs(entries) do
+            if entry.name == "mimetype" then
+                mimetype_data = entry.data
+                break
+            end
+        end
+        assert(archive:addFileFromMemory("mimetype", mimetype_data, mtime), archive.err)
+        assert(archive:setZipCompression("deflate"), archive.err)
+        for _, entry in ipairs(entries) do
+            if entry.name ~= "mimetype" then
+                local added
+                if entry.path then
+                    added = archive:addPath(
+                        entry.name, entry.path, entry.recursive == true, mtime)
+                    -- KOReader's current Writer:addPath() returns false after
+                    -- a successful walk because its terminal status is EOF,
+                    -- while leaving err unset. A real libarchive failure sets
+                    -- err, so accept only this error-free EOF case.
+                    if not added and archive.err == nil then added = true end
+                else
+                    added = archive:addFileFromMemory(entry.name, entry.data or "", mtime)
+                end
+                assert(added, archive.err or ("failed to add " .. entry.name))
+            end
+        end
+    end, debug.traceback)
+    pcall(function() archive:close() end)
+    if not ok then
+        pcall(os.remove, part_path)
+        error(err, 0)
+    end
+    local committed, commit_err = commit_file(part_path, path)
+    if not committed then
+        pcall(os.remove, part_path)
+        error(commit_err or "failed to commit EPUB", 0)
+    end
+end
 
-    archive:setZipCompression("store")
-    local mimetype_data = "application/epub+zip"
-    for _, entry in ipairs(entries) do
-        if entry.name == "mimetype" then
-            mimetype_data = entry.data
-            break
+local function append_asset_entries(entries, assets)
+    local disk_dir
+    for _, asset in ipairs(assets or {}) do
+        if asset.path then
+            local parent = asset.path:match("^(.*)/[^/]+$")
+            if not parent then
+                error("invalid file-backed asset path: " .. tostring(asset.path))
+            end
+            if disk_dir and disk_dir ~= parent then
+                error("file-backed EPUB assets must share one directory")
+            end
+            disk_dir = parent
+        else
+            table.insert(entries, {
+                name = "OEBPS/" .. asset.href,
+                data = asset.data,
+                store = asset.store,
+            })
         end
     end
-    archive:addFileFromMemory("mimetype", mimetype_data, mtime)
-
-    archive:setZipCompression("deflate")
-    for _, entry in ipairs(entries) do
-        if entry.name ~= "mimetype" then
-            archive:addFileFromMemory(entry.name, entry.data or "", mtime)
-        end
+    if disk_dir then
+        -- KOReader's libarchive wrapper is reliable for a directory tree, but
+        -- some Kindle builds fail when addPath is given an individual file.
+        -- All disk-backed images are staged together, so stream the directory
+        -- into the EPUB with one reader lifecycle.
+        table.insert(entries, {
+            name = "OEBPS/images",
+            path = disk_dir,
+            recursive = true,
+        })
     end
-
-    archive:close()
 end
 
 local function xml_escape(value)
@@ -688,10 +869,8 @@ function Content.save_chapter_epub(settings, book, chapter, xhtml, assets, css)
     local title = chapter.title or book.title or "WeRead"
     local author = book.author or "WeRead"
     local manifest_assets = {}
-    local asset_entries = {}
     for asset_index, asset in ipairs(assets or {}) do
         table.insert(manifest_assets, [[<item id="asset_]] .. tostring(asset_index) .. [[" href="]] .. xml_escape(asset.href) .. [[" media-type="]] .. xml_escape(asset.media_type) .. [["/>]])
-        table.insert(asset_entries, { name = "OEBPS/" .. asset.href, data = asset.data })
     end
     local chapter_xhtml = [[<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
@@ -743,9 +922,7 @@ function Content.save_chapter_epub(settings, book, chapter, xhtml, assets, css)
         { name = "OEBPS/style.css", data = css },
         { name = "OEBPS/text/chapter.xhtml", data = chapter_xhtml },
     }
-    for asset_index, asset in ipairs(asset_entries) do
-        table.insert(entries, asset)
-    end
+    append_asset_entries(entries, assets)
     write_epub(path, entries)
     return path
 end
@@ -789,8 +966,8 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
 
     for asset_index, asset in ipairs(assets or {}) do
         table.insert(manifest_items, [[<item id="asset_]] .. tostring(asset_index) .. [[" href="]] .. xml_escape(asset.href) .. [[" media-type="]] .. xml_escape(asset.media_type) .. [["/>]])
-        table.insert(entries, { name = "OEBPS/" .. asset.href, data = asset.data })
     end
+    append_asset_entries(entries, assets)
 
     for chapter_index, chapter in ipairs(chapters or {}) do
         local uid = tostring(chapter.chapterUid or chapter_index)
@@ -980,6 +1157,167 @@ function Content.download_chapter_assets(client, book, chapter, used_names)
         end
     end
     return assets, src_map
+end
+
+local MAX_TAR_ENTRY_BYTES = 512 * 1024 * 1024
+local FILE_COPY_CHUNK_BYTES = 64 * 1024
+
+local function extract_tar_images(tar_path, asset_dir, used_names)
+    local input, open_err = io.open(tar_path, "rb")
+    if not input then error(open_err or "could not open chapter resource archive") end
+    local assets = {}
+    local src_map = {}
+    local output
+    local ok, err = xpcall(function()
+        while true do
+            local header = input:read(512)
+            if not header then break end
+            if #header ~= 512 then error("truncated TAR header") end
+            if header:match("^%z+$") then break end
+            local name = trim_nulls(header:sub(1, 100))
+            local size_text = trim_nulls(header:sub(125, 136)):gsub("%s", "")
+            local size = tonumber(size_text, 8)
+            if not size or size < 0 or size > MAX_TAR_ENTRY_BYTES then
+                error("invalid TAR entry size")
+            end
+            local typeflag = header:sub(157, 157)
+            local is_file = name ~= "" and size > 0
+                and (typeflag == "0" or typeflag == "" or typeflag == "\0")
+            local first_size = math.min(size, 12)
+            local first = first_size > 0 and input:read(first_size) or ""
+            if #first ~= first_size then error("truncated TAR entry") end
+            local remaining = size - first_size
+            local ext, media_type = media_type_for(first)
+            local output_path
+            local filename
+            if is_file and media_type:match("^image/") then
+                local stem = basename(name)
+                filename = unique_asset_name(used_names, stem, ext)
+                output_path = asset_dir .. "/" .. filename
+                output = assert(io.open(output_path, "wb"))
+                assert(output:write(first))
+            end
+            while remaining > 0 do
+                local chunk = input:read(math.min(remaining, FILE_COPY_CHUNK_BYTES))
+                if not chunk or #chunk == 0 then error("truncated TAR entry") end
+                remaining = remaining - #chunk
+                if output then assert(output:write(chunk)) end
+            end
+            if output then
+                output:close()
+                output = nil
+                local href = "images/" .. filename
+                table.insert(assets, {
+                    href = href,
+                    media_type = media_type,
+                    path = output_path,
+                    size = size,
+                    store = true,
+                })
+                local epub_relative = "../" .. href
+                local stem = basename(name)
+                src_map[stem] = epub_relative
+                src_map[filename] = epub_relative
+            end
+            local padding = (512 - size % 512) % 512
+            if padding > 0 then
+                local skipped = input:read(padding)
+                if not skipped or #skipped ~= padding then error("truncated TAR padding") end
+            end
+        end
+    end, debug.traceback)
+    if output then output:close() end
+    input:close()
+    if not ok then error(err, 0) end
+    return assets, src_map
+end
+
+function Content.download_chapter_assets_to_files(client, book, chapter, used_names, workspace)
+    if not chapter or not chapter.tar or chapter.tar == "" then return {}, {} end
+    used_names = used_names or {}
+    local book_id = book.book_id or book.bookId
+    local referer = WeRead.reader_url(book_id, chapter.chapterUid)
+    local tar_url = tostring(chapter.tar)
+    if tar_url:match("^//") then
+        tar_url = "https:" .. tar_url
+    elseif tar_url:match("^/") then
+        tar_url = "https://weread.qq.com" .. tar_url
+    end
+    local tar_path = string.format("%s/chapter-%s.tar",
+        workspace.incoming_dir, basename_safe(chapter.chapterUid or "unknown"))
+    client:download_to_file(tar_url, tar_path, {
+        referer = referer,
+        max_bytes = MAX_TAR_ENTRY_BYTES,
+    })
+    local ok, assets, src_map = pcall(
+        extract_tar_images, tar_path, workspace.asset_dir, used_names)
+    pcall(os.remove, tar_path)
+    if not ok then error(assets, 0) end
+    return assets, src_map
+end
+
+function Content.download_remote_images_to_files(client, xhtml, used_names, workspace, progress)
+    local assets = {}
+    used_names = used_names or {}
+    used_names.__remote_image_hrefs = used_names.__remote_image_hrefs or {}
+    local remote_image_hrefs = used_names.__remote_image_hrefs
+    local function remote_url(src)
+        local url = tostring(src or "")
+        if url:match("^//") then url = "https:" .. url end
+        if url:match("^https?://") then return url end
+    end
+    local img_total = 0
+    xhtml:gsub('src=(["\'])(.-)%1', function(_, src)
+        if remote_url(src) then img_total = img_total + 1 end
+    end)
+    local index = 0
+    local body = xhtml:gsub('src=(["\'])(.-)%1', function(quote, src)
+        local url = remote_url(src)
+        if not url then return "src=" .. quote .. src .. quote end
+        index = index + 1
+        if progress then progress(index, img_total) end
+        local cached_href = remote_image_hrefs[url]
+        if cached_href then return "src=" .. quote .. "../" .. cached_href .. quote end
+        local incoming = string.format("%s/remote-%06d.bin", workspace.incoming_dir, index)
+        local ok = pcall(function()
+            client:download_to_file(url, incoming, {
+                referer = "https://weread.qq.com/",
+                max_bytes = 64 * 1024 * 1024,
+            })
+        end)
+        if not ok then
+            pcall(os.remove, incoming)
+            return "src=" .. quote .. src .. quote
+        end
+        local ext, mt = media_type_for_file(incoming)
+        if not mt or not mt:match("^image/") then
+            pcall(os.remove, incoming)
+            return "src=" .. quote .. src .. quote
+        end
+        local seed = basename((url:match("^[^%?#]+") or url))
+        local fname = unique_asset_name(used_names,
+            seed ~= "" and seed or ("img" .. tostring(index)), ext)
+        local output_path = workspace.asset_dir .. "/" .. fname
+        local renamed = os.rename(incoming, output_path)
+        if not renamed then
+            pcall(os.remove, incoming)
+            return "src=" .. quote .. src .. quote
+        end
+        local file = io.open(output_path, "rb")
+        local size = file and file:seek("end") or 0
+        if file then file:close() end
+        local href = "images/" .. fname
+        remote_image_hrefs[url] = href
+        table.insert(assets, {
+            href = href,
+            media_type = mt,
+            path = output_path,
+            size = size,
+            store = true,
+        })
+        return "src=" .. quote .. "../" .. href .. quote
+    end)
+    return body, assets
 end
 
 function Content.ensure_reader_state(client, book)
@@ -1204,12 +1542,26 @@ function Content.finalize_single_chapter_content(client, settings, book, chapter
     local cache = settings:get("cache", {})
     if cache.download_book_images then
         state.used_asset_names = state.used_asset_names or {}
-        local tar_assets, src_map = Content.download_chapter_assets(client, book, chapter, state.used_asset_names)
+        local tar_assets, src_map
+        if state.workspace then
+            tar_assets, src_map = Content.download_chapter_assets_to_files(
+                client, book, chapter, state.used_asset_names, state.workspace)
+        else
+            tar_assets, src_map = Content.download_chapter_assets(
+                client, book, chapter, state.used_asset_names)
+        end
         for _, asset in ipairs(tar_assets) do
             table.insert(chapter_assets, asset)
         end
         xhtml = Content.rewrite_image_sources(xhtml, src_map)
-        local inline_xhtml, inline_assets = Content.download_remote_images(client, xhtml, state.used_asset_names)
+        local inline_xhtml, inline_assets
+        if state.workspace then
+            inline_xhtml, inline_assets = Content.download_remote_images_to_files(
+                client, xhtml, state.used_asset_names, state.workspace)
+        else
+            inline_xhtml, inline_assets = Content.download_remote_images(
+                client, xhtml, state.used_asset_names)
+        end
         xhtml = inline_xhtml
         for _, asset in ipairs(inline_assets) do
             table.insert(chapter_assets, asset)

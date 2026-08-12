@@ -4,6 +4,7 @@ local Blitbuffer = require("ffi/blitbuffer")
 local Button = require("ui/widget/button")
 local Device = require("device")
 local Font = require("ui/font")
+local FocusManager = require("ui/widget/focusmanager")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
@@ -19,6 +20,7 @@ local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local Screen = Device.screen
+local FocusNav = require("weread.ui.focus_nav")
 local I18n = require("weread.lib.i18n")
 local T = require("ffi/util").template
 
@@ -84,7 +86,17 @@ function ShelfRow:onTapShelfRow()
     return true
 end
 
-local LibraryView = InputContainer:extend{
+function ShelfRow:onFocus()
+    self.frame.invert = true
+    return true
+end
+
+function ShelfRow:onUnfocus()
+    self.frame.invert = false
+    return true
+end
+
+local LibraryView = FocusManager:extend{
     mode = "books",
     title = nil,
     wp_enable = true,
@@ -108,29 +120,32 @@ function LibraryView:tabBar()
     }
     local cell_w = math.floor(self.screen_w / #tabs)
     local row = HorizontalGroup:new{}
+    self._tab_buttons = {}
     for index, tab in ipairs(tabs) do
         local active = tab.mode == self.mode
         local enabled = tab.mode ~= "public_account" or self.wp_enable
         local width = index == #tabs and self.screen_w - cell_w or cell_w
+        local button = Button:new{
+            text = tab.text,
+            width = width,
+            radius = 0,
+            margin = 0,
+            bordersize = 0,
+            background = Blitbuffer.COLOR_WHITE,
+            text_font_size = 24,
+            text_font_bold = true,
+            enabled = enabled,
+            show_parent = self,
+            callback = function()
+                if enabled and not active and self.on_switch then
+                    self.on_switch(tab.mode)
+                end
+            end,
+        }
+        if enabled then self._tab_buttons[#self._tab_buttons + 1] = button end
         table.insert(row, VerticalGroup:new{
             align = "left",
-            Button:new{
-                text = tab.text,
-                width = width,
-                radius = 0,
-                margin = 0,
-                bordersize = 0,
-                background = Blitbuffer.COLOR_WHITE,
-                text_font_size = 24,
-                text_font_bold = true,
-                enabled = enabled,
-                show_parent = self,
-                callback = function()
-                    if enabled and not active and self.on_switch then
-                        self.on_switch(tab.mode)
-                    end
-                end,
-            },
+            button,
             LineWidget:new{
                 dimen = Geom:new{ w = width, h = active and Screen:scaleBySize(3) or 1 },
                 background = active and Blitbuffer.COLOR_BLACK or Blitbuffer.COLOR_GRAY,
@@ -148,24 +163,23 @@ function LibraryView:actionBar()
         and T(_("▾ Filter: %1"), self.filter_label) or _("▾ Filter")
     local sort_label = self.sort_label and self.sort_label ~= ""
         and T(_("⇅ Sort: %1"), self.sort_label) or _("⇅ Sort")
-    local primary = HorizontalGroup:new{
-        Button:new{
-            text = search_label,
-            width = cell_w,
-            radius = 0, margin = 0, bordersize = 0,
-            text_font_bold = false,
-            show_parent = self,
-            callback = function() if self.on_search then self.on_search() end end,
-        },
-        Button:new{
-            text = _("↻ Get latest"),
-            width = self.screen_w - cell_w,
-            radius = 0, margin = 0, bordersize = 0,
-            text_font_bold = false,
-            show_parent = self,
-            callback = function() if self.on_refresh then self.on_refresh() end end,
-        },
+    local search_button = Button:new{
+        text = search_label,
+        width = cell_w,
+        radius = 0, margin = 0, bordersize = 0,
+        text_font_bold = false,
+        show_parent = self,
+        callback = function() if self.on_search then self.on_search() end end,
     }
+    local refresh_button = Button:new{
+        text = _("↻ Get latest"),
+        width = self.screen_w - cell_w,
+        radius = 0, margin = 0, bordersize = 0,
+        text_font_bold = false,
+        show_parent = self,
+        callback = function() if self.on_refresh then self.on_refresh() end end,
+    }
+    local primary = HorizontalGroup:new{ search_button, refresh_button }
     local sort_button = Button:new{
             text = sort_label,
             width = self.mode == "books" and cell_w or self.screen_w,
@@ -175,16 +189,21 @@ function LibraryView:actionBar()
             callback = function() if self.on_sort then self.on_sort() end end,
         }
     local secondary = HorizontalGroup:new{ sort_button }
+    local filter_button
     if self.mode == "books" then
-        table.insert(secondary, Button:new{
+        filter_button = Button:new{
             text = filter_label,
             width = self.screen_w - cell_w,
             radius = 0, margin = 0, bordersize = 0,
             text_font_bold = false,
             show_parent = self,
             callback = function() if self.on_filter then self.on_filter() end end,
-        })
+        }
+        table.insert(secondary, filter_button)
     end
+    self._action_secondary = { sort_button }
+    if filter_button then self._action_secondary[#self._action_secondary + 1] = filter_button end
+    self._action_primary = { search_button, refresh_button }
     return FrameContainer:new{
         bordersize = 0, padding = 0, margin = 0,
         VerticalGroup:new{ align = "left", secondary, primary },
@@ -212,6 +231,7 @@ function LibraryView:content()
         align = "left",
         HorizontalSpan:new{ width = self.list_width },
     }
+    self._item_rows = {}
     if #source == 0 then
         table.insert(content, VerticalSpan:new{ width = Size.padding.large })
         table.insert(content, TextWidget:new{
@@ -222,7 +242,7 @@ function LibraryView:content()
         return content
     end
     for _i, book in ipairs(source) do
-        table.insert(content, ShelfRow:new{
+        local shelf_row = ShelfRow:new{
             text = book.title or book.bookId or book.book_id or _("Untitled"),
             status = self:itemStatus(book),
             width = self.list_width,
@@ -231,7 +251,9 @@ function LibraryView:content()
             callback = function()
                 if self.on_select then self.on_select(book, self.mode) end
             end,
-        })
+        }
+        self._item_rows[#self._item_rows + 1] = shelf_row
+        table.insert(content, shelf_row)
         table.insert(content, HorizontalGroup:new{
             HorizontalSpan:new{ width = Size.padding.large },
             LineWidget:new{
@@ -251,7 +273,7 @@ function LibraryView:init()
     self.outer_margin = 0
     self.content_width = self.screen_w
     self.list_width = self.screen_w - 3 * Screen:scaleBySize(6)
-    if Device:hasKeys() then self.key_events = { Close = { { Device.input.group.Back } } } end
+    if Device:hasKeys() then self.key_events.Close = { { Device.input.group.Back } } end
 
     self.title_bar = TitleBar:new{
         width = self.screen_w,
@@ -272,6 +294,21 @@ function LibraryView:init()
         show_parent = self,
         VerticalGroup:new{ align = "left", self:content() },
     }
+    local rows = {
+        self._tab_buttons,
+        self._action_secondary,
+        self._action_primary,
+    }
+    for _i, item_row in ipairs(self._item_rows) do
+        rows[#rows + 1] = { item_row }
+    end
+    local outside_scroll = {}
+    for _i, button in ipairs(self._tab_buttons) do outside_scroll[button] = true end
+    for _i, button in ipairs(self._action_secondary) do outside_scroll[button] = true end
+    for _i, button in ipairs(self._action_primary) do outside_scroll[button] = true end
+    FocusNav.apply(self, rows, { scroll = scroll, outside_scroll = outside_scroll })
+    -- Items follow the three fixed rows (tabs, secondary, primary actions).
+    FocusNav.initialFocus(self, 1, #rows > 3 and 4 or 1)
     self[1] = FrameContainer:new{
         background = Blitbuffer.COLOR_WHITE,
         bordersize = 0, padding = 0, margin = 0,

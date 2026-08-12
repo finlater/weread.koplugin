@@ -71,11 +71,26 @@ function M:showBookshelf()
     self:refreshBookshelf()
 end
 
-function M:onWeReadAccountChanged()
-    if self.shelf_view then
-        UIManager:close(self.shelf_view)
-        self.shelf_view = nil
+function M:closeWeReadUI()
+    -- Close from the topmost view down so no full-screen WeRead widget remains
+    -- in UIManager's window stack after a document is opened.
+    local seen = {}
+    for _, field in ipairs({
+        "_chapter_list_view",
+        "_book_detail_view",
+        "shelf_view",
+    }) do
+        local view = self[field]
+        self[field] = nil
+        if view and not seen[view] then
+            seen[view] = true
+            UIManager:close(view)
+        end
     end
+end
+
+function M:onWeReadAccountChanged()
+    self:closeWeReadUI()
     self.shelf_regular = nil
     self.shelf_mp = nil
     self.shelf_books = nil
@@ -1109,7 +1124,12 @@ function M:showChapterList(book, on_close)
                 source = chapter,
             }
         end
-        if old_view then UIManager:close(old_view) end
+        if old_view then
+            UIManager:close(old_view)
+            if self._chapter_list_view == old_view then
+                self._chapter_list_view = nil
+            end
+        end
         local view
         view = ChapterListView.show({
             title = book.title or _("Chapter list"),
@@ -1137,7 +1157,12 @@ function M:showChapterList(book, on_close)
                     end)
                 end)
             end,
-            on_close = on_close,
+            on_close = function()
+                if self._chapter_list_view == view then
+                    self._chapter_list_view = nil
+                end
+                if on_close then on_close() end
+            end,
         })
         self._chapter_list_view = view
     end
@@ -1224,25 +1249,6 @@ function M:showChapterDownloadSelection(book, chapters, on_downloaded)
     end
     menu = self:showList(_("Select chapters to download"), items,
         _("No chapters."), { items_per_page = perpage })
-end
-
--- Dismiss every full-screen WeRead UI (bookshelf, book details, chapter
--- list) still sitting on top of the file manager before opening a document.
--- KOReader only tears down once its window stack is empty, so a leftover
--- shelf view would block quitting until the user manually closes it.
-function M:closeWeReadUI()
-    if self.shelf_view then
-        UIManager:close(self.shelf_view)
-        self.shelf_view = nil
-    end
-    if self._book_detail_view then
-        UIManager:close(self._book_detail_view)
-        self._book_detail_view = nil
-    end
-    if self._chapter_list_view then
-        UIManager:close(self._chapter_list_view)
-        self._chapter_list_view = nil
-    end
 end
 
 function M:openFile(path)

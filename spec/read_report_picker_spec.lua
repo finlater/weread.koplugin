@@ -58,6 +58,19 @@ expect(target_items[1].keep_menu_open == true
         and target_items[2].keep_menu_open == true,
     "report target actions keep their menu open")
 
+local menu_refreshes = 0
+local touchmenu = {
+    updateItems = function()
+        menu_refreshes = menu_refreshes + 1
+    end,
+}
+report_items[1].callback(touchmenu)
+report_items[2].callback(touchmenu)
+target_items[1].callback(touchmenu)
+target_items[2].callback(touchmenu)
+expect(menu_refreshes == 4,
+    "reading report toggles did not refresh the open menu")
+
 host:showReadReportBookPicker()
 expect(picker_options and picker_options.mode == "books",
     "report picker did not open on the books tab")

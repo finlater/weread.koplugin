@@ -86,6 +86,9 @@ function WeReadPlugin:init()
         end,
     }
     Migrations.run(self.settings, self.client)
+    if self.downloader.recover then
+        self.downloader:recover()
+    end
     self.qr_login = QRLogin:new(self, self.client, self.settings)
     self.read_report = ReadReport:new{
         settings = self.settings,
