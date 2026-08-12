@@ -23,6 +23,8 @@
 > 上游原有功能（书架、EPUB/公众号下载、进度同步、阅读时长上报、划线想法、阅读统计等）保持兼容；下列「功能」章节描述的是完整能力集（含上游能力 + 本仓库增量）。
 >
 > **2026-08-01 已同步上游 v0.6.0**：书架/书籍详情 UI 重构（双 Tab + SQLite 快照 + 书架内搜索）、下载书脚注、多章节下载、章节预加载、WeRead 快捷菜单、SimpleUI/ZenUI 启动入口、README/截图与 CI/Release 流程更新。
+>
+> **2026-08-12 已同步上游 v1.1.0**：加入物理按键导航、磁盘流式下载、页内脚注、想法星标修复、阅读上报菜单刷新、快速切书防崩，以及可绑定的书架/搜索/阅读统计动作；继续保留本仓库的扁平书库、自研更新器与公众号优化。
 
 ### 相关链接
 
@@ -61,7 +63,9 @@
 - 书籍 / 公众号双 Tab，保留排序、阅读状态与下载状态筛选，书架内可直接搜索
 - 书架快照、点开过的书籍信息和章节目录按登录账号隔离写入 SQLite
 - 首次打开未缓存详情的书籍自动获取信息；已下载书籍及文章可离线浏览
-- 下载书支持**脚注**；支持**多章节下载**、**章节预加载**与 WeRead 快捷菜单
+- 下载书支持默认显示在页面底部的**页内脚注**；支持**多章节下载**、**章节预加载**与 WeRead 快捷菜单
+- 方向键、翻页键和确认键可操作书架、书籍详情、章节列表、书评与阅读统计，适配无触屏或主要依赖物理按键的设备
+- 可在 KOReader 手势/按键设置中绑定书架、搜索、阅读统计、阅读进度同步与阅读界面快捷菜单
 
 **阅读时间上报**
 
@@ -90,6 +94,7 @@
 - 书架支持多种排序方式（最后阅读时间、书名、默认顺序）与筛选（已读完/未读完、已下载/未下载，两组可组合）
 - 书籍详情页展示作者、出版社、出版时间、评分、字数、阅读进度等信息，并可按需查看推荐书评和最新书评
 - EPUB 自动嵌入封面图片
+- 图片及 EPUB 资源通过磁盘流式处理，大书和图片较多书籍下载时不再把全部资源同时压在内存里；完成、失败或取消后自动清理临时文件
 - 缓存管理：查看/清理单本或全部缓存；可分别设置**图书目录**与**元数据目录**；扫描本地缓存时会同时看这两个根（需联网，仅导入与微信读书书架 ID 匹配的目录）
 - 图书目录：新下载的 EPUB **平铺**保存（默认 `<KOReader 数据目录>/weread/cache`，可改到你的书库根目录）
 - 元数据目录：`catalog.json` / `metadata.json` / `reading_state.json` / `articles.json` / `thoughts.db` / 公众号 HTML 按 `<元数据目录>/<书籍 ID>/` 存放（默认 `<KOReader 数据目录>/weread/meta`）
@@ -107,13 +112,6 @@
 - 可选「启动时检查更新」（默认关闭，且 12 小时内最多检查一次）
 - 用户设置与书籍缓存不在插件目录内，更新不会清掉登录态和已下载内容
 
-## TODO
-
-- [ ] 按需缓存章节, 支持一次性缓存多个章节
-- [ ] 书签/笔记展示
-- [ ] 更丰富的书籍详情（热门划线等）
-- [ ] 书架页面支持搜索功能（包括阅读时间上报手动选择目标书籍时支持搜索）
-
 ## 安装
 
 > ⚠️ 建议使用 **KOReader 2026.03 或更高版本**。旧版本可能无法正常加载或使用插件，例如「工具」菜单中找不到「微信读书」。详见 [#14](https://github.com/finlater/weread.koplugin/issues/14)。
@@ -122,9 +120,9 @@
 
 1. 打开 [Releases](https://github.com/rollingshmily/weread.koplugin/releases) 下载最新 `weread.koplugin-v*.zip`。
 2. 国内网络可在链接前加代理前缀，例如：
-   - `https://runn.i.ng/rollingshmily/weread.koplugin/releases/download/v0.5.7/weread.koplugin-v0.5.7.zip`（[ghspeedup.com](https://ghspeedup.com/)）
-   - `https://gh-proxy.com/https://github.com/rollingshmily/weread.koplugin/releases/download/v0.5.7/weread.koplugin-v0.5.7.zip`
-   - `https://ghfast.top/https://github.com/rollingshmily/weread.koplugin/releases/download/v0.5.7/weread.koplugin-v0.5.7.zip`
+   - `https://runn.i.ng/rollingshmily/weread.koplugin/releases/download/v1.1.0/weread.koplugin-v1.1.0.zip`（[ghspeedup.com](https://ghspeedup.com/)）
+   - `https://gh-proxy.com/https://github.com/rollingshmily/weread.koplugin/releases/download/v1.1.0/weread.koplugin-v1.1.0.zip`
+   - `https://ghfast.top/https://github.com/rollingshmily/weread.koplugin/releases/download/v1.1.0/weread.koplugin-v1.1.0.zip`
 3. 解压后把 `weread.koplugin/` 目录放到 KOReader 的 `plugins` 目录。
 
 ### 方式二：手动复制源码目录
@@ -232,6 +230,8 @@ koreader/plugins/weread.koplugin/
 - [ ] 阅读时间上报手动选择目标书籍时支持搜索
 - [x] ~~按需缓存章节，支持一次性缓存多个章节~~（v0.6.0 已支持）
 - [x] ~~书架页面支持搜索功能~~（v0.6.0 已支持）
+
+> **v1.1.0 脚注升级提示：**脚注显示方式会写入下载的 EPUB；旧书需要删除后重新下载，才能使用页内脚注。
 
 ## 贡献
 
