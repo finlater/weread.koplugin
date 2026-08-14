@@ -182,6 +182,25 @@ end
 function M:getSettingsMenuItems()
     return {
         {
+            text = _("Paginated bookshelf"),
+            keep_menu_open = true,
+            check_callback_updates_menu = true,
+            checked_func = function()
+                return self.settings:get("shelf").paginated ~= false
+            end,
+            callback = self:safeCallback(_("Paginated bookshelf"),
+                function(touchmenu_instance)
+                    local shelf = self.settings:get("shelf")
+                    shelf.paginated = not (shelf.paginated ~= false)
+                    self.settings:set("shelf", shelf)
+                    self.settings:flush()
+                    self.shelf_view_pages = { books = 1, public_account = 1 }
+                    if touchmenu_instance then
+                        touchmenu_instance:updateItems()
+                    end
+                end),
+        },
+        {
             text = _("Cache management"),
             sub_item_table_func = function()
                 return {

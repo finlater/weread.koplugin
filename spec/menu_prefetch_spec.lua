@@ -61,6 +61,8 @@ local cache = {
     download_underlines_and_thoughts = false,
     show_prefetch_notifications = true,
 }
+local shelf = { sort_order = "time_desc" }
+local flush_count = 0
 local available_version
 local host = {
     ui = {},
@@ -68,10 +70,13 @@ local host = {
     settings = {
         get = function(_self, key, default)
             if key == "cache" then return cache end
+            if key == "shelf" then return shelf end
             return default
         end,
-        set = function() end,
-        flush = function() end,
+        set = function(_self, key, value)
+            if key == "shelf" then shelf = value end
+        end,
+        flush = function() flush_count = flush_count + 1 end,
     },
     downloader = { cancelPrefetch = function() end },
     updater = { available_version = function() return available_version end },
@@ -135,6 +140,22 @@ for name, expected in pairs(general_actions) do
 end
 
 local settings_items = host:getSettingsMenuItems()
+local pagination_item = settings_items[1]
+expect(pagination_item and pagination_item.text == "Paginated bookshelf",
+    "pagination preference is the first settings item")
+expect(pagination_item and pagination_item.checked_func(),
+    "pagination preference defaults to enabled for legacy settings")
+local menu_update_count = 0
+pagination_item.callback({
+    updateItems = function() menu_update_count = menu_update_count + 1 end,
+})
+expect(shelf.paginated == false and flush_count == 1,
+    "pagination preference was disabled and persisted")
+expect(menu_update_count == 1,
+    "pagination preference refreshed the settings menu")
+pagination_item.callback({ updateItems = function() end })
+expect(shelf.paginated == true and flush_count == 2,
+    "pagination preference was re-enabled and persisted")
 local last_settings_item = settings_items[#settings_items]
 expect(last_settings_item and last_settings_item.text == "About",
     "about is the last settings menu item")

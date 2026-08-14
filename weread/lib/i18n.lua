@@ -84,6 +84,7 @@ local zh = {
     ["Thought %1/%2"] = "想法 %1/%2",
     ["Previous"] = "上一页",
     ["Page %1 of %2"] = "第 %1 页，共 %2 页",
+    ["Paginated bookshelf"] = "分页书架",
     ["Next"] = "下一页",
     ["Ignore edge taps on underlines"] = "划线边缘防误触",
     ["Edge zone"] = "边缘区域",

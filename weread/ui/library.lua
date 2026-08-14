@@ -21,11 +21,6 @@ local file_exists = PluginUtil.file_exists
 local M = {}
 local sortBooks
 
-local function is_kindle()
-    local ok, device = pcall(require, "device")
-    return ok and device and device.isKindle and device:isKindle() or false
-end
-
 local local_cache_fields = {
     cache_dir = true,
     cached_file = true,
@@ -189,7 +184,7 @@ function M:showShelfView(mode, keyword, old_view, options)
     local prepared = options.prepared_shelf
     local books = prepared and prepared.books or filtered(self.shelf_regular, true)
     local accounts = prepared and prepared.accounts or filtered(self.shelf_mp, false)
-    local paged = is_kindle()
+    local paged = self.settings:get("shelf").paginated ~= false
     local page = paged and (options.page or self.shelf_view_pages[mode] or 1) or 1
     local page_size = math.max(4, list_items_per_page() - 4)
     if old_view then UIManager:close(old_view) end

@@ -6,10 +6,6 @@ local function expect(condition, message)
     if not condition then error(message or ("check " .. checks .. " failed")) end
 end
 
-local kindle = true
-package.preload["device"] = function()
-    return { isKindle = function() return kindle end }
-end
 package.preload["ui/uimanager"] = function()
     return { close = function() end }
 end
@@ -59,13 +55,14 @@ local shelf = {}
 for index = 1, 1000 do
     shelf[index] = { bookId = tostring(index), title = "Book " .. tostring(index) }
 end
+local shelf_settings = { sort_order = "time_desc", paginated = true }
 local host = {
     shelf_regular = shelf,
     shelf_mp = {},
     settings = {
         get = function(_self, key, default)
             if key == "books" then return {} end
-            if key == "shelf" then return { sort_order = "time_desc" } end
+            if key == "shelf" then return shelf_settings end
             return default
         end,
     },
@@ -82,19 +79,36 @@ for key, value in pairs(Library) do
 end
 
 host:showShelfView("books", nil, nil, {})
-expect(shown[1].data.paged == true, "Kindle bookshelf did not enable pagination")
-expect(shown[1].data.page_size == 10, "Kindle bookshelf used the wrong page size")
+expect(shown[1].data.paged == true, "bookshelf did not enable pagination by default")
+expect(shown[1].data.page_size == 10, "bookshelf used the wrong page size")
 expect(#shown[1].data.books == 1000, "pagination discarded full shelf search data")
 
 local prepared_books = shown[1].data.books
 shown[1].callbacks.on_page_changed(7)
-expect(shown[2].data.page == 7, "Kindle page change was not retained")
+expect(shown[2].data.page == 7, "bookshelf page change was not retained")
 expect(shown[2].data.books == prepared_books,
-    "Kindle page change recomputed the prepared bookshelf")
+    "page change recomputed the prepared bookshelf")
 
-kindle = false
+shelf_settings.paginated = false
 host:showShelfView("books", nil, shown[2], {})
 expect(shown[3].data.paged == false,
-    "non-Kindle bookshelf unexpectedly enabled pagination")
+    "bookshelf ignored the continuous-scroll preference")
 
-print(("kindle_bookshelf_pagination_spec: %d checks"):format(checks))
+shelf_settings.paginated = true
+shelf_settings.sort_order = "name_asc"
+host.shelf_regular = {
+    { bookId = "z", title = "Zulu", visible = true },
+    { bookId = "b", title = "Beta", visible = false },
+    { bookId = "a", title = "Alpha", visible = true },
+}
+host.bookMatchesFilters = function(_self, book) return book.visible end
+host:showShelfView("books", nil, shown[3], {})
+expect(#shown[4].data.books == 2
+        and shown[4].data.books[1].title == "Alpha"
+        and shown[4].data.books[2].title == "Zulu",
+    "bookshelf did not filter and sort the full result before pagination")
+host:showShelfView("books", "zul", shown[4], {})
+expect(#shown[5].data.books == 1 and shown[5].data.books[1].title == "Zulu",
+    "bookshelf search did not run over the full filtered shelf")
+
+print(("bookshelf_pagination_spec: %d checks"):format(checks))

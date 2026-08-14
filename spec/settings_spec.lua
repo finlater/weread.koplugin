@@ -10,7 +10,7 @@ local values = {
     auth_schema_version = 0,
     api_key = "legacy-key",
     cookies = { wr_skey = "legacy-cookie" },
-    wr_ticket = "legacy-ticket",
+    wr_ticket = "old-ticket",
     wr_wrpa = "legacy-wrpa",
     account = { name = "legacy-user" },
     books = { ["42"] = { cache_dir = "/cache/42" } },
@@ -89,6 +89,8 @@ expect(settings.data_dir == "/data/weread", "data directory was wrong")
 expect(settings.cache_dir == "/data/weread/cache", "default cache directory was wrong")
 expect(settings:get("update").prefer_proxy == true,
     "update proxy should be preferred by default")
+expect(settings:get("shelf").paginated == true,
+    "bookshelf pagination should be enabled by default")
 expect(created_dirs[1] == "/data/weread"
     and created_dirs[2] == "/data/weread/cache",
     "settings directories were not initialized")
