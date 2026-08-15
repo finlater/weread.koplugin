@@ -41,16 +41,22 @@ expect(processed:find("<p>", 1, true) and processed:find("</p>", 1, true),
 
 local thought_html = Annotations.injectUnderlines("<p>hello</p>", {
     { range = "3-8" },
-}, { ["3-8"] = true }, "chapter/1", 'book"2')
+}, { ["3-8"] = true }, "chapter/1", 'book"2', { ["3-8"] = true })
 expect(thought_html:find("wr%-thought%-link") ~= nil
     and thought_html:find("wr%-star") ~= nil,
     "thought link and marker were not generated")
+local link_only = Annotations.injectUnderlines("<p>hello</p>", {
+    { range = "3-8" },
+}, { ["3-8"] = true }, "chapter", "book")
+expect(link_only:find("wr%-thought%-link") ~= nil
+    and link_only:find("wr%-star") == nil,
+    "clickable underline without confirmed thoughts should not show a star")
 expect(thought_html:find('id="wrthought%-book_2%-chapter_1%-3%-8"') ~= nil,
     "thought anchor id was not sanitized")
 
 local trailing_whitespace = Annotations.injectUnderlines("<p>abc</p>\n  ", {
     { range = "3-12" },
-}, { ["3-12"] = true }, "chapter/11", "book")
+}, { ["3-12"] = true }, "chapter/11", "book", { ["3-12"] = true })
 expect(trailing_whitespace:find('<span class="wr%-star">%*</span>', 1) ~= nil,
     "thought star survives when range ends with whitespace")
 local star_pos = trailing_whitespace:find('<span class="wr%-star">%*</span>', 1)
@@ -79,6 +85,18 @@ expect(css:find(".wr%-underline") and css:find(".wr%-thought%-link"),
     "annotation CSS did not include underline and thought styles")
 expect(css:find('wr%-star::before{content:"\\2060";}', 1) ~= nil,
     "thought star CSS includes word joiner glue")
+expect(annotated:find("wr%-star") ~= nil,
+    "confirmed thoughts should keep a star marker")
+
+local on_demand, on_demand_css = Annotations.process("<p>hello</p>", {
+    chapterUid = "chapter",
+    underlines = { { range = "3-8" } },
+}, nil, "book")
+expect(on_demand:find("wr%-thought%-link") ~= nil
+    and on_demand:find("wr%-star") == nil,
+    "on-demand underlines stay clickable without a star")
+expect(on_demand_css:find(".wr%-thought%-link") ~= nil,
+    "on-demand underlines still include thought-link CSS")
 
 local xhtml = Content.txt_to_xhtml("first & <tag>\r\n\r\nsecond")
 expect(xhtml:find("<p>first &amp; &lt;tag&gt;</p>", 1, true),

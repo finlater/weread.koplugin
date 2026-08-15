@@ -147,10 +147,15 @@ function Settings:new()
         cache.download_images = nil
         cache_changed = true
     end
+    if cache.thoughts_on_demand ~= nil then
+        cache.thoughts_on_demand = nil
+        cache_changed = true
+    end
     if cache_changed then
         obj.store:saveSetting("cache", cache)
         obj.store:flush()
     end
+
     local legacy_changed = false
     for _, key in ipairs({
         "config_auth_fingerprint",

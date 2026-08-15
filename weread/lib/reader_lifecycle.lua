@@ -161,6 +161,11 @@ end
 
 function M:onPageUpdate()
     self.progress_sync:on_page_update()
+    -- Thought prefetch uses blocking HTTP on the UI thread; yield so page
+    -- turns are not queued behind a gateway call.
+    if self._yieldThoughtPrefetchForReading then
+        self:_yieldThoughtPrefetchForReading()
+    end
 end
 
 function M:onCloseDocument()
@@ -230,6 +235,7 @@ function M:maybePrefetchNextChapter(book_id)
     return self.downloader:start(book, { next_chapter }, "chapter", {
         single_chapter = true,
         include_annotations = cache.download_underlines_and_thoughts == true,
+        thoughts_on_demand = true,
         prefetch = true,
         start_delay = cache.show_prefetch_notifications == false and 0.1 or 0.7,
         silent_completion = true,

@@ -1,20 +1,19 @@
 -- Annotation visibility and thought-link interaction UI.
 local Annotations = require("weread.lib.annotations")
 local Content = require("weread.lib.content")
-local DownloadDialog = require("weread.ui.download_dialog")
 local Event = require("ui/event")
 local logger = require("weread.lib.logger")
 local ThoughtDB = require("weread.lib.thought_db")
+local InfoMessage = require("ui/widget/infomessage")
 local ThoughtPopup = require("weread.ui.thought_popup")
 local time = require("ui/time")
 local UIManager = require("ui/uimanager")
 
 local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
-local T = PluginUtil.T
 local log_error = PluginUtil.log_error
-local display_error = PluginUtil.display_error
 local thought_perf = PluginUtil.thought_perf
+local file_exists = PluginUtil.file_exists
 
 local M = {}
 
@@ -228,13 +227,6 @@ function M:_teardownThoughtInterception()
     end
     self:_removeLinkFilter()
     ThoughtPopup.closeVisible()
-    if self._thought_refresh_request then
-        local progress_dialog = self._thought_refresh_request.progress_dialog
-        self._thought_refresh_request = nil
-        if progress_dialog then
-            progress_dialog:close()
-        end
-    end
     if self._thought_db then
         ThoughtDB.close(self._thought_db)
         self._thought_db = nil
@@ -245,8 +237,34 @@ function M:_teardownThoughtInterception()
     self._current_thought_popup = nil
     self._thought_page_cache = nil
     self._thought_page_cache_n = nil
-    self._thought_highlight_active = nil
     self._current_weread_book_id = nil
+    -- Cancel any in-flight silent chapter thought prefetch.
+    if self._chapter_thought_prefetch then
+        self._chapter_thought_prefetch.cancelled = true
+        self._chapter_thought_prefetch = nil
+    end
+    self._thought_inflight = nil
+    self._thought_read_max_page = nil
+    self._thought_prefetch_idle_gen = nil
+    self:_dismissThoughtLoading()
+end
+
+function M:_dismissThoughtLoading()
+    if self._thought_loading_msg then
+        UIManager:close(self._thought_loading_msg)
+        self._thought_loading_msg = nil
+    end
+end
+
+function M:_showThoughtLoading()
+    if self._thought_loading_msg then
+        return
+    end
+    self._thought_loading_msg = InfoMessage:new{
+        text = _("Loading thoughts…"),
+        dismissable = false,
+    }
+    UIManager:show(self._thought_loading_msg)
 end
 
 function M:_setupThoughtInterception()
@@ -273,40 +291,17 @@ function M:_setupThoughtInterception()
     self._thought_interception_setup = true
 end
 
-function M:_clearThoughtHighlight(document)
-    if not self._thought_highlight_active then
-        return
-    end
-    pcall(function()
-        document:highlightXPointer()
-    end)
-    self._thought_highlight_active = nil
-    UIManager:setDirty(self.dialog, "ui")
-end
-
 function M:_showThoughtPopup(pages, link, session_gen, tap_started)
     local show_started = time.now()
     if session_gen and session_gen ~= self._reader_session_gen then
         self._thought_popup_open = nil
+        self:_yieldThoughtPrefetchForReading()
         return
     end
     if type(pages) ~= "table" or #pages == 0 then
         self._thought_popup_open = nil
+        self:_yieldThoughtPrefetchForReading()
         return
-    end
-
-    local document = self.ui.document
-    if link.from_xpointer then
-        local highlight_started = time.now()
-        local ok = pcall(function()
-            document:highlightXPointer()
-            document:highlightXPointer(link.from_xpointer)
-        end)
-        thought_perf("highlight", highlight_started, "ok=", tostring(ok))
-        if ok then
-            self._thought_highlight_active = true
-            UIManager:setDirty(self.dialog, "partial")
-        end
     end
 
     local popup_started = time.now()
@@ -318,11 +313,7 @@ function M:_showThoughtPopup(pages, link, session_gen, tap_started)
             close_callback = function()
                 self._thought_popup_open = nil
                 self._current_thought_popup = nil
-                if self._thought_highlight_active then
-                    self._thought_highlight_active = nil
-                    document:highlightXPointer()
-                    UIManager:setDirty(self.dialog, "ui")
-                end
+                self:_yieldThoughtPrefetchForReading()
             end,
         })
     end)
@@ -332,7 +323,7 @@ function M:_showThoughtPopup(pages, link, session_gen, tap_started)
     if not ok then
         logger.warn("thought popup failed:", popup)
         self._thought_popup_open = nil
-        self:_clearThoughtHighlight(document)
+        self:_yieldThoughtPrefetchForReading()
         return
     end
 
@@ -426,7 +417,7 @@ function M:_ensureThoughtDB(book_id)
     end
 
     local books = self.settings:get("books", {})
-    local book = books[book_id]
+    local book = books[book_id] or books[tostring(book_id)]
     if not book then
         return nil
     end
@@ -448,10 +439,8 @@ function M:_ensureThoughtDB(book_id)
     return self._thought_db
 end
 
--- Load the tapped range as native-dialog pages from the normalized SQLite
--- table. There is intentionally no JSON or HTML compatibility path: this schema
--- predates release, so a missing row triggers an automatic chapter/full-book
--- thought repair below.
+-- Load the tapped range from SQLite. Missing rows trigger an on-demand
+-- single-range fetch in _downloadMissingThought.
 function M:_buildThoughtPagesFromHref(href)
     local info = self:_parseThoughtHref(href)
     if not info then
@@ -462,10 +451,16 @@ function M:_buildThoughtPagesFromHref(href)
     if db then
         local query_started = time.now()
         local items = ThoughtDB.getReviewItems(db, info.chapter_uid, info.range)
-        thought_perf("sqlite_range_query", query_started,
-            "items=", tostring(type(items) == "table" and #items or 0))
         if type(items) == "table" and #items > 0 then
+            thought_perf("sqlite_range_query", query_started,
+                "items=", tostring(#items))
             return items
+        end
+        local fetched = ThoughtDB.isRangeFetched(db, info.chapter_uid, info.range)
+        thought_perf("sqlite_range_query", query_started,
+            "items=0", "fetched=", tostring(fetched))
+        if fetched then
+            return false, info
         end
     end
 
@@ -493,10 +488,12 @@ function M:_queueThoughtPopup(pages, link, tap_started)
         thought_perf("next_tick_delay", scheduled_at)
         if session_gen ~= self._reader_session_gen then
             self._thought_popup_open = nil
+            self:_yieldThoughtPrefetchForReading()
             return
         end
         if not self.ui or not self.ui.document then
             self._thought_popup_open = nil
+            self:_yieldThoughtPrefetchForReading()
             return
         end
         self:_showThoughtPopup(pages, link, session_gen, tap_started)
@@ -504,327 +501,949 @@ function M:_queueThoughtPopup(pages, link, tap_started)
     return true
 end
 
--- A link from an older HTML/JSON cache may exist while the normalized SQLite
--- rows do not. Repair the whole currently-open artifact: one chapter for a
--- single-chapter EPUB, or every chapter for a combined full-book EPUB.
+-- Missing local rows: fetch only the tapped range (low rate-limit risk).
+-- On success, silently prefetch the rest of the chapter with backoff + jitter.
 function M:_downloadMissingThought(info, href, link, tap_started)
-    if self._thought_refresh_request then
-        return true
-    end
     if not self:requireLogin(false, true) then
         return true
     end
 
-    local document = self.ui and self.ui.document
-    local books = self.settings:get("books", {})
-    local book = books[info.book_id]
-    local catalog = book and self:ensureChaptersLoaded(book)
-    if not book or type(catalog) ~= "table" or #catalog == 0 then
-        self:showInfo(_("Thought cache error. Please re-download this book with underlines and thoughts."))
+    if not self:isNetworkOnline() then
+        self:showOffline(_("Download thoughts"))
         return true
     end
 
-    local file_path = document and document.file
-    local _current_idx, current_chapter, is_full_book =
-        self:getChapterInfoFromFile(book, file_path)
-    local chapters
-    if is_full_book then
-        chapters = {}
-        for _, chapter in ipairs(catalog) do
-            if chapter.chapterUid ~= nil then
-                chapters[#chapters + 1] = chapter
-            end
-        end
-    else
-        if not current_chapter then
-            for _, chapter in ipairs(catalog) do
-                if tostring(chapter.chapterUid) == tostring(info.chapter_uid) then
-                    current_chapter = chapter
-                    break
-                end
-            end
-        end
-        chapters = current_chapter and { current_chapter } or nil
-    end
-    if not chapters or #chapters == 0 then
-        self:showInfo(_("Thought cache error. Please re-download this book with underlines and thoughts."))
+    local chapter_uid = tonumber(info.chapter_uid) or info.chapter_uid
+    local range = info.range
+    local book_id = info.book_id
+    local fetch_key = self:_thoughtFetchKey(book_id, chapter_uid, range)
+
+    -- Drop this range from silent prefetch so the tap fetch is the only request.
+    self:_pauseChapterThoughtPrefetch()
+    self:_removePrefetchRange(book_id, chapter_uid, range)
+
+    -- Coalesce duplicate taps for the same range.
+    self._thought_inflight = self._thought_inflight or {}
+    local inflight = self._thought_inflight[fetch_key]
+    if inflight then
+        inflight.waiters[#inflight.waiters + 1] = {
+            href = href,
+            link = link,
+            tap_started = tap_started,
+        }
         return true
     end
 
-    local request = {
-        session_gen = self._reader_session_gen or 0,
-        page = document and document:getCurrentPage(),
-        href = href,
-        book_id = info.book_id,
-        target_chapter_uid = info.chapter_uid,
-        target_range = info.range,
-        chapters = chapters,
-        chapter_index = 0,
-        failed_requests = 0,
-        full_book = is_full_book,
-    }
-    self._thought_refresh_request = request
-    local progress_dialog
-    progress_dialog = DownloadDialog:new{
-        title = is_full_book
-            and _("Local thought data is missing. Downloading full-book thoughts now…")
-            or _("Local thought data is missing. Downloading chapter thoughts now…"),
-        progress_max = #chapters,
-        buttons = {
-            {
-                {
-                    text = _("Cancel"),
-                    callback = function()
-                        if self._thought_refresh_request == request then
-                            self._thought_refresh_request = nil
-                            progress_dialog:close()
-                            self:showTransientInfo(_("Download cancelled"), 2)
-                        end
-                    end,
-                },
-            },
-        },
-    }
-    request.progress_dialog = progress_dialog
-    progress_dialog:show()
-
-    local function finish_request()
-        if self._thought_refresh_request == request then
-            self._thought_refresh_request = nil
-            if request.progress_dialog then
-                request.progress_dialog:close()
-                request.progress_dialog = nil
-            end
-        end
-    end
-
-    local function request_is_current()
-        return self._thought_refresh_request == request
-            and request.session_gen == self._reader_session_gen
-            and self.ui and self.ui.document
-    end
+    local batch = {{
+        range = range,
+        maxIdx = 0,
+        count = 30,
+        synckey = 0,
+    }}
 
     local label = _("Download thoughts")
-    local fail_repair
-    local schedule_step
-    local finish_repair
-    local download_chapter
-    local download_batch
+    local max_attempts = 3
+    local session_gen = self._reader_session_gen or 0
 
-    fail_repair = function(err)
-        if not request_is_current() then
-            finish_request()
-            return
+    local function finish_success(items, reviews)
+        self._thought_inflight[fetch_key] = nil
+        self:_dismissThoughtLoading()
+
+        self._thought_page_cache = self._thought_page_cache or {}
+        self._thought_page_cache[href] = items
+        self:_queueThoughtPopup(items, link, tap_started)
+
+        for _, w in ipairs(inflight.waiters) do
+            self._thought_page_cache[w.href] = items
+            self:_queueThoughtPopup(items, w.link, w.tap_started)
         end
-        finish_request()
-        logger.warn("thought repair failed:",
-            "href=", href, "error=", log_error(err or "unknown"))
-        self:showInfo(T(_("%1 failed:\n%2"), label, display_error(err or "unknown")))
+
+        -- Persist before prefetch can resume so this range is not requested again.
+        local db = self:_ensureThoughtDB(book_id)
+        if db then
+            pcall(ThoughtDB.putReviewRanges, db, chapter_uid, reviews, { range })
+        end
+
+        -- Advance the forward cursor only. Stay paused until the popup closes.
+        self:_scheduleChapterThoughtPrefetch(book_id, chapter_uid, range)
     end
 
-    schedule_step = function(callback, delay)
-        UIManager:scheduleIn(delay or 0.1, function()
-            if not request_is_current() then
-                finish_request()
-                return
-            end
-            local ok, err = xpcall(callback, debug.traceback)
-            if not ok then
-                fail_repair(err)
-            end
-        end)
+    local function finish_empty()
+        self._thought_inflight[fetch_key] = nil
+        self:_dismissThoughtLoading()
+        self._thought_page_cache = self._thought_page_cache or {}
+        self._thought_page_cache[href] = false
+        for _, w in ipairs(inflight.waiters) do
+            self._thought_page_cache[w.href] = false
+        end
+        local db = self:_ensureThoughtDB(book_id)
+        if db then
+            pcall(ThoughtDB.markRangesFetched, db, chapter_uid, { range })
+        end
+        self:showTransientInfo(_("No thoughts were returned for this underline."), 2)
+        self:_scheduleChapterThoughtPrefetch(book_id, chapter_uid, range)
+        self:_yieldThoughtPrefetchForReading()
     end
 
-    finish_repair = function()
-        if not request_is_current() then
-            finish_request()
-            return
-        end
-
-        local db = self:_ensureThoughtDB(request.book_id)
-        local pages = db and ThoughtDB.getReviewItems(
-            db, request.target_chapter_uid, request.target_range
-        ) or nil
-        finish_request()
-
-        self._thought_page_cache = {}
-        self._thought_page_cache_n = 0
-        if type(pages) ~= "table" or #pages == 0 then
-            if request.failed_requests > 0 then
-                self:showInfo(_("Some thoughts could not be downloaded. Tap the underline again to retry."))
-            else
-                self._thought_page_cache[href] = false
-                self:showInfo(_("No thoughts were returned for this underline."))
-            end
-            return
-        end
-        self._thought_page_cache[href] = pages
-        self._thought_page_cache_n = 1
-
-        -- The database is fully repaired even if the reader moved elsewhere.
-        -- Only auto-open the popup while the original page is still visible.
-        if request.session_gen ~= self._reader_session_gen
-            or self.ui.document:getCurrentPage() ~= request.page then
-            return
-        end
-        self:_queueThoughtPopup(pages, link, tap_started)
-    end
-
-    download_batch = function()
-        if request.batch_index > #request.batches then
-            request.progress_dialog:setTitle(
-                T(_("Processing underlines and thoughts · chapter %1/%2"),
-                    tostring(request.chapter_index), tostring(#request.chapters))
-            )
-            request.progress_dialog:reportProgress(request.chapter_index - 0.05)
-            local db = self:_ensureThoughtDB(request.book_id)
-            if not db or not ThoughtDB.putReviews(
-                db, request.chapter.chapterUid, request.reviews
-            ) then
-                fail_repair("failed to write thought database")
-                return
-            end
-            request.progress_dialog:reportProgress(request.chapter_index)
-            schedule_step(download_chapter, 0.1)
-            return
-        end
-
-        local batch_index = request.batch_index
-        local batch_total = #request.batches
-        local fractional = request.chapter_index - 0.85
-            + 0.7 * batch_index / math.max(1, batch_total)
-        request.progress_dialog:setTitle(
-            T(_("Downloading thoughts %1/%2 · chapter %3/%4"),
-                tostring(batch_index), tostring(batch_total),
-                tostring(request.chapter_index), tostring(#request.chapters))
+    local function finish_error()
+        self._thought_inflight[fetch_key] = nil
+        self:_dismissThoughtLoading()
+        self:showTransientInfo(
+            _("Some thoughts could not be downloaded. Tap the underline again to retry."),
+            2
         )
-        request.progress_dialog:reportProgress(fractional)
+        self:_yieldThoughtPrefetchForReading()
+    end
 
-        local batch_started = time.now()
+    inflight = { waiters = {} }
+    self._thought_inflight[fetch_key] = inflight
+    self:_showThoughtLoading()
+
+    local function attempt_fetch(attempt)
+        if session_gen ~= (self._reader_session_gen or 0) then
+            self._thought_inflight[fetch_key] = nil
+            self:_dismissThoughtLoading()
+            self:_yieldThoughtPrefetchForReading()
+            return
+        end
+        if not self:isNetworkOnline() then
+            self._thought_inflight[fetch_key] = nil
+            self:_dismissThoughtLoading()
+            self:showOffline(label)
+            self:_yieldThoughtPrefetchForReading()
+            return
+        end
+
         local ok, result, err = self.client:get_chapter_reviews_batch(
-            request.book_id, request.chapter.chapterUid,
-            request.batches[batch_index]
+            book_id,
+            chapter_uid,
+            batch,
+            { timeout = 1.5 }
         )
-        thought_perf("thought_repair_batch", batch_started,
-            "chapter=", tostring(request.chapter_index) .. "/" .. tostring(#request.chapters),
-            "batch=", tostring(batch_index) .. "/" .. tostring(batch_total),
-            "ok=", tostring(ok), "retry=", tostring(request.batch_retry or 0))
-        if ok and type(result) == "table" and type(result.reviews) == "table" then
-            for _, review in ipairs(result.reviews) do
-                request.reviews[#request.reviews + 1] = review
-            end
-            request.batch_retry = 0
-            request.batch_index = request.batch_index + 1
-        else
-            request.batch_retry = (request.batch_retry or 0) + 1
-            if request.batch_retry <= 2 then
-                request.progress_dialog:setTitle(
-                    T(_("Retrying thoughts %1/%2 · attempt %3"),
-                        tostring(batch_index), tostring(batch_total),
-                        tostring(request.batch_retry))
-                )
-                schedule_step(download_batch, 0.6 * request.batch_retry)
-                return
-            end
-            request.failed_requests = request.failed_requests + 1
-            logger.warn("thought repair batch skipped after retries:",
-                "chapter_uid=", tostring(request.chapter.chapterUid),
-                "batch=", tostring(request.batch_index),
-                "error=", log_error(err or "unknown"))
-            request.batch_retry = 0
-            request.batch_index = request.batch_index + 1
-        end
-        schedule_step(download_batch, 0.3)
-    end
 
-    download_chapter = function()
-        request.chapter_index = request.chapter_index + 1
-        if request.chapter_index > #request.chapters then
-            finish_repair()
-            return
-        end
-
-        request.chapter = request.chapters[request.chapter_index]
-        request.progress_dialog:setTitle(T(_("Downloading underlines · chapter %1/%2"),
-            tostring(request.chapter_index), tostring(#request.chapters)))
-        request.progress_dialog:reportProgress(request.chapter_index - 0.85)
-
-        local underlines_started = time.now()
-        local ok, underlines, err = self.client:get_chapter_underlines(
-            request.book_id, request.chapter.chapterUid
-        )
-        thought_perf("thought_repair_underlines", underlines_started,
-            "chapter=", tostring(request.chapter_index) .. "/" .. tostring(#request.chapters),
-            "ok=", tostring(ok))
-        if not ok or type(underlines) ~= "table" then
-            request.failed_requests = request.failed_requests + 1
-            logger.warn("thought repair chapter skipped:",
-                "chapter_uid=", tostring(request.chapter.chapterUid),
-                "error=", log_error(err or "unknown"))
-            request.progress_dialog:reportProgress(request.chapter_index)
-            schedule_step(download_chapter, 0.1)
-            return
-        end
-
-        local ranges = {}
-        local seen_ranges = {}
-        for _, underline in ipairs(underlines.underlines or {}) do
-            if type(underline.range) == "string" and underline.range ~= ""
-                and not seen_ranges[underline.range] then
-                seen_ranges[underline.range] = true
-                ranges[#ranges + 1] = underline.range
-            end
-        end
-        request.reviews = {}
-        request.batches = self.client:build_chapter_review_batches(ranges)
-        request.batch_index = 1
-        request.batch_retry = 0
-        if #request.batches == 0 then
-            request.progress_dialog:setTitle(
-                T(_("Processing underlines and thoughts · chapter %1/%2"),
-                    tostring(request.chapter_index), tostring(#request.chapters))
+        if not ok then
+            logger.warn(
+                "on-demand thought fetch failed:",
+                "attempt=", attempt,
+                "err=", log_error(err or "unknown")
             )
-            request.progress_dialog:reportProgress(request.chapter_index - 0.05)
-            local db = self:_ensureThoughtDB(request.book_id)
-            if not db or not ThoughtDB.putReviews(
-                db, request.chapter.chapterUid, {}
-            ) then
-                fail_repair("failed to write thought database")
+            if attempt < max_attempts then
+                local delay = math.random() * (0.6 * (2 ^ (attempt - 1)))
+                if delay < 0.25 then
+                    delay = 0.25
+                end
+                UIManager:scheduleIn(delay, function()
+                    attempt_fetch(attempt + 1)
+                end)
                 return
             end
-            request.progress_dialog:reportProgress(request.chapter_index)
-            schedule_step(download_chapter, 0.1)
-        else
-            schedule_step(download_batch, 0.1)
-        end
-    end
-
-    local scheduled = self:runOnlineTask(label, function()
-        if not request_is_current() then
-            finish_request()
+            finish_error()
             return
         end
-        schedule_step(function()
-            if request.full_book then
-                if self._thought_db then
-                    ThoughtDB.close(self._thought_db)
-                    self._thought_db = nil
-                    self._thought_db_dir = nil
-                    self._thought_db_book_id = nil
-                end
-                local book_dir = Content.book_resolved_dir(
-                    self.settings, request.book_id, book
-                )
-                ThoughtDB.remove_db(book_dir)
+
+        local reviews = result and result.reviews or {}
+        if type(reviews) ~= "table" or #reviews == 0 then
+            finish_empty()
+            return
+        end
+
+        local items = {}
+        for _, review in ipairs(reviews) do
+            for _, item in ipairs(Annotations.buildThoughtPopupItems(review)) do
+                items[#items + 1] = item
             end
-            download_chapter()
-        end, 0.1)
+        end
+        if #items == 0 then
+            finish_empty()
+            return
+        end
+
+        finish_success(items, reviews)
+    end
+
+    self:runOnlineTask(label, function()
+        attempt_fetch(1)
     end)
 
-    if not scheduled then
-        finish_request()
+    return true
+end
+
+-- Silent thought prefetch: later ranges after the last tap, in reading order.
+
+local function thoughtPrefetchDelay(base_seconds, attempt, cap_seconds)
+    local exp = base_seconds * (2 ^ math.max(0, attempt))
+    if exp > cap_seconds then
+        exp = cap_seconds
+    end
+    return math.random() * exp
+end
+
+local function thoughtPrefetchBatchGap()
+    -- Slightly longer gaps so the UI thread is free between blocking HTTP calls.
+    return 0.8 + math.random() * 0.7
+end
+
+function M:_pauseChapterThoughtPrefetch()
+    local job = self._chapter_thought_prefetch
+    if job and not job.cancelled then
+        job.paused = true
+    end
+end
+
+function M:_thoughtFetchInFlight()
+    local inflight = self._thought_inflight
+    return type(inflight) == "table" and next(inflight) ~= nil
+end
+
+-- True while a thought popup is up or a tap-fetch is still running.
+-- Prefetch must stay paused so a new HTTP batch cannot start under the tap.
+function M:_thoughtPrefetchShouldStayPaused()
+    if self:_thoughtFetchInFlight() then
+        return true
+    end
+    if not self._thought_popup_open then
+        return false
+    end
+    if ThoughtPopup.isShowing() then
+        return true
+    end
+    self._thought_popup_open = nil
+    return false
+end
+
+-- Pause blocking prefetch and only resume after the reader has been idle
+-- briefly. Used on page turns, underline taps, and thought-popup close.
+function M:_yieldThoughtPrefetchForReading()
+    local job = self._chapter_thought_prefetch
+    if not job or job.cancelled then
+        return
+    end
+    job.paused = true
+    local token = (self._thought_prefetch_idle_gen or 0) + 1
+    self._thought_prefetch_idle_gen = token
+    UIManager:scheduleIn(1.2, function()
+        if self._thought_prefetch_idle_gen ~= token then
+            return
+        end
+        job = self._chapter_thought_prefetch
+        if not job or job.cancelled then
+            return
+        end
+        if self:_thoughtPrefetchShouldStayPaused() then
+            return
+        end
+        job.paused = false
+        if job.batches then
+            self:_stepChapterThoughtPrefetch(job)
+        else
+            self:_runChapterThoughtPrefetch(job)
+        end
+    end)
+end
+
+function M:_removePrefetchRange(book_id, chapter_uid, range)
+    local job = self._chapter_thought_prefetch
+    if not job or job.cancelled or not job.batches then
+        return
+    end
+    if tostring(job.book_id) ~= tostring(book_id) then
+        return
+    end
+    if tostring(job.chapter_uid) ~= tostring(chapter_uid) then
+        return
+    end
+    if type(range) ~= "string" or range == "" then
+        return
+    end
+
+    local start_i = job.batch_index or 1
+    for i = #job.batches, start_i, -1 do
+        local batch = job.batches[i]
+        if type(batch) == "table" then
+            for j = #batch, 1, -1 do
+                if type(batch[j]) == "table" and batch[j].range == range then
+                    table.remove(batch, j)
+                end
+            end
+            if #batch == 0 then
+                table.remove(job.batches, i)
+            end
+        end
+    end
+end
+
+local SCAN_PAGES_PER_SLICE = 25
+local SCAN_MAX_PAGES = 400
+
+local function rangeStart(range)
+    return tonumber((tostring(range or ""):match("^(%d+)%-")))
+end
+
+local function sortRangesByStart(ranges)
+    table.sort(ranges, function(a, b)
+        local sa, sb = rangeStart(a) or 0, rangeStart(b) or 0
+        if sa == sb then
+            return tostring(a) < tostring(b)
+        end
+        return sa < sb
+    end)
+end
+
+local function currentDocumentPage(plugin)
+    local page
+    pcall(function()
+        if plugin.ui and plugin.ui.document and plugin.ui.document.getCurrentPage then
+            page = plugin.ui.document:getCurrentPage()
+        end
+    end)
+    return page
+end
+
+local function documentPageCount(plugin)
+    local count
+    pcall(function()
+        if plugin.ui and plugin.ui.document and plugin.ui.document.getPageCount then
+            count = plugin.ui.document:getPageCount()
+        end
+    end)
+    return count
+end
+
+-- Collect thought ranges whose anchors are on the current document page.
+local function collectCurrentPageThoughtRanges(plugin, book_id, chapter_uid)
+    local ordered = {}
+    local seen = {}
+    local document = plugin.ui and plugin.ui.document
+    if not document then
+        return ordered
+    end
+
+    local page = nil
+    pcall(function()
+        page = document:getCurrentPage()
+    end)
+    if not page then
+        return ordered
+    end
+
+    local links = nil
+    pcall(function()
+        if type(document.getPageLinks) == "function" then
+            links = document:getPageLinks(page)
+        end
+    end)
+    if type(links) ~= "table" then
+        return ordered
+    end
+
+    local chapter_str = tostring(chapter_uid)
+    local book_str = tostring(book_id)
+    for _, link in ipairs(links) do
+        local href = plugin:_linkHref(link)
+        if type(href) == "string" then
+            local info = plugin:_parseThoughtHref(href)
+            if info
+                and tostring(info.book_id) == book_str
+                and tostring(info.chapter_uid) == chapter_str
+                and type(info.range) == "string"
+                and not seen[info.range]
+            then
+                seen[info.range] = true
+                ordered[#ordered + 1] = info.range
+            end
+        end
+    end
+    return ordered
+end
+
+local function collectThoughtRangesFromEpub(plugin, epub_path, book_id, chapter_uid)
+    local ordered = {}
+    if type(epub_path) ~= "string" or epub_path == "" or not file_exists(epub_path) then
+        return ordered
+    end
+
+    local ok_archiver, Archiver = pcall(require, "ffi/archiver")
+    if not ok_archiver or not Archiver or not Archiver.Reader then
+        return ordered
+    end
+
+    local archive = Archiver.Reader:new()
+    local seen = {}
+    local book_str = tostring(book_id)
+    local chapter_str = tostring(chapter_uid)
+    local ok, err = pcall(function()
+        if not archive:open(epub_path) then
+            error(archive.err or "open epub failed")
+        end
+        for entry in archive:iterate() do
+            local path = entry.path or ""
+            if (entry.mode == "file" or entry.mode == nil)
+                and path:find("%.[Xx]?[Hh][Tt][Mm][Ll]?$") then
+                local data = archive:extractToMemory(entry.path)
+                if type(data) == "string" then
+                    for href in data:gmatch("#?wrthought%-[%w%._%-]+") do
+                        local info = plugin:_parseThoughtHref(href)
+                        if info
+                            and tostring(info.book_id) == book_str
+                            and tostring(info.chapter_uid) == chapter_str
+                            and not seen[info.range]
+                        then
+                            seen[info.range] = true
+                            ordered[#ordered + 1] = info.range
+                        end
+                    end
+                end
+            end
+        end
+    end)
+    pcall(function() archive:close() end)
+    if not ok then
+        logger.warn("thought prefetch epub scan failed:",
+            epub_path, log_error(err or "unknown"))
+        return {}
+    end
+    sortRangesByStart(ordered)
+    return ordered
+end
+
+function M:_noteThoughtReadPage()
+    local page = currentDocumentPage(self)
+    if page then
+        local max_page = self._thought_read_max_page or page
+        if page > max_page then
+            max_page = page
+        end
+        self._thought_read_max_page = max_page
+    end
+    return page
+end
+
+function M:_trimPrefetchBeforeCursor(job)
+    if not job or type(job.batches) ~= "table" then
+        return
+    end
+    local cursor = job.after_start or -1
+    local start_i = job.batch_index or 1
+    for i = #job.batches, start_i, -1 do
+        local batch = job.batches[i]
+        if type(batch) == "table" then
+            for j = #batch, 1, -1 do
+                local start = rangeStart(batch[j] and batch[j].range)
+                if not start or start <= cursor then
+                    table.remove(batch, j)
+                end
+            end
+            if #batch == 0 then
+                table.remove(job.batches, i)
+            end
+        end
+    end
+end
+
+function M:_nextChapterForThoughtPrefetch(book_id, chapter_uid)
+    local books = self.settings:get("books", {})
+    local book = books[tostring(book_id)] or books[book_id]
+    if not book or type(self.ensureChaptersLoaded) ~= "function" then
+        return nil
+    end
+    local chapters = self:ensureChaptersLoaded(book)
+    if type(chapters) ~= "table" then
+        return nil
+    end
+
+    local index
+    for i, chapter in ipairs(chapters) do
+        if tostring(chapter.chapterUid or chapter.chapterId) == tostring(chapter_uid) then
+            index = i
+            break
+        end
+    end
+    local next_chapter = index and chapters[index + 1] or nil
+    if not next_chapter then
+        return nil
+    end
+
+    local next_uid = next_chapter.chapterUid or next_chapter.chapterId
+    local cached = book.cached_chapters and (
+        book.cached_chapters[tostring(next_uid)] or book.cached_chapters[next_uid]
+    )
+    local file = self.ui and self.ui.document and self.ui.document.file
+    local full_book = type(self.getFullBookCachePath) == "function"
+        and self:getFullBookCachePath(book) or nil
+    return {
+        chapter_uid = next_uid,
+        epub_path = (type(cached) == "string" and cached ~= "" and file_exists(cached))
+            and cached or nil,
+        in_open_document = full_book and file == full_book,
+    }
+end
+
+function M:_shouldChainNextChapter(job)
+    if not job or job.allow_chain == false then
+        return false
+    end
+    if job.session_gen ~= (self._reader_session_gen or 0) then
+        return false
+    end
+    if tostring(self._current_weread_book_id) ~= tostring(job.book_id) then
+        return false
+    end
+    if not self.ui or not self.ui.document then
+        return false
+    end
+
+    local page = currentDocumentPage(self)
+    local max_page = self._thought_read_max_page or job.max_page_seen or job.start_page
+    if page and max_page and page + 2 < max_page then
+        return false
+    end
+
+    local same_chapter = collectCurrentPageThoughtRanges(
+        self, job.book_id, job.chapter_uid
+    )
+    if #same_chapter > 0 then
+        return true
+    end
+
+    local links
+    pcall(function()
+        if page and self.ui.document.getPageLinks then
+            links = self.ui.document:getPageLinks(page)
+        end
+    end)
+    if type(links) == "table" then
+        local book_str = tostring(job.book_id)
+        local chapter_str = tostring(job.chapter_uid)
+        for _, link in ipairs(links) do
+            local info = self:_parseThoughtHref(self:_linkHref(link))
+            if info
+                and tostring(info.book_id) == book_str
+                and tostring(info.chapter_uid) ~= chapter_str
+            then
+                return false
+            end
+        end
     end
     return true
+end
+
+function M:_thoughtPrefetchEpubPath(book_id, chapter_uid)
+    local file = self.ui and self.ui.document and self.ui.document.file
+    if type(file) == "string" and file_exists(file) then
+        return file
+    end
+    local books = self.settings:get("books", {})
+    local book = books[tostring(book_id)] or books[book_id]
+    if type(book) ~= "table" then
+        return nil
+    end
+    local cached = book.cached_chapters and (
+        book.cached_chapters[tostring(chapter_uid)]
+        or book.cached_chapters[chapter_uid]
+    )
+    if type(cached) == "string" and file_exists(cached) then
+        return cached
+    end
+    if type(self.getFullBookCachePath) == "function" then
+        local full = self:getFullBookCachePath(book)
+        if type(full) == "string" and file_exists(full) then
+            return full
+        end
+    end
+    return nil
+end
+
+function M:_deferChapterThoughtPrefetch(book_id, chapter_uid, skip_range)
+    local session_gen = self._reader_session_gen or 0
+    UIManager:scheduleIn(0.3, function()
+        if session_gen ~= (self._reader_session_gen or 0) then
+            return
+        end
+        self:_scheduleChapterThoughtPrefetch(book_id, chapter_uid, skip_range)
+    end)
+end
+
+function M:_scheduleChapterThoughtPrefetch(book_id, chapter_uid, skip_range, opts)
+    if not book_id or chapter_uid == nil then
+        return
+    end
+    if not self:isNetworkConnected() then
+        return
+    end
+
+    opts = opts or {}
+    chapter_uid = tonumber(chapter_uid) or chapter_uid
+    local after_start = -1
+    if skip_range then
+        after_start = rangeStart(skip_range) or -1
+    elseif opts.after_start ~= nil then
+        after_start = tonumber(opts.after_start) or -1
+    end
+
+    local existing = self._chapter_thought_prefetch
+    if existing and not existing.cancelled
+        and tostring(existing.book_id) == tostring(book_id)
+        and tostring(existing.chapter_uid) == tostring(chapter_uid)
+    then
+        if after_start > (existing.after_start or -1) then
+            existing.after_start = after_start
+            existing.skip_range = skip_range
+            self:_trimPrefetchBeforeCursor(existing)
+        end
+        if skip_range then
+            self:_removePrefetchRange(book_id, chapter_uid, skip_range)
+        end
+        return
+    end
+
+    if existing then
+        existing.cancelled = true
+    end
+
+    local epub_path = opts.epub_path or self:_thoughtPrefetchEpubPath(book_id, chapter_uid)
+    local source = opts.source
+    if not source then
+        source = epub_path and "epub" or "document"
+    end
+
+    local page = self:_noteThoughtReadPage()
+    local job = {
+        cancelled = false,
+        paused = self:_thoughtPrefetchShouldStayPaused(),
+        book_id = book_id,
+        chapter_uid = chapter_uid,
+        skip_range = skip_range,
+        after_start = after_start,
+        allow_chain = opts.allow_chain ~= false,
+        source = source,
+        epub_path = epub_path,
+        start_page = page,
+        max_page_seen = page,
+        session_gen = self._reader_session_gen or 0,
+        key = tostring(book_id) .. ":" .. tostring(chapter_uid) .. ":" .. tostring(after_start),
+    }
+    self._chapter_thought_prefetch = job
+
+    local start_delay = opts.immediate and 0.2 or (1.0 + math.random() * 0.6)
+    UIManager:scheduleIn(start_delay, function()
+        self:_runChapterThoughtPrefetch(job)
+    end)
+end
+
+function M:_thoughtFetchKey(book_id, chapter_uid, range)
+    return tostring(book_id) .. ":"
+        .. tostring(tonumber(chapter_uid) or chapter_uid) .. ":"
+        .. tostring(range)
+end
+
+function M:_shouldSkipPrefetchRange(job, range)
+    if type(range) ~= "string" or range == "" then
+        return true
+    end
+    if range == job.skip_range then
+        return true
+    end
+    local start = rangeStart(range)
+    if start and start <= (job.after_start or -1) then
+        return true
+    end
+    local key = self:_thoughtFetchKey(job.book_id, job.chapter_uid, range)
+    if self._thought_inflight and self._thought_inflight[key] then
+        return true
+    end
+    local db = self:_ensureThoughtDB(job.book_id)
+    return db and ThoughtDB.isRangeFetched(db, job.chapter_uid, range) or false
+end
+
+function M:_startThoughtPrefetchBatches(job)
+    local cursor = job.after_start or -1
+    local ranges = {}
+    for _, range in ipairs(job.collected or {}) do
+        if not self:_shouldSkipPrefetchRange(job, range) then
+            ranges[#ranges + 1] = range
+        end
+    end
+    sortRangesByStart(ranges)
+
+    if #ranges == 0 then
+        self:_finishChapterThoughtPrefetch(job)
+        return
+    end
+
+    job.batches = self.client:build_chapter_review_batches(ranges)
+    job.batch_index = 1
+    job.batch_retry = 0
+    logger.info(
+        "thought prefetch start:",
+        "chapter=", tostring(job.chapter_uid),
+        "after=", tostring(cursor),
+        "ranges=", #ranges,
+        "batches=", #job.batches,
+        "source=", tostring(job.source or "document")
+    )
+    self:_stepChapterThoughtPrefetch(job)
+end
+
+function M:_scanDocumentThoughtRanges(job)
+    local document = self.ui and self.ui.document
+    if not document or type(document.getPageLinks) ~= "function" then
+        job.scan_page = (job.scan_end or 0) + 1
+        return
+    end
+
+    local book_str = tostring(job.book_id)
+    local chapter_str = tostring(job.chapter_uid)
+    local cursor = job.after_start or -1
+    local scanned = 0
+    while job.scan_page <= job.scan_end and scanned < SCAN_PAGES_PER_SLICE do
+        local page = job.scan_page
+        job.scan_page = job.scan_page + 1
+        scanned = scanned + 1
+        if page > (job.max_page_seen or 0) then
+            job.max_page_seen = page
+        end
+
+        local links
+        pcall(function()
+            links = document:getPageLinks(page)
+        end)
+        local found_this = false
+        local found_other = false
+        if type(links) == "table" then
+            for _, link in ipairs(links) do
+                local info = self:_parseThoughtHref(self:_linkHref(link))
+                if info and tostring(info.book_id) == book_str then
+                    if tostring(info.chapter_uid) == chapter_str then
+                        found_this = true
+                        local start = rangeStart(info.range)
+                        if start and start > cursor and not job.collected_seen[info.range] then
+                            job.collected_seen[info.range] = true
+                            job.collected[#job.collected + 1] = info.range
+                        end
+                    else
+                        found_other = true
+                    end
+                end
+            end
+        end
+
+        if found_this then
+            job.seen_this_chapter = true
+        elseif found_other and job.seen_this_chapter then
+            -- Later pages belong to another chapter in a full-book EPUB.
+            job.scan_page = job.scan_end + 1
+            return
+        end
+    end
+end
+
+function M:_runChapterThoughtPrefetch(job)
+    if not job or job.cancelled then
+        return
+    end
+    if job.session_gen ~= (self._reader_session_gen or 0) then
+        job.cancelled = true
+        return
+    end
+    if self._chapter_thought_prefetch ~= job then
+        return
+    end
+    if job.paused then
+        return
+    end
+    if self:_thoughtPrefetchShouldStayPaused() then
+        job.paused = true
+        return
+    end
+    if not self:isNetworkConnected() then
+        return
+    end
+
+    if job.batches then
+        self:_stepChapterThoughtPrefetch(job)
+        return
+    end
+
+    if job.source == "epub" then
+        if not job.scanned then
+            job.collected = collectThoughtRangesFromEpub(
+                self, job.epub_path, job.book_id, job.chapter_uid
+            )
+            job.scanned = true
+        end
+        self:_startThoughtPrefetchBatches(job)
+        return
+    end
+
+    if not job.scan_started then
+        local start_page = currentDocumentPage(self) or 1
+        local page_count = documentPageCount(self) or start_page
+        job.scan_started = true
+        job.scan_page = start_page
+        job.scan_end = math.min(page_count, start_page + SCAN_MAX_PAGES - 1)
+        job.collected = {}
+        job.collected_seen = {}
+        job.seen_this_chapter = false
+        job.miss_streak = 0
+    end
+
+    self:_scanDocumentThoughtRanges(job)
+    if job.cancelled or self._chapter_thought_prefetch ~= job then
+        return
+    end
+    if job.scan_page <= job.scan_end then
+        UIManager:scheduleIn(0.12, function()
+            self:_runChapterThoughtPrefetch(job)
+        end)
+        return
+    end
+
+    self:_startThoughtPrefetchBatches(job)
+end
+
+function M:_finishChapterThoughtPrefetch(job)
+    logger.info(
+        "thought prefetch chapter done:",
+        "chapter=", tostring(job.chapter_uid),
+        "allow_chain=", tostring(job.allow_chain)
+    )
+    if self._chapter_thought_prefetch == job then
+        self._chapter_thought_prefetch = nil
+    end
+    if job.allow_chain == false then
+        return
+    end
+    if not self:_shouldChainNextChapter(job) then
+        return
+    end
+
+    local next_info = self:_nextChapterForThoughtPrefetch(job.book_id, job.chapter_uid)
+    if not next_info then
+        return
+    end
+
+    local opts = {
+        allow_chain = false,
+        after_start = -1,
+        immediate = true,
+    }
+    local epub_path = next_info.epub_path
+    if next_info.in_open_document then
+        epub_path = (self.ui.document and self.ui.document.file) or epub_path
+    end
+    if epub_path then
+        opts.source = "epub"
+        opts.epub_path = epub_path
+    else
+        logger.info("thought prefetch skip next chapter: no local underlines",
+            tostring(next_info.chapter_uid))
+        return
+    end
+
+    logger.info("thought prefetch chain next chapter:", tostring(next_info.chapter_uid))
+    self:_scheduleChapterThoughtPrefetch(
+        job.book_id, next_info.chapter_uid, nil, opts
+    )
+end
+
+function M:_stepChapterThoughtPrefetch(job)
+    if not job or job.cancelled then
+        return
+    end
+    if job.session_gen ~= (self._reader_session_gen or 0) then
+        job.cancelled = true
+        return
+    end
+    if self._chapter_thought_prefetch ~= job then
+        return
+    end
+    if job.paused then
+        return
+    end
+    if self:_thoughtPrefetchShouldStayPaused() then
+        job.paused = true
+        return
+    end
+    if not self:isNetworkConnected() then
+        return
+    end
+
+    if not job.batches or job.batch_index > #job.batches then
+        self:_finishChapterThoughtPrefetch(job)
+        return
+    end
+
+    local batch = job.batches[job.batch_index]
+    if type(batch) == "table" then
+        for index = #batch, 1, -1 do
+            local item = batch[index]
+            if self:_shouldSkipPrefetchRange(job, type(item) == "table" and item.range or nil) then
+                table.remove(batch, index)
+            end
+        end
+    end
+    if type(batch) ~= "table" or #batch == 0 then
+        job.batch_index = job.batch_index + 1
+        job.batch_retry = 0
+        UIManager:scheduleIn(0.1, function()
+            self:_stepChapterThoughtPrefetch(job)
+        end)
+        return
+    end
+    local ok, result, err = self.client:get_chapter_reviews_batch(
+        job.book_id, job.chapter_uid, batch, { timeout = 1 }
+    )
+    if job.cancelled or self._chapter_thought_prefetch ~= job or job.paused then
+        return
+    end
+
+    if ok and type(result) == "table" and type(result.reviews) == "table" then
+        local requested = {}
+        for _, item in ipairs(batch) do
+            if type(item) == "table" and type(item.range) == "string" then
+                requested[#requested + 1] = item.range
+            end
+        end
+        local db = self:_ensureThoughtDB(job.book_id)
+        if db then
+            pcall(ThoughtDB.putReviewRanges, db, job.chapter_uid, result.reviews, requested)
+        end
+        job.batch_retry = 0
+        job.batch_index = job.batch_index + 1
+        local gap = thoughtPrefetchBatchGap()
+        UIManager:scheduleIn(gap, function()
+            self:_stepChapterThoughtPrefetch(job)
+        end)
+        return
+    end
+
+    job.batch_retry = (job.batch_retry or 0) + 1
+    if job.batch_retry <= 3 then
+        local delay = thoughtPrefetchDelay(0.8, job.batch_retry - 1, 10)
+        logger.warn(
+            "chapter thought prefetch retry:",
+            "index=", job.batch_index,
+            "attempt=", job.batch_retry,
+            "delay=", string.format("%.2f", delay),
+            "err=", log_error(err or "unknown")
+        )
+        UIManager:scheduleIn(delay, function()
+            self:_stepChapterThoughtPrefetch(job)
+        end)
+        return
+    end
+
+    logger.warn(
+        "chapter thought prefetch range skipped:",
+        "index=", job.batch_index,
+        "err=", log_error(err or "unknown")
+    )
+    job.batch_retry = 0
+    job.batch_index = job.batch_index + 1
+    local gap = thoughtPrefetchDelay(0.5, 0, 3)
+    UIManager:scheduleIn(gap, function()
+        self:_stepChapterThoughtPrefetch(job)
+    end)
 end
 
 function M:_onThoughtTap(ges)
@@ -841,6 +1460,7 @@ function M:_onThoughtTap(ges)
     -- Edge taps are for page turns — never intercept them for thoughts.
     -- The link filter also hides our anchors here so native link UI does not fire.
     if isPageTurnEdgeTap(self, ges) then
+        self:_yieldThoughtPrefetchForReading()
         return false
     end
 
@@ -862,6 +1482,11 @@ function M:_onThoughtTap(ges)
         return false
     end
 
+    -- Stop starting new prefetch HTTP under this tap. An in-flight request
+    -- still cannot be aborted; the next batch waits until the popup closes
+    -- (or, with no popup, until a short idle).
+    self:_yieldThoughtPrefetchForReading()
+
     -- Annotations hidden: _installLinkFilter already made getLinkFromGes return nil
     -- for our anchors, so we normally return above before reaching here. Kept as a
     -- defensive fall-through in case the filter is not active.
@@ -876,7 +1501,7 @@ function M:_onThoughtTap(ges)
     local info
     if pages == nil then
         pages, info = self:_buildThoughtPagesFromHref(href)
-        if pages then
+        if pages or pages == false then
             self._thought_page_cache_n = (self._thought_page_cache_n or 0) + 1
             if self._thought_page_cache_n > THOUGHT_PAGE_CACHE_MAX then
                 self._thought_page_cache = {}
@@ -887,7 +1512,17 @@ function M:_onThoughtTap(ges)
     end
     thought_perf("tap_resolve", tap_started, "cached=", tostring(was_cached),
         "pages=", tostring(type(pages) == "table" and #pages or 0))
+    self:_noteThoughtReadPage()
     if pages == false then
+        self:showTransientInfo(_("No thoughts were returned for this underline."), 2)
+        info = info or self:_parseThoughtHref(href)
+        if info then
+            self:_deferChapterThoughtPrefetch(
+                info.book_id,
+                tonumber(info.chapter_uid) or info.chapter_uid,
+                info.range
+            )
+        end
         return true
     end
     if type(pages) ~= "table" or #pages == 0 then
@@ -896,6 +1531,15 @@ function M:_onThoughtTap(ges)
             return self:_downloadMissingThought(info, href, link, tap_started)
         end
         return true
+    end
+    -- Local hit: show first, then warm ranges after this tap.
+    info = info or self:_parseThoughtHref(href)
+    if info then
+        self:_deferChapterThoughtPrefetch(
+            info.book_id,
+            tonumber(info.chapter_uid) or info.chapter_uid,
+            info.range
+        )
     end
     return self:_queueThoughtPopup(pages, link, tap_started)
 end

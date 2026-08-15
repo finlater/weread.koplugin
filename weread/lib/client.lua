@@ -552,7 +552,8 @@ function Client:renew_cookie()
     return result, code, resp_headers
 end
 
-function Client:gateway(api_name, params)
+function Client:gateway(api_name, params, opts)
+    opts = opts or {}
     local payload = merge_req_opts({
         api_name = api_name,
         skill_version = (params and params.skill_version) or WeRead.SKILL_VERSION
@@ -562,13 +563,18 @@ function Client:gateway(api_name, params)
     if api_key == "" then
         error("WeRead API key is not configured")
     end
-    return self:post_json("https://i.weread.qq.com/api/agent/gateway", payload, {
+    local post_opts = {
         diagnostic_api = api_name,
         skip_cookie = true,
         headers = {
             ["Authorization"] = "Bearer " .. api_key,
         },
-    })
+    }
+    -- Optional shorter timeout for interactive thought fetches (avoids long UI stalls).
+    if opts.timeout ~= nil then
+        post_opts.timeout = opts.timeout
+    end
+    return self:post_json("https://i.weread.qq.com/api/agent/gateway", payload, post_opts)
 end
 
 function Client:get_shelf()
@@ -777,7 +783,8 @@ function Client:build_chapter_review_batches(ranges)
     return batches
 end
 
-function Client:get_chapter_reviews_batch(book_id, chapter_uid, batch)
+function Client:get_chapter_reviews_batch(book_id, chapter_uid, batch, opts)
+    opts = opts or {}
     if not book_id or tostring(book_id) == "" then
         return false, nil, "empty book_id"
     end
@@ -793,6 +800,9 @@ function Client:get_chapter_reviews_batch(book_id, chapter_uid, batch)
             bookId = tostring(book_id),
             chapterUid = chapter_uid,
             reviews = batch,
+        }, {
+            -- Interactive/prefetch callers pass a short timeout; bulk download keeps the default.
+            timeout = opts.timeout,
         })
     end)
     if not ok then

@@ -377,6 +377,7 @@ function Downloader:start(book, chapters, suffix, options)
         single_chapter = options.single_chapter == true,
         separate_chapters = options.separate_chapters == true,
         include_annotations = options.include_annotations == true,
+        thoughts_on_demand = options.thoughts_on_demand,
         open_on_complete = options.open_on_complete == true,
         offer_read = options.offer_read ~= false,
         silent_completion = options.silent_completion == true,
@@ -679,6 +680,7 @@ function Downloader:_applyAnnotations(dl)
         return Thoughts.apply_data(self.settings, book_id, chapter.chapterUid,
             dl.current.xhtml, annotation.underlines, annotation.reviews, dl.book, {
             rebuild_thought_db = not dl.single_chapter and dl.index == 1,
+            checked_ranges = annotation.checked_ranges,
         })
     end)
     self:_perf(dl, "apply_annotations", started, "ok=", tostring(ok),
@@ -753,6 +755,15 @@ function Downloader:_annotationBatch(dl)
         for _i, review in ipairs(result.reviews) do
             annotation.reviews[#annotation.reviews + 1] = review
         end
+        local batch = annotation.batches[batch_index]
+        if type(batch) == "table" then
+            annotation.checked_ranges = annotation.checked_ranges or {}
+            for _, item in ipairs(batch) do
+                if type(item) == "table" and type(item.range) == "string" and item.range ~= "" then
+                    annotation.checked_ranges[#annotation.checked_ranges + 1] = item.range
+                end
+            end
+        end
     end
 
     annotation.batch_index = batch_index + 1
@@ -777,10 +788,17 @@ function Downloader:_startAnnotations(dl)
         self:_finishChapter(dl)
         return
     end
+    -- Manual downloads pass an explicit flag; unspecified jobs default to on-demand.
+    local on_demand = dl.thoughts_on_demand
+    if on_demand == nil then
+        on_demand = true
+    end
+
     dl.annotation = {
         underlines = underlines,
         reviews = {},
-        batches = self.client:build_chapter_review_batches(ranges),
+        checked_ranges = {},
+        batches = on_demand and {} or self.client:build_chapter_review_batches(ranges),
         batch_index = 1,
         retry = 0,
     }
