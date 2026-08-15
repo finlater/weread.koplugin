@@ -39,7 +39,10 @@ package.preload["weread.ui.library_view"] = function()
     return {
         show = function(data, callbacks)
             shown[#shown + 1] = { data = data, callbacks = callbacks }
-            return { page = data.page }
+            local source = data.mode == "public_account" and data.accounts or data.books
+            local page_count = math.max(1, math.ceil(#source / data.page_size))
+            local page = math.max(1, math.min(data.page or 1, page_count))
+            return { page = page, page_count = page_count }
         end,
     }
 end
@@ -110,5 +113,14 @@ expect(#shown[4].data.books == 2
 host:showShelfView("books", "zul", shown[4], {})
 expect(#shown[5].data.books == 1 and shown[5].data.books[1].title == "Zulu",
     "bookshelf search did not run over the full filtered shelf")
+
+host.shelf_view_pages.books = 7
+host.bookMatchesFilters = function() return false end
+host.showShelfFilterOptions = function(_self, callback) callback() end
+shown[5].callbacks.on_filter()
+expect(#shown[6].data.books == 0 and shown[6].data.paged == true,
+    "bookshelf filter did not preserve an empty paged result")
+expect(shown[6].data.page == 1 and host.shelf_view_pages.books == 1,
+    "empty filtered bookshelf did not reset and clamp to page one")
 
 print(("bookshelf_pagination_spec: %d checks"):format(checks))
