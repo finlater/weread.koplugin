@@ -91,7 +91,7 @@ function Thoughts.apply(client, settings, book_id, chapter_uid, xhtml)
         logger.info(...)
     end
 
-    local ok_ul, ul_data, _ranges, err_ul = Thoughts.fetch_underlines(
+    local ok_ul, ul_data, _, err_ul = Thoughts.fetch_underlines(
         client, settings, book_id, chapter_uid
     )
     if not ok_ul or type(ul_data) ~= "table" then
