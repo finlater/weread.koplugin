@@ -295,10 +295,12 @@ function M:_showThoughtPopup(pages, link, session_gen, tap_started)
     local show_started = time.now()
     if session_gen and session_gen ~= self._reader_session_gen then
         self._thought_popup_open = nil
+        self:_yieldThoughtPrefetchForReading()
         return
     end
     if type(pages) ~= "table" or #pages == 0 then
         self._thought_popup_open = nil
+        self:_yieldThoughtPrefetchForReading()
         return
     end
 
@@ -321,6 +323,7 @@ function M:_showThoughtPopup(pages, link, session_gen, tap_started)
     if not ok then
         logger.warn("thought popup failed:", popup)
         self._thought_popup_open = nil
+        self:_yieldThoughtPrefetchForReading()
         return
     end
 
@@ -484,10 +487,12 @@ function M:_queueThoughtPopup(pages, link, tap_started)
         thought_perf("next_tick_delay", scheduled_at)
         if session_gen ~= self._reader_session_gen then
             self._thought_popup_open = nil
+            self:_yieldThoughtPrefetchForReading()
             return
         end
         if not self.ui or not self.ui.document then
             self._thought_popup_open = nil
+            self:_yieldThoughtPrefetchForReading()
             return
         end
         self:_showThoughtPopup(pages, link, session_gen, tap_started)
@@ -552,15 +557,14 @@ function M:_downloadMissingThought(info, href, link, tap_started)
             self:_queueThoughtPopup(items, w.link, w.tap_started)
         end
 
-        -- Persist before prefetch resumes so this range is not requested again.
+        -- Persist before prefetch can resume so this range is not requested again.
         local db = self:_ensureThoughtDB(book_id)
         if db then
             pcall(ThoughtDB.putReviewRanges, db, chapter_uid, reviews, { range })
         end
 
-        -- Move the forward cursor first so resume does not fetch earlier ranges.
+        -- Advance the forward cursor only. Stay paused until the popup closes.
         self:_scheduleChapterThoughtPrefetch(book_id, chapter_uid, range)
-        self:_resumeChapterThoughtPrefetch()
     end
 
     local function finish_empty()
@@ -577,7 +581,7 @@ function M:_downloadMissingThought(info, href, link, tap_started)
         end
         self:showTransientInfo(_("No thoughts were returned for this underline."), 2)
         self:_scheduleChapterThoughtPrefetch(book_id, chapter_uid, range)
-        self:_resumeChapterThoughtPrefetch()
+        self:_yieldThoughtPrefetchForReading()
     end
 
     local function finish_error()
@@ -587,7 +591,7 @@ function M:_downloadMissingThought(info, href, link, tap_started)
             _("Some thoughts could not be downloaded. Tap the underline again to retry."),
             2
         )
-        self:_resumeChapterThoughtPrefetch()
+        self:_yieldThoughtPrefetchForReading()
     end
 
     inflight = { waiters = {} }
@@ -598,14 +602,14 @@ function M:_downloadMissingThought(info, href, link, tap_started)
         if session_gen ~= (self._reader_session_gen or 0) then
             self._thought_inflight[fetch_key] = nil
             self:_dismissThoughtLoading()
-            self:_resumeChapterThoughtPrefetch()
+            self:_yieldThoughtPrefetchForReading()
             return
         end
         if not self:isNetworkOnline() then
             self._thought_inflight[fetch_key] = nil
             self:_dismissThoughtLoading()
             self:showOffline(label)
-            self:_resumeChapterThoughtPrefetch()
+            self:_yieldThoughtPrefetchForReading()
             return
         end
 
@@ -685,8 +689,29 @@ function M:_pauseChapterThoughtPrefetch()
     end
 end
 
--- Called from page turns and edge taps. Pause blocking prefetch and only
--- resume after the reader has been idle briefly.
+function M:_thoughtFetchInFlight()
+    local inflight = self._thought_inflight
+    return type(inflight) == "table" and next(inflight) ~= nil
+end
+
+-- True while a thought popup is up or a tap-fetch is still running.
+-- Prefetch must stay paused so a new HTTP batch cannot start under the tap.
+function M:_thoughtPrefetchShouldStayPaused()
+    if self:_thoughtFetchInFlight() then
+        return true
+    end
+    if not self._thought_popup_open then
+        return false
+    end
+    if ThoughtPopup.isShowing() then
+        return true
+    end
+    self._thought_popup_open = nil
+    return false
+end
+
+-- Pause blocking prefetch and only resume after the reader has been idle
+-- briefly. Used on page turns, underline taps, and thought-popup close.
 function M:_yieldThoughtPrefetchForReading()
     local job = self._chapter_thought_prefetch
     if not job or job.cancelled then
@@ -703,12 +728,8 @@ function M:_yieldThoughtPrefetchForReading()
         if not job or job.cancelled then
             return
         end
-        if self._thought_popup_open then
-            if not ThoughtPopup.isShowing() then
-                self._thought_popup_open = nil
-            else
-                return
-            end
+        if self:_thoughtPrefetchShouldStayPaused() then
+            return
         end
         job.paused = false
         if job.batches then
@@ -717,28 +738,6 @@ function M:_yieldThoughtPrefetchForReading()
             self:_runChapterThoughtPrefetch(job)
         end
     end)
-end
-
-function M:_resumeChapterThoughtPrefetch()
-    local job = self._chapter_thought_prefetch
-    if not job or job.cancelled then
-        return
-    end
-    local was_paused = job.paused
-    job.paused = false
-    if not was_paused then
-        return
-    end
-    if job.batches and job.batch_index and job.batch_index <= #job.batches then
-        UIManager:scheduleIn(thoughtPrefetchBatchGap(), function()
-            self:_stepChapterThoughtPrefetch(job)
-        end)
-    else
-        -- Paused before the underlines/list phase finished — restart that phase.
-        UIManager:scheduleIn(0.4 + math.random() * 0.4, function()
-            self:_runChapterThoughtPrefetch(job)
-        end)
-    end
 end
 
 function M:_removePrefetchRange(book_id, chapter_uid, range)
@@ -1109,7 +1108,7 @@ function M:_scheduleChapterThoughtPrefetch(book_id, chapter_uid, skip_range, opt
     local page = self:_noteThoughtReadPage()
     local job = {
         cancelled = false,
-        paused = false,
+        paused = self:_thoughtPrefetchShouldStayPaused(),
         book_id = book_id,
         chapter_uid = chapter_uid,
         skip_range = skip_range,
@@ -1251,12 +1250,9 @@ function M:_runChapterThoughtPrefetch(job)
     if job.paused then
         return
     end
-    if self._thought_popup_open then
-        if not ThoughtPopup.isShowing() then
-            self._thought_popup_open = nil
-        else
-            return
-        end
+    if self:_thoughtPrefetchShouldStayPaused() then
+        job.paused = true
+        return
     end
     if not self:isNetworkConnected() then
         return
@@ -1363,12 +1359,9 @@ function M:_stepChapterThoughtPrefetch(job)
     if job.paused then
         return
     end
-    if self._thought_popup_open then
-        if not ThoughtPopup.isShowing() then
-            self._thought_popup_open = nil
-        else
-            return
-        end
+    if self:_thoughtPrefetchShouldStayPaused() then
+        job.paused = true
+        return
     end
     if not self:isNetworkConnected() then
         return
@@ -1487,6 +1480,11 @@ function M:_onThoughtTap(ges)
         -- Some other EPUB link (footnote, TOC, external) → let KOReader handle it.
         return false
     end
+
+    -- Stop starting new prefetch HTTP under this tap. An in-flight request
+    -- still cannot be aborted; the next batch waits until the popup closes
+    -- (or, with no popup, until a short idle).
+    self:_yieldThoughtPrefetchForReading()
 
     -- Annotations hidden: _installLinkFilter already made getLinkFromGes return nil
     -- for our anchors, so we normally return above before reaching here. Kept as a
