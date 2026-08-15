@@ -38,6 +38,7 @@ local function widget_module()
 end
 
 local shown = {}
+local has_keys = false
 package.preload["ffi/blitbuffer"] = function()
     return { COLOR_WHITE = 0, COLOR_BLACK = 1, COLOR_GRAY = 2 }
 end
@@ -54,7 +55,7 @@ end
 package.preload["device"] = function()
     return {
         input = { group = { Back = "back" } },
-        hasKeys = function() return false end,
+        hasKeys = function() return has_keys end,
         screen = {
             getWidth = function() return 600 end,
             getHeight = function() return 800 end,
@@ -102,6 +103,7 @@ package.preload["ui/widget/focusmanager"] = function()
     local FocusManager = widget_module()
     FocusManager.FOCUS_ONLY_ON_NT = 0
     FocusManager.NOT_UNFOCUS = 1
+    FocusManager.key_events = {}
     function FocusManager:moveFocusTo() return true end
     function FocusManager.onFocusMove() return true end
     return FocusManager
@@ -135,10 +137,23 @@ package.preload["weread.lib.book_reviews"] = function()
 end
 
 local LibraryView = require("weread.ui.library_view")
+has_keys = true
+local empty_paged_view
 local ok, error_message = pcall(function()
-    LibraryView.show({ mode = "books", books = {}, accounts = {} }, {})
+    empty_paged_view = LibraryView.show({
+        mode = "books", books = {}, accounts = {},
+        paged = true, page = 9, page_size = 10,
+    }, {})
 end)
 expect(ok, "empty bookshelf failed to build: " .. tostring(error_message))
+expect(empty_paged_view.page == 1 and empty_paged_view.page_count == 1,
+    "empty paged bookshelf did not initialize safe page metadata")
+ok, error_message = pcall(function()
+    empty_paged_view:onNextPage()
+    empty_paged_view:onPrevPage()
+end)
+expect(ok, "empty paged bookshelf key navigation failed: " .. tostring(error_message))
+has_keys = false
 
 local books = {}
 for index = 1, 25 do
@@ -157,6 +172,10 @@ expect(#paged_view._item_rows == 10,
     "paged bookshelf created rows outside the current page")
 expect(#paged_view._page_buttons == 3,
     "paged bookshelf did not create navigation controls")
+changed_page = nil
+paged_view._page_buttons[1].callback()
+expect(changed_page == 1, "previous-page button returned the wrong page")
+changed_page = nil
 paged_view._page_buttons[3].callback()
 expect(changed_page == 3, "next-page button returned the wrong page")
 
@@ -166,6 +185,48 @@ local clamped_view = LibraryView.show({
 }, {})
 expect(clamped_view.page == 3 and #clamped_view._item_rows == 5,
     "last bookshelf page was not clamped and sliced correctly")
+
+local single_page_view = LibraryView.show({
+    mode = "books", books = { books[1], books[2], books[3] }, accounts = {},
+    paged = true, page = 1, page_size = 10,
+}, {})
+expect(single_page_view.page_count == 1
+        and #single_page_view._item_rows == 3
+        and single_page_view._page_buttons == nil,
+    "single-page bookshelf created unnecessary navigation controls")
+
+local exact_page_change
+local exact_page_view = LibraryView.show({
+    mode = "books", books = books, accounts = {},
+    paged = true, page = 99, page_size = 5,
+}, {
+    on_page_changed = function(page) exact_page_change = page end,
+})
+expect(exact_page_view.page == 5 and exact_page_view.page_count == 5
+        and #exact_page_view._item_rows == 5,
+    "exact page-size multiple produced the wrong last page")
+exact_page_view._page_buttons[3].callback()
+expect(exact_page_change == nil,
+    "next-page button advanced beyond the last exact page")
+
+local continuous_view = LibraryView.show({
+    mode = "books", books = books, accounts = {}, paged = false,
+}, {})
+expect(#continuous_view._item_rows == #books
+        and continuous_view._page_buttons == nil,
+    "continuous bookshelf did not retain the complete result list")
+
+local accounts = {}
+for index = 1, 12 do
+    accounts[index] = { bookId = "mp-" .. tostring(index), title = "Account " .. tostring(index) }
+end
+local account_view = LibraryView.show({
+    mode = "public_account", books = books, accounts = accounts,
+    paged = true, page = 2, page_size = 10,
+}, {})
+expect(account_view.page_count == 2 and #account_view._item_rows == 2
+        and account_view._item_rows[1].text == "Account 11",
+    "public-account pagination used the wrong source or slice")
 
 local large_shelf = {}
 for index = 1, 1000 do
@@ -187,6 +248,6 @@ ok, error_message = pcall(function()
     }, {})
 end)
 expect(ok, "empty review list failed to build: " .. tostring(error_message))
-expect(#shown == 5, "all bookshelf and empty-state views should be shown")
+expect(#shown == 9, "all bookshelf and empty-state views should be shown")
 
 print(("empty_state_face_spec: %d checks"):format(checks))

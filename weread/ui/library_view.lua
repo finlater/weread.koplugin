@@ -236,6 +236,10 @@ function LibraryView:content()
         HorizontalSpan:new{ width = self.list_width },
     }
     self._item_rows = {}
+    if self.paged then
+        self.page_count = math.max(1, math.ceil(#source / self.page_size))
+        self.page = math.max(1, math.min(tonumber(self.page) or 1, self.page_count))
+    end
     if #source == 0 then
         table.insert(content, VerticalSpan:new{ width = Size.padding.large })
         table.insert(content, TextWidget:new{
@@ -248,8 +252,6 @@ function LibraryView:content()
     local first = 1
     local last = #source
     if self.paged then
-        self.page_count = math.max(1, math.ceil(#source / self.page_size))
-        self.page = math.max(1, math.min(tonumber(self.page) or 1, self.page_count))
         first = (self.page - 1) * self.page_size + 1
         last = math.min(#source, first + self.page_size - 1)
     end
