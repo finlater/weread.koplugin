@@ -243,7 +243,6 @@ function M:_teardownThoughtInterception()
         self._chapter_thought_prefetch.cancelled = true
         self._chapter_thought_prefetch = nil
     end
-    self._thought_prefetch_done = nil
     self._thought_inflight = nil
     self._thought_read_max_page = nil
     self._thought_prefetch_idle_gen = nil
@@ -251,7 +250,6 @@ function M:_teardownThoughtInterception()
 end
 
 function M:_dismissThoughtLoading()
-    self._thought_loading_token = nil
     if self._thought_loading_msg then
         UIManager:close(self._thought_loading_msg)
         self._thought_loading_msg = nil
@@ -665,8 +663,7 @@ function M:_downloadMissingThought(info, href, link, tap_started)
     return true
 end
 
--- Silent chapter thought prefetch: one range per request, light jitter.
--- Current-page ranges are queued first; user taps can bump a range to the front.
+-- Silent thought prefetch: later ranges after the last tap, in reading order.
 
 local function thoughtPrefetchDelay(base_seconds, attempt, cap_seconds)
     local exp = base_seconds * (2 ^ math.max(0, attempt))
@@ -741,44 +738,6 @@ function M:_resumeChapterThoughtPrefetch()
         UIManager:scheduleIn(0.4 + math.random() * 0.4, function()
             self:_runChapterThoughtPrefetch(job)
         end)
-    end
-end
-
--- Move a range to the front of the remaining prefetch queue (same chapter only).
-function M:_prioritizePrefetchRange(book_id, chapter_uid, range)
-    local job = self._chapter_thought_prefetch
-    if not job or job.cancelled or not job.batches then
-        return
-    end
-    if tostring(job.book_id) ~= tostring(book_id) then
-        return
-    end
-    if tostring(job.chapter_uid) ~= tostring(chapter_uid) then
-        return
-    end
-    if type(range) ~= "string" or range == "" then
-        return
-    end
-
-    local start_i = job.batch_index or 1
-    for i = start_i, #job.batches do
-        local batch = job.batches[i]
-        if type(batch) == "table" then
-            for j, item in ipairs(batch) do
-                if type(item) == "table" and item.range == range then
-                    if i == start_i and #batch == 1 then
-                        return
-                    end
-                    table.remove(batch, j)
-                    if #batch == 0 then
-                        table.remove(job.batches, i)
-                    end
-                    table.insert(job.batches, start_i, { item })
-                    logger.info("chapter thought prefetch prioritize:", range)
-                    return
-                end
-            end
-        end
     end
 end
 
