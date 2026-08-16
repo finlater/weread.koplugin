@@ -713,6 +713,21 @@ local function build_ncx_points(chapters, filename_for)
     return render(tree), play_order
 end
 
+-- Counterpart to sync_translation(): that ensures the translation exists
+-- server-side; this makes it visible. WeRead embeds the translation inline in
+-- translated books but its own stylesheet hides it
+-- (.wr-translation { display: none !important }). When the user has opted in via
+-- "download translation", append an override so the translation shows in
+-- KOReader. When opted out, it stays hidden exactly as WeRead intends (original
+-- text only).
+function Content.apply_translation_css(settings, css)
+    local cache = settings and settings:get("cache", {}) or {}
+    if cache.download_translation == true then
+        css = (css or "") .. "\n.wr-translation { display: block !important; }\n"
+    end
+    return css
+end
+
 function Content.save_chapter_epub(settings, book, chapter, xhtml, assets, css)
     local book_id = book.book_id or book.bookId
     local dir = Content.book_resolved_dir(settings, book_id, book)
@@ -768,6 +783,7 @@ function Content.save_chapter_epub(settings, book, chapter, xhtml, assets, css)
 </body>
 </html>]]
     css = css or [[body { line-height: 1.7; margin: 5%; } img { max-width: 100%; }]]
+    css = Content.apply_translation_css(settings, css)
     local entries = {
         { name = "mimetype", data = "application/epub+zip" },
         { name = "META-INF/container.xml", data = [[<?xml version="1.0" encoding="utf-8"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>]] },
@@ -894,6 +910,7 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
 </body>
 </html>]]
     css = css or [[body { line-height: 1.7; margin: 5%; } img { max-width: 100%; }]]
+    css = Content.apply_translation_css(settings, css)
     table.insert(entries, { name = "OEBPS/content.opf", data = opf })
     table.insert(entries, { name = "OEBPS/nav.xhtml", data = nav })
     table.insert(entries, { name = "OEBPS/toc.ncx", data = ncx })
@@ -1336,7 +1353,48 @@ function Content.fetch_txt_as_xhtml(client, settings, book, chapter)
     return Content.txt_to_xhtml(plain)
 end
 
+-- Replay WeRead's in-app "translate" button for this book. In the app that
+-- button both (a) kicks off server-side full-text translation the first time it
+-- is pressed for a never-translated book, and (b) toggles the translated view.
+-- We replay it so that, when the user opts in, the book's translation is
+-- generated/enabled server-side before we download it.
+--
+-- This does NOT by itself make the translation visible in KOReader: once a book
+-- is translated, WeRead always embeds the translation inline in the content
+-- shards but hides it via CSS -- apply_translation_css() is what reveals it.
+-- Because generation is async, a brand-new book may still download as
+-- original-only until the app finishes translating it.
+--
+-- Fires once per book (re-syncs only if the user flips the setting) and is
+-- wrapped in pcall so any failure never breaks a normal download.
+function Content.sync_translation(client, settings, book)
+    local book_id = book.book_id or book.bookId
+    local cache = settings and settings:get("cache", {}) or {}
+    local enabled = cache.download_translation == true
+    if not book_id or book._translation_synced == enabled then
+        return
+    end
+    local referer = book.reader_url or WeRead.reader_url(book_id)
+    local ok, result = pcall(function()
+        return client:post_json("https://weread.qq.com/web/reader/toggleTranslate", {
+            bookId = book_id,
+            enabled = enabled,
+        }, { referer = referer })
+    end)
+    logger.info("[WeRead] sync_translation:",
+        "book=", tostring(book_id),
+        "enabled=", tostring(enabled),
+        "ok=", tostring(ok),
+        "result=", tostring(result))
+    if ok then
+        book._translation_synced = enabled
+    end
+end
+
 function Content.fetch_chapter_xhtml(client, settings, book, chapter)
+    -- Replay WeRead's translate toggle before establishing reader state, so any
+    -- server-side translation is enabled before the content shards are fetched.
+    Content.sync_translation(client, settings, book)
     Content.refresh_reader_state(client, book, chapter)
 
     if book._content_format == "txt" then

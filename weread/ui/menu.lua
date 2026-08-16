@@ -297,6 +297,24 @@ function M:getSettingsMenuItems()
                         end),
                     },
                     {
+                        text = _("Download translation"),
+                        keep_menu_open = true,
+                        help_text = _("Download the WeRead full-text translation together with the original. Only affects books you have already translated in the WeRead app."),
+                        checked_func = function()
+                            return self.settings:get("cache").download_translation
+                        end,
+                        callback = self:safeCallback(_("Download translation"), function()
+                            local cache = self.settings:get("cache")
+                            cache.download_translation = not cache.download_translation
+                            self.settings:set("cache", cache)
+                            self.settings:flush()
+                            logger.info(
+                                "translation download setting changed:",
+                                "enabled=", tostring(cache.download_translation)
+                            )
+                        end),
+                    },
+                    {
                         text = _("Public account article images"),
                         keep_menu_open = true,
                         checked_func = function()

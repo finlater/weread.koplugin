@@ -30,6 +30,7 @@ local defaults = {
     },
     cache = {
         download_book_images = true,
+        download_translation = false,
         download_mp_images = false,
         download_underlines_and_thoughts = false,
         auto_prefetch_next_chapter = false,
@@ -117,6 +118,10 @@ function Settings:new()
     end
     if cache.download_mp_images == nil then
         cache.download_mp_images = false
+        cache_changed = true
+    end
+    if cache.download_translation == nil then
+        cache.download_translation = false
         cache_changed = true
     end
     if cache.download_underlines_and_thoughts == nil then
