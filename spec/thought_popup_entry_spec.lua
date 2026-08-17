@@ -17,13 +17,16 @@ local function widget_mock(created_list)
         new = function(_self, fields)
             local w = {
                 items = fields.items,
+                width_ratio = fields.width_ratio,
                 _reopen = function(w, opts)
                     reopen_log[#reopen_log + 1] = {
                         items = opts.items,
                         pages = opts.pages,
                         position = opts.position,
+                        width_ratio = opts.width_ratio,
                     }
                     w.items = opts.items or {}
+                    w.width_ratio = opts.width_ratio
                 end,
                 clear = function() end,
                 _freeContentCaches = function(w)
@@ -93,11 +96,12 @@ end
 
 test("default position constructs the bottom widget with pages as items", function()
     reset()
-    local popup = M.show({ pages = pages1 })
+    local popup = M.show({ pages = pages1, width_ratio = 0.8 })
     eq(#created_widgets, 1, "one bottom widget created")
     eq(#created_centers, 0, "no centered widget created")
     eq(popup, created_widgets[1], "returned widget is the created one")
     eq(popup.items, pages1, "widget receives pages as items")
+    eq(popup.width_ratio, 0.8, "widget receives the width ratio")
 end)
 
 test("explicit bottom position reuses the bottom pool", function()
@@ -109,6 +113,7 @@ test("explicit bottom position reuses the bottom pool", function()
     eq(reopen_log[1].items, pages2, "reopen receives the items")
     eq(reopen_log[1].pages, pages2, "pages key preserved")
     eq(reopen_log[1].position, "bottom", "position forwarded")
+    eq(reopen_log[1].width_ratio, nil, "width ratio not forwarded when unset")
 end)
 
 test("center position constructs the centered widget and drops the bottom pool", function()

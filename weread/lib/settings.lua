@@ -62,6 +62,9 @@ local defaults = {
         -- Popup position: "bottom" (solid-line bottom bar, default) or
         -- "center" (TextViewer-style centered window with page buttons).
         position = "bottom",
+        -- Centered popup width as a fraction of the screen width (only used
+        -- when position is "center").
+        width_ratio = 0.8,
     },
     advanced = {
         developer_logs = false,

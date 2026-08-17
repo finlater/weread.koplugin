@@ -279,6 +279,16 @@ test("setContent with new items re-lays out", function()
         "shorter content re-lays out to a smaller height")
 end)
 
+test("setContent with a new content width re-lays out", function()
+    local renderer = new_renderer()
+    renderer:ensureLayout()
+    local text_w = renderer.text_w
+    renderer:setContent(items, nil, 18,
+        { left = 20, right = 20, top = 10, bottom = 10 }, 0.62, 400)
+    ok(renderer.text_w < text_w,
+        "a narrower content width produces a narrower text column")
+end)
+
 test("freeContentCaches drops the layout", function()
     local renderer = new_renderer()
     renderer:ensureLayout()

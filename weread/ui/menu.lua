@@ -510,6 +510,19 @@ function M:getSettingsMenuItems()
                             self:showThoughtPopupPositionPicker(touchmenu_instance)
                         end),
                     },
+                    {
+                        text_func = function()
+                            local ratio = tonumber(self.settings:get("thought_popup").width_ratio) or 0.8
+                            return T(_("Thought popup width: %1%"), math.floor(ratio * 100 + 0.5))
+                        end,
+                        enabled_func = function()
+                            return (self.settings:get("thought_popup").position or "bottom") == "center"
+                        end,
+                        keep_menu_open = true,
+                        callback = self:safeCallback(_("Thought popup width"), function(touchmenu_instance)
+                            self:showThoughtPopupWidthPicker(touchmenu_instance)
+                        end),
+                    },
                 }
             end,
         },
@@ -840,6 +853,35 @@ function M:showThoughtPopupPositionPicker(touchmenu_instance)
         buttons = buttons,
     }
     UIManager:show(self._thought_popup_position_dialog)
+end
+
+-- Set the centered thought popup width as a percentage of the screen width.
+-- Only meaningful when the popup position is "center".
+function M:showThoughtPopupWidthPicker(touchmenu_instance)
+    local SpinWidget = require("ui/widget/spinwidget")
+    local current = math.floor((tonumber(self.settings:get("thought_popup").width_ratio) or 0.8) * 100)
+    local spin = SpinWidget:new{
+        value = current,
+        value_min = 40,
+        value_max = 100,
+        value_step = 5,
+        precision = "%d%%",
+        ok_text = _("Set width"),
+        title_text = _("Thought popup width"),
+        info_text = _("Set the centered thought popup width as a percentage of the screen width (40%-100%)."),
+        callback = function(spin_widget)
+            local thought_popup = self.settings:get("thought_popup")
+            thought_popup.width_ratio = spin_widget.value / 100
+            self.settings:set("thought_popup", thought_popup)
+            self.settings:flush()
+            logger.info("thought popup width changed:",
+                "ratio=", tostring(thought_popup.width_ratio))
+            if touchmenu_instance then
+                touchmenu_instance:updateItems()
+            end
+        end,
+    }
+    UIManager:show(spin)
 end
 
 -- Let the user pick how wide the left/right page-turn edge zone is (percent of

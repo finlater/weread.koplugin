@@ -119,12 +119,15 @@ function PageRenderer:new(opts)
 end
 
 --- Reload content/geometry; re-layout only when the cache key changed.
-function PageRenderer:setContent(items, doc_font_name, doc_font_size, doc_margins, height_ratio)
+--- content_width (optional) is the full inner column width before margins;
+--- the centered popup passes its frame width so a width change re-paginates.
+function PageRenderer:setContent(items, doc_font_name, doc_font_size, doc_margins, height_ratio, content_width)
     self.items = items or {}
     if doc_font_name ~= nil then self.doc_font_name = doc_font_name end
     if doc_font_size ~= nil then self.doc_font_size = doc_font_size end
     if doc_margins ~= nil then self.doc_margins = doc_margins end
     if height_ratio ~= nil then self.height_ratio = height_ratio end
+    if content_width ~= nil then self.content_width = content_width end
     local new_items_key = itemsKey(self.items)
     local new_geom_key = geomKey(self.doc_font_name, self.doc_font_size,
         self.doc_margins, self.height_ratio, self.content_width)

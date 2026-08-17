@@ -37,8 +37,6 @@ local _ = PluginUtil.tr
 local PADDING_TOP = Size.padding.large
 local PADDING_BOTTOM = Size.padding.large
 local BUTTON_PADDING = Size.padding.default
--- Screen inset of the centered window, same as TextViewer's default.
-local FRAME_MARGIN = Screen:scaleBySize(30)
 
 local CenterThoughtPopupWidget = InputContainer:extend{
     items = nil,
@@ -51,6 +49,7 @@ local CenterThoughtPopupWidget = InputContainer:extend{
         bottom = Screen:scaleBySize(10),
     },
     height_ratio = 0.35,
+    width_ratio = 0.8,
     close_callback = nil,
     dialog = nil,
     page_index = 1,
@@ -65,7 +64,8 @@ local CenterThoughtPopupWidget = InputContainer:extend{
 
 function CenterThoughtPopupWidget:init()
     self.height_ratio = math.max(0.1, math.min(0.9, self.height_ratio or 0.35))
-    self.width = Screen:getWidth() - FRAME_MARGIN
+    self.width_ratio = math.max(0.4, math.min(1.0, self.width_ratio or 0.8))
+    self.width = math.floor(Screen:getWidth() * self.width_ratio)
     self.height = math.floor(Screen:getHeight() * self.height_ratio)
 
     if Device:isTouchDevice() then
@@ -121,13 +121,16 @@ function CenterThoughtPopupWidget:_reopen(opts)
     if opts.doc_font_size then self.doc_font_size = opts.doc_font_size end
     if opts.doc_margins then self.doc_margins = opts.doc_margins end
     if opts.height_ratio then self.height_ratio = opts.height_ratio end
+    if opts.width_ratio then self.width_ratio = opts.width_ratio end
     if opts.dialog then self.dialog = opts.dialog end
     self.close_callback = opts.close_callback
     self.height_ratio = math.max(0.1, math.min(0.9, self.height_ratio or 0.35))
+    self.width_ratio = math.max(0.4, math.min(1.0, self.width_ratio or 0.8))
+    self.width = math.floor(Screen:getWidth() * self.width_ratio)
     self.height = math.floor(Screen:getHeight() * self.height_ratio)
 
     self._pages:setContent(self.items, self.doc_font_name, self.doc_font_size,
-        self.doc_margins, self.height_ratio)
+        self.doc_margins, self.height_ratio, self.width)
     self:_buildLayout()
 end
 
