@@ -44,6 +44,7 @@ local ThoughtPopupWidget = InputContainer:extend{
         bottom = Screen:scaleBySize(10),
     },
     height_ratio = 0.35,
+    contrast = 0,
     close_callback = nil,
     dialog = nil,
 
@@ -92,6 +93,7 @@ function ThoughtPopupWidget:init()
         doc_font_size = self.doc_font_size,
         doc_margins = self.doc_margins,
         height_ratio = self.height_ratio,
+        contrast = self.contrast,
     }
     self._pages:ensureLayout()
     self:_buildLayout()
@@ -109,13 +111,14 @@ function ThoughtPopupWidget:_reopen(opts)
     if opts.doc_font_size then self.doc_font_size = opts.doc_font_size end
     if opts.doc_margins then self.doc_margins = opts.doc_margins end
     if opts.height_ratio then self.height_ratio = opts.height_ratio end
+    if opts.contrast ~= nil then self.contrast = opts.contrast end
     if opts.dialog then self.dialog = opts.dialog end
     self.close_callback = opts.close_callback
     self.height_ratio = math.max(0.1, math.min(0.9, self.height_ratio or 0.35))
     self.height = math.floor(Screen:getHeight() * self.height_ratio)
 
     self._pages:setContent(self.items, self.doc_font_name, self.doc_font_size,
-        self.doc_margins, self.height_ratio)
+        self.doc_margins, self.height_ratio, nil, self.contrast)
     self:_buildLayout()
 end
 

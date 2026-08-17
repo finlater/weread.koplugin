@@ -71,13 +71,14 @@ local function itemsKey(items)
     return table.concat(parts, "\n")
 end
 
-local function geomKey(doc_font_name, doc_font_size, margins, height_ratio, content_width)
+local function geomKey(doc_font_name, doc_font_size, margins, height_ratio, content_width, contrast)
     local m = margins or {}
-    return string.format("%s|%d|%d_%d_%d_%d|%.4f|%d",
+    return string.format("%s|%d|%d_%d_%d_%d|%.4f|%d|%d",
         doc_font_name or "", doc_font_size or 0,
         m.left or 0, m.right or 0, m.top or 0, m.bottom or 0,
         height_ratio or 0.35,
-        content_width or 0)
+        content_width or 0,
+        tonumber(contrast) or 0)
 end
 
 local PageRenderer = {}
@@ -101,12 +102,14 @@ function PageRenderer:new(opts)
     }
     self_obj.height_ratio = opts.height_ratio or 0.35
     self_obj.content_width = opts.content_width
+    self_obj.contrast = tonumber(opts.contrast) or 0
     self_obj._layout_cache = newLayoutCache()
     self_obj._page_bbs = newPageCache()
     self_obj._piece_cache = newPieceCache()
     self_obj._items_key = itemsKey(self_obj.items)
     self_obj._geom_key = geomKey(self_obj.doc_font_name, self_obj.doc_font_size,
-        self_obj.doc_margins, self_obj.height_ratio, self_obj.content_width)
+        self_obj.doc_margins, self_obj.height_ratio, self_obj.content_width,
+        self_obj.contrast)
     self_obj._bb_key = self_obj._items_key .. "|" .. self_obj._geom_key
     self_obj._page_pieces = {}
     self_obj._page_pieces_key = nil
@@ -121,16 +124,19 @@ end
 --- Reload content/geometry; re-layout only when the cache key changed.
 --- content_width (optional) is the full inner column width before margins;
 --- the centered popup passes its frame width so a width change re-paginates.
-function PageRenderer:setContent(items, doc_font_name, doc_font_size, doc_margins, height_ratio, content_width)
+--- contrast (optional) shifts every block's gray level; a change re-lays out
+--- because the colors are baked into the pieces.
+function PageRenderer:setContent(items, doc_font_name, doc_font_size, doc_margins, height_ratio, content_width, contrast)
     self.items = items or {}
     if doc_font_name ~= nil then self.doc_font_name = doc_font_name end
     if doc_font_size ~= nil then self.doc_font_size = doc_font_size end
     if doc_margins ~= nil then self.doc_margins = doc_margins end
     if height_ratio ~= nil then self.height_ratio = height_ratio end
     if content_width ~= nil then self.content_width = content_width end
+    if contrast ~= nil then self.contrast = tonumber(contrast) or 0 end
     local new_items_key = itemsKey(self.items)
     local new_geom_key = geomKey(self.doc_font_name, self.doc_font_size,
-        self.doc_margins, self.height_ratio, self.content_width)
+        self.doc_margins, self.height_ratio, self.content_width, self.contrast)
     local new_bb_key = new_items_key .. "|" .. new_geom_key
     if new_bb_key ~= self._bb_key then
         self._items_key = new_items_key
@@ -142,7 +148,7 @@ end
 
 function PageRenderer:paginate()
     local t0 = os.clock()
-    local blocks = ContentBuilder.build(self.items)
+    local blocks = ContentBuilder.build(self.items, self.contrast)
     local t1 = os.clock()
 
     local item_width = math.min(math.ceil(self.doc_margins.right * 2 / 5), Screen:scaleBySize(10))

@@ -84,6 +84,7 @@ function M.show(opts)
         doc_margins = opts.doc_margins,
         height_ratio = opts.height_ratio,
         width_ratio = opts.width_ratio,
+        contrast = opts.contrast,
         dialog = opts.dialog,
         close_callback = opts.close_callback,
     }

@@ -18,15 +18,18 @@ local function widget_mock(created_list)
             local w = {
                 items = fields.items,
                 width_ratio = fields.width_ratio,
+                contrast = fields.contrast,
                 _reopen = function(w, opts)
                     reopen_log[#reopen_log + 1] = {
                         items = opts.items,
                         pages = opts.pages,
                         position = opts.position,
                         width_ratio = opts.width_ratio,
+                        contrast = opts.contrast,
                     }
                     w.items = opts.items or {}
                     w.width_ratio = opts.width_ratio
+                    w.contrast = opts.contrast
                 end,
                 clear = function() end,
                 _freeContentCaches = function(w)
@@ -96,12 +99,13 @@ end
 
 test("default position constructs the bottom widget with pages as items", function()
     reset()
-    local popup = M.show({ pages = pages1, width_ratio = 0.8 })
+    local popup = M.show({ pages = pages1, width_ratio = 0.8, contrast = 2 })
     eq(#created_widgets, 1, "one bottom widget created")
     eq(#created_centers, 0, "no centered widget created")
     eq(popup, created_widgets[1], "returned widget is the created one")
     eq(popup.items, pages1, "widget receives pages as items")
     eq(popup.width_ratio, 0.8, "widget receives the width ratio")
+    eq(popup.contrast, 2, "widget receives the contrast")
 end)
 
 test("explicit bottom position reuses the bottom pool", function()

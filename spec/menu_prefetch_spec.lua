@@ -278,20 +278,23 @@ for _, item in ipairs(settings_items) do
     if item.text == "Underline settings" then underline_settings = item end
 end
 local underline_items = underline_settings and underline_settings.sub_item_table_func() or {}
-expect(#underline_items == 6,
+expect(#underline_items == 7,
     "underline settings contain edge taps, edge zone, and thought popup settings")
 expect(underline_items[3] and type(underline_items[3].text_func) == "function"
         and underline_items[3].text_func() == "Thought popup height: %1%",
     "thought popup height entry shows the current percentage")
 expect(underline_items[4] and underline_items[4].text == "Thought popup font size",
     "thought popup font size entry is present")
-expect(underline_items[5] and type(underline_items[5].text_func) == "function"
-        and underline_items[5].text_func() == "Thought popup position: %1",
-    "thought popup position entry shows the current position")
+expect(underline_items[5] and underline_items[5].text_func()
+        == "Thought popup font contrast: Default",
+    "thought popup font contrast entry shows the default state")
 expect(underline_items[6] and type(underline_items[6].text_func) == "function"
-        and underline_items[6].text_func() == "Thought popup width: %1%",
+        and underline_items[6].text_func() == "Thought popup position: %1",
+    "thought popup position entry shows the current position")
+expect(underline_items[7] and type(underline_items[7].text_func) == "function"
+        and underline_items[7].text_func() == "Thought popup width: %1%",
     "thought popup width entry shows the current percentage")
-expect(underline_items[6] and not underline_items[6].enabled_func(),
+expect(underline_items[7] and not underline_items[7].enabled_func(),
     "thought popup width is disabled while the position is bottom")
 
 print(string.format(

@@ -65,6 +65,10 @@ local defaults = {
         -- Centered popup width as a fraction of the screen width (only used
         -- when position is "center").
         width_ratio = 0.8,
+        -- Text contrast delta for the popup blocks: positive darkens the
+        -- text (the maximum, +9, renders pure black), negative lightens it
+        -- (range -3..9, 0 = default).
+        contrast = 0,
     },
     advanced = {
         developer_logs = false,

@@ -16,6 +16,45 @@ local util = require("util")
 
 local ContentBuilder = {}
 
+-- Gray levels used by the popup blocks, indexed 0 (pure black) to 15
+-- (lightest). The eInk palette is COLOR_GRAY_1..7 and COLOR_GRAY_9 plus the
+-- COLOR_DARK_GRAY / COLOR_GRAY / COLOR_GRAY_B / COLOR_LIGHT_GRAY /
+-- COLOR_GRAY_D / COLOR_GRAY_E / COLOR_WHITE aliases; keep the Color8 values
+-- (isColor8 only accepts Color8 cdata).
+local GRAY_LEVELS = {
+    [0] = Blitbuffer.COLOR_BLACK,   --  0 (0x00)
+    Blitbuffer.COLOR_GRAY_1,        --  1 (0x11)
+    Blitbuffer.COLOR_GRAY_2,        --  2 (0x22)
+    Blitbuffer.COLOR_GRAY_3,        --  3 (0x33)
+    Blitbuffer.COLOR_GRAY_4,        --  4 (0x44)
+    Blitbuffer.COLOR_GRAY_5,        --  5 (0x55)
+    Blitbuffer.COLOR_GRAY_6,        --  6 (0x66)
+    Blitbuffer.COLOR_GRAY_7,        --  7 (0x77)
+    Blitbuffer.COLOR_DARK_GRAY,     --  8 (0x88)
+    Blitbuffer.COLOR_GRAY_9,        --  9 (0x99)
+    Blitbuffer.COLOR_GRAY,          -- 10 (0xAA)
+    Blitbuffer.COLOR_GRAY_B,        -- 11 (0xBB)
+    Blitbuffer.COLOR_LIGHT_GRAY,    -- 12 (0xCC)
+    Blitbuffer.COLOR_GRAY_D,        -- 13 (0xDD)
+    Blitbuffer.COLOR_GRAY_E,        -- 14 (0xEE)
+    Blitbuffer.COLOR_WHITE,         -- 15 (0xFF)
+}
+
+--- Gray level -> Color8 value, clamped to the palette.
+local function grayForLevel(level)
+    level = math.max(0, math.min(15, level))
+    return GRAY_LEVELS[level] or Blitbuffer.COLOR_GRAY_5
+end
+
+--- Apply the contrast delta to a base gray level. Level 0 is pure black and
+--- 15 the lightest, so a positive delta (higher contrast) darkens the text
+--- linearly and a negative delta lightens it. The maximum delta (9) pushes
+--- every block down to pure black.
+local function adjustedGray(level, contrast)
+    local delta = tonumber(contrast) or 0
+    return grayForLevel(level - delta)
+end
+
 --- UTF-8-safe truncation with an ellipsis suffix.
 --- Character splitting uses koreader util.splitToChars (merges WTF-8 surrogate pairs).
 local function truncateRunes(str, max_runes)
@@ -109,8 +148,10 @@ end
 
 --- Build the block list for a thought popup.
 --- @param items table[] review items { abstract, author, content, likes_count }
+--- @param contrast number|nil contrast delta applied to every block's gray
+---   level (positive darkens the text)
 --- @return table[] blocks
-function ContentBuilder.build(items)
+function ContentBuilder.build(items, contrast)
     local blocks = {}
     if type(items) ~= "table" or #items == 0 then
         return blocks
@@ -122,7 +163,7 @@ function ContentBuilder.build(items)
             kind = "paragraph",
             variant = "quote",
             text = quote,
-            fg = Blitbuffer.COLOR_GRAY_6,
+            fg = adjustedGray(6, contrast),
         }
     end
 
@@ -136,7 +177,7 @@ function ContentBuilder.build(items)
             kind = "paragraph",
             variant = "meta",
             text = meta,
-            fg = Blitbuffer.COLOR_GRAY_9,
+            fg = adjustedGray(9, contrast),
         }
 
         local content = trimText(item.content or "")
@@ -145,7 +186,7 @@ function ContentBuilder.build(items)
                 kind = "paragraph",
                 variant = "content",
                 text = content,
-                fg = Blitbuffer.COLOR_GRAY_5,
+                fg = adjustedGray(5, contrast),
             }
         end
     end

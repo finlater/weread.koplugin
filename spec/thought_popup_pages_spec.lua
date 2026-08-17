@@ -81,9 +81,20 @@ end
 
 package.preload["ffi/blitbuffer"] = function()
     return {
+        COLOR_GRAY_1 = 1,
+        COLOR_GRAY_2 = 2,
+        COLOR_GRAY_3 = 3,
+        COLOR_GRAY_4 = 4,
         COLOR_GRAY_5 = 5,
         COLOR_GRAY_6 = 6,
+        COLOR_GRAY_7 = 7,
+        COLOR_DARK_GRAY = 8,
         COLOR_GRAY_9 = 9,
+        COLOR_GRAY = 10,
+        COLOR_GRAY_B = 11,
+        COLOR_LIGHT_GRAY = 12,
+        COLOR_GRAY_D = 13,
+        COLOR_GRAY_E = 14,
         COLOR_BLACK = 0,
         COLOR_WHITE = 255,
         TYPE_BB8 = 8,
@@ -287,6 +298,15 @@ test("setContent with a new content width re-lays out", function()
         { left = 20, right = 20, top = 10, bottom = 10 }, 0.62, 400)
     ok(renderer.text_w < text_w,
         "a narrower content width produces a narrower text column")
+end)
+
+test("setContent with a new contrast re-lays out with darker pieces", function()
+    local renderer = new_renderer()
+    renderer:ensureLayout()
+    eq(renderer.layout.pieces[1].fg, 6, "default quote gray level")
+    renderer:setContent(items, nil, 18,
+        { left = 20, right = 20, top = 10, bottom = 10 }, 0.62, nil, 2)
+    eq(renderer.layout.pieces[1].fg, 4, "positive contrast darkens the quote")
 end)
 
 test("freeContentCaches drops the layout", function()

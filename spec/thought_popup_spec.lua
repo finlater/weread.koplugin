@@ -88,9 +88,20 @@ end
 
 package.preload["ffi/blitbuffer"] = function()
     return {
+        COLOR_GRAY_1 = 1,
+        COLOR_GRAY_2 = 2,
+        COLOR_GRAY_3 = 3,
+        COLOR_GRAY_4 = 4,
         COLOR_GRAY_5 = 5,
         COLOR_GRAY_6 = 6,
+        COLOR_GRAY_7 = 7,
+        COLOR_DARK_GRAY = 8,
         COLOR_GRAY_9 = 9,
+        COLOR_GRAY = 10,
+        COLOR_GRAY_B = 11,
+        COLOR_LIGHT_GRAY = 12,
+        COLOR_GRAY_D = 13,
+        COLOR_GRAY_E = 14,
         COLOR_BLACK = 0,
         COLOR_WHITE = 255,
         isColor8 = function() return true end,
@@ -376,6 +387,40 @@ end)
 test("content builder handles empty input", function()
     eq(#ContentBuilder.build({}), 0, "no blocks")
     eq(#ContentBuilder.build(nil), 0, "no blocks for nil")
+end)
+
+test("content builder contrast darkens and lightens every block", function()
+    local items = {
+        { abstract = "q", author = "a", content = "c", likes_count = 0 },
+    }
+    local dark = ContentBuilder.build(items, 2)
+    eq(dark[1].fg, 4, "quote darkens two levels")
+    eq(dark[2].fg, 7, "meta darkens two levels")
+    eq(dark[3].fg, 3, "content darkens two levels")
+    local light = ContentBuilder.build(items, -2)
+    eq(light[1].fg, 8, "quote lightens two levels")
+    eq(light[2].fg, 11, "meta lightens two levels")
+    eq(light[3].fg, 7, "content lightens two levels")
+end)
+
+test("content builder contrast clamps to the gray palette", function()
+    local items = {
+        { abstract = "", author = "a", content = "c", likes_count = 0 },
+    }
+    local very_dark = ContentBuilder.build(items, 10)
+    eq(very_dark[2].fg, 0, "content clamps at pure black")
+    local very_light = ContentBuilder.build(items, -10)
+    eq(very_light[2].fg, 255, "content clamps at the lightest level")
+end)
+
+test("content builder maximum contrast renders pure black", function()
+    local items = {
+        { abstract = "q", author = "a", content = "c", likes_count = 0 },
+    }
+    local blocks = ContentBuilder.build(items, 9)
+    eq(blocks[1].fg, 0, "quote is pure black at maximum contrast")
+    eq(blocks[2].fg, 0, "meta is pure black at maximum contrast")
+    eq(blocks[3].fg, 0, "content is pure black at maximum contrast")
 end)
 
 print(string.format("thought_popup_spec: %d checks, %d failure(s)", checks, failures))

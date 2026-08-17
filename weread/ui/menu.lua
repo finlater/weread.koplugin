@@ -501,6 +501,20 @@ function M:getSettingsMenuItems()
                     },
                     {
                         text_func = function()
+                            local contrast = tonumber(self.settings:get("thought_popup").contrast) or 0
+                            if contrast == 0 then
+                                return _("Thought popup font contrast: Default")
+                            end
+                            return T(_("Thought popup font contrast: %1"),
+                                (contrast > 0 and "+" or "") .. tostring(contrast))
+                        end,
+                        keep_menu_open = true,
+                        callback = self:safeCallback(_("Thought popup font contrast"), function(touchmenu_instance)
+                            self:showThoughtPopupContrastPicker(touchmenu_instance)
+                        end),
+                    },
+                    {
+                        text_func = function()
                             local position = self.settings:get("thought_popup").position or "bottom"
                             return T(_("Thought popup position: %1"),
                                 position == "center" and _("Center") or _("Bottom"))
@@ -803,6 +817,35 @@ The recommended value is -2.]]),
     end
     spin_widget = get_font_size_widget(thought_popup.font_size ~= nil)
     UIManager:show(spin_widget)
+end
+
+-- Set the thought popup text contrast: positive values darken the text,
+-- negative values lighten it (0 = the default light gray shades).
+function M:showThoughtPopupContrastPicker(touchmenu_instance)
+    local SpinWidget = require("ui/widget/spinwidget")
+    local current = tonumber(self.settings:get("thought_popup").contrast) or 0
+    local spin = SpinWidget:new{
+        value = current,
+        value_min = -3,
+        value_max = 9,
+        precision = "%+d",
+        ok_text = _("Set contrast"),
+        title_text = _("Thought popup font contrast"),
+        info_text = _([[
+The thought popup text is rendered in light gray shades. Increase the contrast to darken the text (the maximum renders pure black), decrease it to lighten it.]]),
+        callback = function(spin_widget)
+            local thought_popup = self.settings:get("thought_popup")
+            thought_popup.contrast = spin_widget.value
+            self.settings:set("thought_popup", thought_popup)
+            self.settings:flush()
+            logger.info("thought popup contrast changed:",
+                "contrast=", tostring(thought_popup.contrast))
+            if touchmenu_instance then
+                touchmenu_instance:updateItems()
+            end
+        end,
+    }
+    UIManager:show(spin)
 end
 
 -- Let the user choose where the thought popup appears: bottom (the solid-line
