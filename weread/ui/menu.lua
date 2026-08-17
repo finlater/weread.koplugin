@@ -499,6 +499,17 @@ function M:getSettingsMenuItems()
                             self:showThoughtPopupFontSizePicker()
                         end),
                     },
+                    {
+                        text_func = function()
+                            local position = self.settings:get("thought_popup").position or "bottom"
+                            return T(_("Thought popup position: %1"),
+                                position == "center" and _("Center") or _("Bottom"))
+                        end,
+                        keep_menu_open = true,
+                        callback = self:safeCallback(_("Thought popup position"), function(touchmenu_instance)
+                            self:showThoughtPopupPositionPicker(touchmenu_instance)
+                        end),
+                    },
                 }
             end,
         },
@@ -779,6 +790,56 @@ The recommended value is -2.]]),
     end
     spin_widget = get_font_size_widget(thought_popup.font_size ~= nil)
     UIManager:show(spin_widget)
+end
+
+-- Let the user choose where the thought popup appears: bottom (the solid-line
+-- bar) or centered (the TextViewer-style window with page buttons).
+function M:showThoughtPopupPositionPicker(touchmenu_instance)
+    local current = self.settings:get("thought_popup").position or "bottom"
+    local buttons = {}
+    for _i, choice in ipairs({
+        { key = "bottom", label = _("Bottom") },
+        { key = "center", label = _("Center") },
+    }) do
+        local label = choice.label
+        if choice.key == current then
+            label = label .. "  ✓"
+        end
+        table.insert(buttons, {
+            {
+                text = label,
+                callback = function()
+                    UIManager:close(self._thought_popup_position_dialog)
+                    self._thought_popup_position_dialog = nil
+                    local thought_popup = self.settings:get("thought_popup")
+                    thought_popup.position = choice.key
+                    self.settings:set("thought_popup", thought_popup)
+                    self.settings:flush()
+                    logger.info("thought popup position changed:",
+                        "position=", tostring(thought_popup.position))
+                    -- Close any open popup; the next open uses the new position.
+                    ThoughtPopup.closeVisible()
+                    if touchmenu_instance then
+                        touchmenu_instance:updateItems()
+                    end
+                end,
+            },
+        })
+    end
+    table.insert(buttons, {
+        {
+            text = _("Cancel"),
+            callback = function()
+                UIManager:close(self._thought_popup_position_dialog)
+                self._thought_popup_position_dialog = nil
+            end,
+        },
+    })
+    self._thought_popup_position_dialog = ButtonDialog:new{
+        title = _("Thought popup position"),
+        buttons = buttons,
+    }
+    UIManager:show(self._thought_popup_position_dialog)
 end
 
 -- Let the user pick how wide the left/right page-turn edge zone is (percent of

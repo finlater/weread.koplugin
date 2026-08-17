@@ -94,7 +94,8 @@ expect(settings:get("shelf").paginated == true,
 local thought_popup = settings:get("thought_popup")
 expect(thought_popup.height_ratio == 0.62
     and thought_popup.font_size_relative == -2
-    and thought_popup.font_size == nil,
+    and thought_popup.font_size == nil
+    and thought_popup.position == "bottom",
     "thought popup preferences should use the defaults")
 expect(created_dirs[1] == "/data/weread"
     and created_dirs[2] == "/data/weread/cache",

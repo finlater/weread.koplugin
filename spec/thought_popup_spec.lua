@@ -280,6 +280,25 @@ test("buildPagePieceIndex maps pieces to pages", function()
     eq(#index[3], 1, "page 3 has one piece")
 end)
 
+test("a single long thought spans multiple pages", function()
+    -- 60 line boundaries from ONE content piece; a 300px viewport shows
+    -- about three lines at a time, so the piece flows across 4 pages.
+    local starts = Paginator.computePages(boundaries(60, 20), 300, 1200)
+    eq(#starts, 4, "long single piece paginates across 4 pages")
+    eq(starts[1], 0, "page 1 starts at the top")
+    eq(starts[4], 900, "page 4 starts at the content bottom minus one viewport")
+end)
+
+test("a long piece is indexed into every page it spans", function()
+    -- The piece covers y in [0, 150), i.e. all three 60px pages.
+    local piece = { y = 0, piece_h = 150 }
+    local pages = { 0, 60, 120 }
+    local index = Paginator.buildPagePieceIndex({ piece }, pages, 150)
+    eq(#index[1], 1, "page 1 includes the piece")
+    eq(#index[2], 1, "page 2 includes the piece")
+    eq(#index[3], 1, "page 3 includes the piece")
+end)
+
 test("content builder emits quote, meta and content blocks", function()
     local blocks = ContentBuilder.build({
         {
