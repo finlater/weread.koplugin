@@ -45,6 +45,7 @@ local ThoughtPopupWidget = InputContainer:extend{
     },
     height_ratio = 0.35,
     contrast = 0,
+    tap_to_page = false,
     close_callback = nil,
     dialog = nil,
 
@@ -112,6 +113,7 @@ function ThoughtPopupWidget:_reopen(opts)
     if opts.doc_margins then self.doc_margins = opts.doc_margins end
     if opts.height_ratio then self.height_ratio = opts.height_ratio end
     if opts.contrast ~= nil then self.contrast = opts.contrast end
+    if opts.tap_to_page ~= nil then self.tap_to_page = opts.tap_to_page end
     if opts.dialog then self.dialog = opts.dialog end
     self.close_callback = opts.close_callback
     self.height_ratio = math.max(0.1, math.min(0.9, self.height_ratio or 0.35))
@@ -150,6 +152,7 @@ function ThoughtPopupWidget:_buildLayout()
         margin_left = self.doc_margins.left,
         text_w = text_w,
         dialog = self.dialog,
+        tap_to_page = self.tap_to_page,
         boundaries = self._pages.boundaries,
         page_bb_getter = function(page_idx)
             local pages = self._scroll_container and self._scroll_container.pages

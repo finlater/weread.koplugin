@@ -38,6 +38,9 @@ local ScrollContainer = InputContainer:extend{
     margin_left = 0,        -- content left margin (doc_margins.left)
     text_w = 0,             -- content draw width
     dialog = nil,
+    -- When false, taps on the left/right half of the viewport do not turn
+    -- pages (gestures fall through to the outer widget instead).
+    tap_to_page = false,
     -- Page-break boundary table: { {top, bottom, keep_next?} } in y order.
     -- Page steps land only on boundaries so a line is never split across pages.
     boundaries = nil,
@@ -76,12 +79,6 @@ function ScrollContainer:init()
                     range = function() return self.dimen end,
                 },
             },
-            TapScrollText = { -- tap left/right half to page up/down
-                GestureRange:new{
-                    ges = "tap",
-                    range = function() return self.dimen end,
-                },
-            },
             PanText = {
                 GestureRange:new{
                     ges = "pan",
@@ -95,6 +92,15 @@ function ScrollContainer:init()
                 },
             },
         }
+        if self.tap_to_page ~= false then
+            -- Tap left/right half to page up/down (optional, see tap_to_page).
+            self.ges_events.TapScrollText = {
+                GestureRange:new{
+                    ges = "tap",
+                    range = function() return self.dimen end,
+                },
+            }
+        end
     end
 
     if Device:hasKeys() then

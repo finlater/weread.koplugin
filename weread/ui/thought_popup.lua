@@ -86,6 +86,7 @@ function M.show(opts)
         height_ratio = opts.height_ratio,
         width_ratio = opts.width_ratio,
         contrast = opts.contrast,
+        tap_to_page = opts.tap_to_page,
         dialog = opts.dialog,
         close_callback = opts.close_callback,
     }

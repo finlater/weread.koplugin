@@ -538,6 +538,24 @@ function M:getSettingsMenuItems()
                             self:showThoughtPopupWidthPicker(touchmenu_instance)
                         end),
                     },
+                    {
+                        text = _("Thought popup: tap left/right to turn pages"),
+                        checked_func = function()
+                            return self.settings:get("thought_popup").tap_to_page == true
+                        end,
+                        keep_menu_open = true,
+                        callback = self:safeCallback(_("Thought popup: tap left/right to turn pages"), function(touchmenu_instance)
+                            local thought_popup = self.settings:get("thought_popup")
+                            thought_popup.tap_to_page = not (thought_popup.tap_to_page == true)
+                            self.settings:set("thought_popup", thought_popup)
+                            self.settings:flush()
+                            logger.info("thought popup tap_to_page changed:",
+                                "enabled=", tostring(thought_popup.tap_to_page))
+                            if touchmenu_instance then
+                                touchmenu_instance:updateItems()
+                            end
+                        end),
+                    },
                 }
             end,
         },

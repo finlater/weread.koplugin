@@ -97,7 +97,8 @@ expect(thought_popup.height_ratio == 0.62
     and thought_popup.font_size == nil
     and thought_popup.position == "center"
     and thought_popup.width_ratio == 0.8
-    and thought_popup.contrast == 0,
+    and thought_popup.contrast == 0
+    and thought_popup.tap_to_page == false,
     "thought popup preferences should use the defaults")
 expect(created_dirs[1] == "/data/weread"
     and created_dirs[2] == "/data/weread/cache",

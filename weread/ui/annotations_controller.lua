@@ -324,6 +324,7 @@ function M:_showThoughtPopup(pages, link, session_gen, tap_started)
             position = self.settings:get("thought_popup").position or "center",
             width_ratio = tonumber(self.settings:get("thought_popup").width_ratio) or 0.8,
             contrast = tonumber(self.settings:get("thought_popup").contrast) or 0,
+            tap_to_page = self.settings:get("thought_popup").tap_to_page == true,
             dialog = self.dialog,
             doc_font_name = params and params.doc_font_name,
             doc_font_size = params and params.doc_font_size,

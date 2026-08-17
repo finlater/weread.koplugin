@@ -279,7 +279,7 @@ for _, item in ipairs(settings_items) do
     if item.text == "Underline settings" then underline_settings = item end
 end
 local underline_items = underline_settings and underline_settings.sub_item_table_func() or {}
-expect(#underline_items == 7,
+expect(#underline_items == 8,
     "underline settings contain edge taps, edge zone, and thought popup settings")
 expect(underline_items[3] and type(underline_items[3].text_func) == "function"
         and underline_items[3].text_func() == "Thought popup height: %1%",
@@ -297,6 +297,9 @@ expect(underline_items[7] and type(underline_items[7].text_func) == "function"
     "thought popup width entry shows the current percentage")
 expect(underline_items[7] and not underline_items[7].enabled_func(),
     "thought popup width is disabled while the position is bottom")
+expect(underline_items[8] and underline_items[8].text == "Thought popup: tap left/right to turn pages"
+        and not underline_items[8].checked_func(),
+    "tap-to-page entry is present and off by default")
 
 print(string.format(
     "menu_prefetch_spec: %d checks, %d failure(s)", checks, failures))

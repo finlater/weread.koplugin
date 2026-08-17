@@ -105,6 +105,7 @@ local zh = {
     ["Thought popup font contrast: Default"] = "想法弹窗字体对比度：默认",
     ["Thought popup font contrast: %1"] = "想法弹窗字体对比度：%1",
     ["Set contrast"] = "设置对比度",
+    ["Thought popup: tap left/right to turn pages"] = "想法弹窗点击左右区域翻页",
     ["The thought popup text is rendered in light gray shades. Increase the contrast to darken the text (the maximum renders pure black), decrease it to lighten it."] = "想法弹窗文字默认使用浅灰色。调高对比度可加深文字（最大为纯黑），调低则更浅。",
     ["Set height"] = "设置高度",
     ["Set font size"] = "设置字号",

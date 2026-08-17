@@ -51,6 +51,7 @@ local CenterThoughtPopupWidget = InputContainer:extend{
     height_ratio = 0.35,
     width_ratio = 0.8,
     contrast = 0,
+    tap_to_page = false,
     close_callback = nil,
     dialog = nil,
     page_index = 1,
@@ -125,6 +126,7 @@ function CenterThoughtPopupWidget:_reopen(opts)
     if opts.height_ratio then self.height_ratio = opts.height_ratio end
     if opts.width_ratio then self.width_ratio = opts.width_ratio end
     if opts.contrast ~= nil then self.contrast = opts.contrast end
+    if opts.tap_to_page ~= nil then self.tap_to_page = opts.tap_to_page end
     if opts.dialog then self.dialog = opts.dialog end
     self.close_callback = opts.close_callback
     self.height_ratio = math.max(0.1, math.min(0.9, self.height_ratio or 0.35))
@@ -312,6 +314,16 @@ end
 function CenterThoughtPopupWidget:onTapClose(_, ges)
     if ges.pos:notIntersectWith(self.container.dimen) then
         UIManager:close(self)
+        return true
+    end
+    -- Optional tap-to-page: left/right half of the window flips pages.
+    if self.tap_to_page then
+        local dimen = self.container.dimen
+        if BD.flipIfMirroredUILayout(ges.pos.x < dimen.x + dimen.w / 2) then
+            self:changePage(-1)
+        else
+            self:changePage(1)
+        end
     end
     return true
 end

@@ -69,6 +69,9 @@ local defaults = {
         -- text (the maximum, +9, renders pure black), negative lightens it
         -- (range -3..9, 0 = default).
         contrast = 0,
+        -- Tap the left/right half of the popup to turn pages (bottom and
+        -- centered positions; off by default).
+        tap_to_page = false,
     },
     advanced = {
         developer_logs = false,

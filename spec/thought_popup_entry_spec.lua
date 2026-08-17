@@ -19,6 +19,7 @@ local function widget_mock(created_list)
                 items = fields.items,
                 width_ratio = fields.width_ratio,
                 contrast = fields.contrast,
+                tap_to_page = fields.tap_to_page,
                 _reopen = function(w, opts)
                     reopen_log[#reopen_log + 1] = {
                         items = opts.items,
@@ -26,10 +27,12 @@ local function widget_mock(created_list)
                         position = opts.position,
                         width_ratio = opts.width_ratio,
                         contrast = opts.contrast,
+                        tap_to_page = opts.tap_to_page,
                     }
                     w.items = opts.items or {}
                     w.width_ratio = opts.width_ratio
                     w.contrast = opts.contrast
+                    w.tap_to_page = opts.tap_to_page
                 end,
                 clear = function() end,
                 _freeContentCaches = function(w)
@@ -99,13 +102,14 @@ end
 
 test("default position constructs the centered widget with pages as items", function()
     reset()
-    local popup = M.show({ pages = pages1, width_ratio = 0.8, contrast = 2 })
+    local popup = M.show({ pages = pages1, width_ratio = 0.8, contrast = 2, tap_to_page = true })
     eq(#created_widgets, 0, "no bottom widget created")
     eq(#created_centers, 1, "one centered widget created")
     eq(popup, created_centers[1], "returned widget is the created one")
     eq(popup.items, pages1, "widget receives pages as items")
     eq(popup.width_ratio, 0.8, "widget receives the width ratio")
     eq(popup.contrast, 2, "widget receives the contrast")
+    eq(popup.tap_to_page, true, "widget receives the tap-to-page flag")
 end)
 
 test("reopening the default position reuses the centered pool", function()
