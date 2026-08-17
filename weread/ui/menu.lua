@@ -484,77 +484,84 @@ function M:getSettingsMenuItems()
                         end),
                     },
                     {
-                        text_func = function()
-                            local height = tonumber(self.settings:get("thought_popup").height_ratio) or 0.62
-                            return T(_("Thought popup height: %1%"), math.floor(height * 100 + 0.5))
+                        text = _("Thought popup settings"),
+                        sub_item_table_func = function()
+                            return {
+                                {
+                                    text_func = function()
+                                        local position = self.settings:get("thought_popup").position or "center"
+                                        return T(_("Position: %1"),
+                                            position == "center" and _("Center") or _("Bottom"))
+                                    end,
+                                    keep_menu_open = true,
+                                    callback = self:safeCallback(_("Thought popup position"), function(touchmenu_instance)
+                                        self:showThoughtPopupPositionPicker(touchmenu_instance)
+                                    end),
+                                },
+                                {
+                                    text_func = function()
+                                        local height = tonumber(self.settings:get("thought_popup").height_ratio) or 0.62
+                                        return T(_("Height: %1%"), math.floor(height * 100 + 0.5))
+                                    end,
+                                    keep_menu_open = true,
+                                    callback = self:safeCallback(_("Thought popup height"), function(touchmenu_instance)
+                                        self:showThoughtPopupHeightPicker(touchmenu_instance)
+                                    end),
+                                },
+                                {
+                                    text_func = function()
+                                        local ratio = tonumber(self.settings:get("thought_popup").width_ratio) or 0.8
+                                        return T(_("Width: %1%"), math.floor(ratio * 100 + 0.5))
+                                    end,
+                                    enabled_func = function()
+                                        return (self.settings:get("thought_popup").position or "center") == "center"
+                                    end,
+                                    keep_menu_open = true,
+                                    callback = self:safeCallback(_("Thought popup width"), function(touchmenu_instance)
+                                        self:showThoughtPopupWidthPicker(touchmenu_instance)
+                                    end),
+                                },
+                                {
+                                    text = _("Font size"),
+                                    keep_menu_open = true,
+                                    callback = self:safeCallback(_("Thought popup font size"), function()
+                                        self:showThoughtPopupFontSizePicker()
+                                    end),
+                                },
+                                {
+                                    text_func = function()
+                                        local contrast = tonumber(self.settings:get("thought_popup").contrast) or 0
+                                        if contrast == 0 then
+                                            return _("Font contrast: Default")
+                                        end
+                                        return T(_("Font contrast: %1"),
+                                            (contrast > 0 and "+" or "") .. tostring(contrast))
+                                    end,
+                                    keep_menu_open = true,
+                                    callback = self:safeCallback(_("Thought popup font contrast"), function(touchmenu_instance)
+                                        self:showThoughtPopupContrastPicker(touchmenu_instance)
+                                    end),
+                                },
+                                {
+                                    text = _("Tap left/right to turn pages"),
+                                    checked_func = function()
+                                        return self.settings:get("thought_popup").tap_to_page == true
+                                    end,
+                                    keep_menu_open = true,
+                                    callback = self:safeCallback(_("Thought popup: tap left/right to turn pages"), function(touchmenu_instance)
+                                        local thought_popup = self.settings:get("thought_popup")
+                                        thought_popup.tap_to_page = not (thought_popup.tap_to_page == true)
+                                        self.settings:set("thought_popup", thought_popup)
+                                        self.settings:flush()
+                                        logger.info("thought popup tap_to_page changed:",
+                                            "enabled=", tostring(thought_popup.tap_to_page))
+                                        if touchmenu_instance then
+                                            touchmenu_instance:updateItems()
+                                        end
+                                    end),
+                                },
+                            }
                         end,
-                        keep_menu_open = true,
-                        callback = self:safeCallback(_("Thought popup height"), function(touchmenu_instance)
-                            self:showThoughtPopupHeightPicker(touchmenu_instance)
-                        end),
-                    },
-                    {
-                        text = _("Thought popup font size"),
-                        keep_menu_open = true,
-                        callback = self:safeCallback(_("Thought popup font size"), function()
-                            self:showThoughtPopupFontSizePicker()
-                        end),
-                    },
-                    {
-                        text_func = function()
-                            local contrast = tonumber(self.settings:get("thought_popup").contrast) or 0
-                            if contrast == 0 then
-                                return _("Thought popup font contrast: Default")
-                            end
-                            return T(_("Thought popup font contrast: %1"),
-                                (contrast > 0 and "+" or "") .. tostring(contrast))
-                        end,
-                        keep_menu_open = true,
-                        callback = self:safeCallback(_("Thought popup font contrast"), function(touchmenu_instance)
-                            self:showThoughtPopupContrastPicker(touchmenu_instance)
-                        end),
-                    },
-                    {
-                        text_func = function()
-                            local position = self.settings:get("thought_popup").position or "center"
-                            return T(_("Thought popup position: %1"),
-                                position == "center" and _("Center") or _("Bottom"))
-                        end,
-                        keep_menu_open = true,
-                        callback = self:safeCallback(_("Thought popup position"), function(touchmenu_instance)
-                            self:showThoughtPopupPositionPicker(touchmenu_instance)
-                        end),
-                    },
-                    {
-                        text_func = function()
-                            local ratio = tonumber(self.settings:get("thought_popup").width_ratio) or 0.8
-                            return T(_("Thought popup width: %1%"), math.floor(ratio * 100 + 0.5))
-                        end,
-                        enabled_func = function()
-                            return (self.settings:get("thought_popup").position or "center") == "center"
-                        end,
-                        keep_menu_open = true,
-                        callback = self:safeCallback(_("Thought popup width"), function(touchmenu_instance)
-                            self:showThoughtPopupWidthPicker(touchmenu_instance)
-                        end),
-                    },
-                    {
-                        text = _("Thought popup: tap left/right to turn pages"),
-                        checked_func = function()
-                            return self.settings:get("thought_popup").tap_to_page == true
-                        end,
-                        keep_menu_open = true,
-                        callback = self:safeCallback(_("Thought popup: tap left/right to turn pages"), function(touchmenu_instance)
-                            local thought_popup = self.settings:get("thought_popup")
-                            thought_popup.tap_to_page = not (thought_popup.tap_to_page == true)
-                            self.settings:set("thought_popup", thought_popup)
-                            self.settings:flush()
-                            logger.info("thought popup tap_to_page changed:",
-                                "enabled=", tostring(thought_popup.tap_to_page))
-                            if touchmenu_instance then
-                                touchmenu_instance:updateItems()
-                            end
-                        end),
                     },
                 }
             end,
