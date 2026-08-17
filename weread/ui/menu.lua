@@ -515,7 +515,7 @@ function M:getSettingsMenuItems()
                     },
                     {
                         text_func = function()
-                            local position = self.settings:get("thought_popup").position or "bottom"
+                            local position = self.settings:get("thought_popup").position or "center"
                             return T(_("Thought popup position: %1"),
                                 position == "center" and _("Center") or _("Bottom"))
                         end,
@@ -530,7 +530,7 @@ function M:getSettingsMenuItems()
                             return T(_("Thought popup width: %1%"), math.floor(ratio * 100 + 0.5))
                         end,
                         enabled_func = function()
-                            return (self.settings:get("thought_popup").position or "bottom") == "center"
+                            return (self.settings:get("thought_popup").position or "center") == "center"
                         end,
                         keep_menu_open = true,
                         callback = self:safeCallback(_("Thought popup width"), function(touchmenu_instance)
@@ -851,7 +851,7 @@ end
 -- Let the user choose where the thought popup appears: bottom (the solid-line
 -- bar) or centered (the TextViewer-style window with page buttons).
 function M:showThoughtPopupPositionPicker(touchmenu_instance)
-    local current = self.settings:get("thought_popup").position or "bottom"
+    local current = self.settings:get("thought_popup").position or "center"
     local buttons = {}
     for _i, choice in ipairs({
         { key = "bottom", label = _("Bottom") },

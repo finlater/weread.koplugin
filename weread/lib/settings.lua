@@ -59,9 +59,9 @@ local defaults = {
         -- Fixed absolute popup font size (unscaled px); when set it takes
         -- precedence over font_size_relative.
         font_size = nil,
-        -- Popup position: "bottom" (solid-line bottom bar, default) or
-        -- "center" (TextViewer-style centered window with page buttons).
-        position = "bottom",
+        -- Popup position: "center" (TextViewer-style centered window with
+        -- page buttons, default) or "bottom" (solid-line bottom bar).
+        position = "center",
         -- Centered popup width as a fraction of the screen width (only used
         -- when position is "center").
         width_ratio = 0.8,

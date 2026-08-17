@@ -66,6 +66,7 @@ local flush_count = 0
 local thought_popup = {
     height_ratio = 0.62,
     font_size_relative = -2,
+    position = "bottom",
 }
 local available_version
 local host = {

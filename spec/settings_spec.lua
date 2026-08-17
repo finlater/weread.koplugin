@@ -95,7 +95,7 @@ local thought_popup = settings:get("thought_popup")
 expect(thought_popup.height_ratio == 0.62
     and thought_popup.font_size_relative == -2
     and thought_popup.font_size == nil
-    and thought_popup.position == "bottom"
+    and thought_popup.position == "center"
     and thought_popup.width_ratio == 0.8
     and thought_popup.contrast == 0,
     "thought popup preferences should use the defaults")

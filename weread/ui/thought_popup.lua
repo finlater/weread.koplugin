@@ -3,11 +3,12 @@ Native WeRead thought dialog.
 
 Renders a thought's review items as a popup in one of two positions:
 
-  * "bottom" (default): the bottom bar with a solid top border; long reviews
-    scroll inside a bitmap viewport (widget.lua + scroll_container.lua);
-  * "center": a TextViewer-style centered window with a title bar and explicit
-    Previous/Next page buttons; long reviews — including a single long thought
-    — are paginated across pages instead of scrolling (center_widget.lua).
+  * "center" (default): a TextViewer-style centered window with a title bar
+    and explicit Previous/Next page buttons; long reviews — including a single
+    long thought — are paginated across pages instead of scrolling
+    (center_widget.lua);
+  * "bottom": the bottom bar with a solid top border; long reviews scroll
+    inside a bitmap viewport (widget.lua + scroll_container.lua).
 
 Both positions share the same rendering pipeline (pages.lua: layout, page and
 piece caches) and the same font/height settings. Implementation lives in
@@ -27,7 +28,7 @@ local M = {}
 local _pool = {}  -- position ("bottom" | "center") -> pooled widget
 
 local function normalizePosition(position)
-    return position == "center" and "center" or "bottom"
+    return position == "bottom" and "bottom" or "center"
 end
 
 --- The widget class for a position; required lazily so the entry can be
