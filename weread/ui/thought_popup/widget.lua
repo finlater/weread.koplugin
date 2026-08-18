@@ -14,6 +14,7 @@ bottom/tap/Back gestures.
 
 local Blitbuffer = require("ffi/blitbuffer")
 local BottomContainer = require("ui/widget/container/bottomcontainer")
+local ButtonDialog = require("ui/widget/buttondialog")
 local Device = require("device")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
@@ -28,6 +29,8 @@ local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local Screen = Device.screen
+local PluginUtil = require("weread.lib.plugin_util")
+local _ = PluginUtil.tr
 
 local TOP_BORDER_SIZE = Size.line.thick
 local PADDING_TOP = Size.padding.large
@@ -76,6 +79,12 @@ function ThoughtPopupWidget:init()
             SwipeClose = {
                 GestureRange:new{
                     ges = "swipe",
+                    range = range,
+                }
+            },
+            HoldThought = {
+                GestureRange:new{
+                    ges = "hold",
                     range = range,
                 }
             },
@@ -220,6 +229,88 @@ function ThoughtPopupWidget:onSwipeClose(_, ges)
         return true
     end
     return false
+end
+
+function ThoughtPopupWidget:onHoldThought(_, ges)
+    local scroll = self._scroll_container
+    if scroll and scroll.dimen and ges.pos:intersectWith(scroll.dimen) then
+        local content_y = (ges.pos.y - scroll.dimen.y) + (scroll.scroll_offset or 0)
+        local item = self:_findItemAtContentY(content_y)
+        if item then
+            self:_showThoughtActionMenu(item)
+        end
+    end
+    return true
+end
+
+function ThoughtPopupWidget:_findItemAtContentY(y)
+    local pieces = self._pages and self._pages.layout and self._pages.layout.pieces
+    if not pieces then return nil end
+    local item_idx = 0
+    for _, piece in ipairs(pieces) do
+        if piece.variant == "meta" then
+            item_idx = item_idx + 1
+        end
+        if piece.y and piece.piece_h and piece.y <= y and y < piece.y + piece.piece_h then
+            if piece.variant == "quote" then
+                return self.items and self.items[1]
+            end
+            if item_idx >= 1 and self.items and item_idx <= #self.items then
+                return self.items[item_idx]
+            end
+            return nil
+        end
+    end
+    return nil
+end
+
+function ThoughtPopupWidget:_showThoughtActionMenu(item)
+
+    local popup = self
+    local action_dialog
+    action_dialog = ButtonDialog:new{
+        buttons = {
+            {
+                {
+                    text = _("Copy"),
+                    callback = function()
+                        UIManager:close(action_dialog)
+                        popup:_copyThoughtContent(item)
+                    end,
+                },
+                {
+                    text = _("Generate QR code"),
+                    callback = function()
+                        UIManager:close(action_dialog)
+                        popup:_generateQRCode(item)
+                    end,
+                },
+            },
+        },
+    }
+    UIManager:show(action_dialog)
+end
+
+function ThoughtPopupWidget:_copyThoughtContent(item)
+    local text = tostring(item and item.content or "")
+    if text == "" then return end
+    if Device.hasClipboard and Device:hasClipboard() then
+        Device.input.setClipboardText(text)
+    end
+end
+
+function ThoughtPopupWidget:_generateQRCode(item)
+    local text = tostring(item and item.content or "")
+    if text == "" then return end
+    if Device.hasClipboard and Device:hasClipboard() then
+        Device.input.setClipboardText(text)
+    end
+    local QRMessage = require("ui/widget/qrmessage")
+    UIManager:show(QRMessage:new{
+        text = text,
+        width = Screen:getWidth(),
+        height = Screen:getHeight(),
+    })
 end
 
 function ThoughtPopupWidget:free(full)

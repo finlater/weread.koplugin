@@ -13,6 +13,7 @@ height ratio are the same settings the bottom popup uses.
 --]]
 
 local BD = require("ui/bidi")
+local ButtonDialog = require("ui/widget/buttondialog")
 local Blitbuffer = require("ffi/blitbuffer")
 local ButtonTable = require("ui/widget/buttontable")
 local CenterContainer = require("ui/widget/container/centercontainer")
@@ -86,6 +87,12 @@ function CenterThoughtPopupWidget:init()
             Swipe = {
                 GestureRange:new{
                     ges = "swipe",
+                    range = range,
+                }
+            },
+            HoldThought = {
+                GestureRange:new{
+                    ges = "hold",
                     range = range,
                 }
             },
@@ -357,6 +364,88 @@ end
 function CenterThoughtPopupWidget:onPageFwd()
     self:changePage(1)
     return true
+end
+
+function CenterThoughtPopupWidget:onHoldThought(_, ges)
+    local viewport = self._viewport
+    if viewport and viewport.dimen and ges.pos:intersectWith(viewport.dimen) then
+        local content_y = (ges.pos.y - viewport.dimen.y) + (self._page_starts[self.page_index] or 0)
+        local item = self:_findItemAtContentY(content_y)
+        if item then
+            self:_showThoughtActionMenu(item)
+        end
+    end
+    return true
+end
+
+function CenterThoughtPopupWidget:_findItemAtContentY(y)
+    local pieces = self._pages and self._pages.layout and self._pages.layout.pieces
+    if not pieces then return nil end
+    local item_idx = 0
+    for _, piece in ipairs(pieces) do
+        if piece.variant == "meta" then
+            item_idx = item_idx + 1
+        end
+        if piece.y and piece.piece_h and piece.y <= y and y < piece.y + piece.piece_h then
+            if piece.variant == "quote" then
+                return self.items and self.items[1]
+            end
+            if item_idx >= 1 and self.items and item_idx <= #self.items then
+                return self.items[item_idx]
+            end
+            return nil
+        end
+    end
+    return nil
+end
+
+function CenterThoughtPopupWidget:_showThoughtActionMenu(item)
+
+    local popup = self
+    local action_dialog
+    action_dialog = ButtonDialog:new{
+        buttons = {
+            {
+                {
+                    text = _("Copy"),
+                    callback = function()
+                        UIManager:close(action_dialog)
+                        popup:_copyThoughtContent(item)
+                    end,
+                },
+                {
+                    text = _("Generate QR code"),
+                    callback = function()
+                        UIManager:close(action_dialog)
+                        popup:_generateQRCode(item)
+                    end,
+                },
+            },
+        },
+    }
+    UIManager:show(action_dialog)
+end
+
+function CenterThoughtPopupWidget:_copyThoughtContent(item)
+    local text = tostring(item and item.content or "")
+    if text == "" then return end
+    if Device.hasClipboard and Device:hasClipboard() then
+        Device.input.setClipboardText(text)
+    end
+end
+
+function CenterThoughtPopupWidget:_generateQRCode(item)
+    local text = tostring(item and item.content or "")
+    if text == "" then return end
+    if Device.hasClipboard and Device:hasClipboard() then
+        Device.input.setClipboardText(text)
+    end
+    local QRMessage = require("ui/widget/qrmessage")
+    UIManager:show(QRMessage:new{
+        text = text,
+        width = Screen:getWidth(),
+        height = Screen:getHeight(),
+    })
 end
 
 function CenterThoughtPopupWidget:free(full)
