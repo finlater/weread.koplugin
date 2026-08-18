@@ -148,22 +148,27 @@ end
 
 --- Build the block list for a thought popup.
 --- @param items table[] review items { abstract, author, content, likes_count }
---- @param contrast number|nil contrast delta applied to every block's gray
----   level (positive darkens the text)
+--- @param opts table|nil options table:
+---   contrast  number  contrast delta (positive darkens)
+---   skip_quote  boolean  omit the quote block (shown in title bar)
 --- @return table[] blocks
-function ContentBuilder.build(items, contrast)
+function ContentBuilder.build(items, opts)
+    if type(opts) == "number" then
+        opts = { contrast = opts }
+    end
+    opts = opts or {}
     local blocks = {}
     if type(items) ~= "table" or #items == 0 then
         return blocks
     end
 
-    local quote = buildQuoteText(items[1] and items[1].abstract)
+    local quote = not opts.skip_quote and buildQuoteText(items[1] and items[1].abstract)
     if quote then
         blocks[#blocks + 1] = {
             kind = "paragraph",
             variant = "quote",
             text = quote,
-            fg = adjustedGray(6, contrast),
+            fg = adjustedGray(6, opts.contrast),
         }
     end
 
@@ -177,7 +182,7 @@ function ContentBuilder.build(items, contrast)
             kind = "paragraph",
             variant = "meta",
             text = meta,
-            fg = adjustedGray(9, contrast),
+            fg = adjustedGray(9, opts.contrast),
         }
 
         local content = trimText(item.content or "")
@@ -186,7 +191,7 @@ function ContentBuilder.build(items, contrast)
                 kind = "paragraph",
                 variant = "content",
                 text = content,
-                fg = adjustedGray(5, contrast),
+                fg = adjustedGray(5, opts.contrast),
             }
         end
     end

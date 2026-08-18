@@ -265,7 +265,6 @@ function ThoughtPopupWidget:_findItemAtContentY(y)
 end
 
 function ThoughtPopupWidget:_showThoughtActionMenu(item)
-
     local popup = self
     local action_dialog
     action_dialog = ButtonDialog:new{

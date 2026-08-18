@@ -103,6 +103,7 @@ function PageRenderer:new(opts)
     self_obj.height_ratio = opts.height_ratio or 0.35
     self_obj.content_width = opts.content_width
     self_obj.contrast = tonumber(opts.contrast) or 0
+    self_obj.skip_quote = opts.skip_quote == true
     self_obj._layout_cache = newLayoutCache()
     self_obj._page_bbs = newPageCache()
     self_obj._piece_cache = newPieceCache()
@@ -148,7 +149,7 @@ end
 
 function PageRenderer:paginate()
     local t0 = os.clock()
-    local blocks = ContentBuilder.build(self.items, self.contrast)
+    local blocks = ContentBuilder.build(self.items, { contrast = self.contrast, skip_quote = self.skip_quote })
     local t1 = os.clock()
 
     local item_width = math.min(math.ceil(self.doc_margins.right * 2 / 5), Screen:scaleBySize(10))

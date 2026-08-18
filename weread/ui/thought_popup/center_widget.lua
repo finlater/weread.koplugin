@@ -117,6 +117,7 @@ function CenterThoughtPopupWidget:init()
         height_ratio = self.height_ratio,
         content_width = self.width,
         contrast = self.contrast,
+        skip_quote = true,
     }
     self:_buildLayout()
 end
@@ -400,7 +401,6 @@ function CenterThoughtPopupWidget:_findItemAtContentY(y)
 end
 
 function CenterThoughtPopupWidget:_showThoughtActionMenu(item)
-
     local popup = self
     local action_dialog
     action_dialog = ButtonDialog:new{
