@@ -104,10 +104,12 @@ function ScrollContainer:init()
     end
 
     if Device:hasKeys() then
-        self.key_events = {
-            ScrollDown = { { Input.group.PgFwd } },
-            ScrollUp = { { Input.group.PgBack } },
-        }
+        local group = Input
+        self.key_events = {}
+        local previous = group.PgBack or group.PageBack or group.PageBackward or group.Left
+        local following = group.PgFwd or group.PageForward or group.PageNext or group.Right
+        if previous then self.key_events.ScrollUp = {{previous}} end
+        if following then self.key_events.ScrollDown = {{following}} end
     end
 end
 

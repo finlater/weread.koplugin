@@ -93,11 +93,13 @@ function CenterThoughtPopupWidget:init()
     end
 
     if Device:hasKeys() then
-        self.key_events = {
-            Close = { { Device.input.group.Back } },
-            PageBack = { { Device.input.group.PgBack } },
-            PageFwd = { { Device.input.group.PgFwd } },
-        }
+        local group = Device.input.group
+        self.key_events = {}
+        if group.Back then self.key_events.Close = { { group.Back } } end
+        local previous = group.PgBack or group.PageBack or group.PageBackward or group.Left
+        local following = group.PgFwd or group.PageForward or group.PageNext or group.Right
+        if previous then self.key_events.PageBack = { { previous } } end
+        if following then self.key_events.PageFwd = { { following } } end
     end
 
     self._pages = PageRenderer:new{
