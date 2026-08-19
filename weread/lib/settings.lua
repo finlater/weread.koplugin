@@ -67,6 +67,7 @@ local defaults = {
     shelf = {
         sort_order = "time_desc",
         paginated = true,
+        view_mode = "list",
     },
     download_dir = "",
 }

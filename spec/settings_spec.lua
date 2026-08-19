@@ -91,6 +91,8 @@ expect(settings:get("update").prefer_proxy == true,
     "update proxy should be preferred by default")
 expect(settings:get("shelf").paginated == true,
     "bookshelf pagination should be enabled by default")
+expect(settings:get("shelf").view_mode == "list",
+    "bookshelf should default to the low-overhead list view")
 expect(created_dirs[1] == "/data/weread"
     and created_dirs[2] == "/data/weread/cache",
     "settings directories were not initialized")

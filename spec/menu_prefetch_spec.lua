@@ -140,21 +140,38 @@ for name, expected in pairs(general_actions) do
 end
 
 local settings_items = host:getSettingsMenuItems()
-local pagination_item = settings_items[1]
+local bookshelf_view_item = settings_items[1]
+expect(bookshelf_view_item and bookshelf_view_item.text == "Bookshelf view",
+    "bookshelf view preference is the first settings item")
+local view_items = bookshelf_view_item.sub_item_table_func()
+expect(view_items[1].text == "List view" and view_items[1].checked_func(),
+    "bookshelf defaults to list view for legacy settings")
+expect(view_items[2].text == "Cover view" and not view_items[2].checked_func(),
+    "cover view is available without being enabled by default")
+local menu_update_count = 0
+view_items[2].callback({
+    updateItems = function() menu_update_count = menu_update_count + 1 end,
+})
+expect(shelf.view_mode == "cover" and flush_count == 1,
+    "cover view preference was enabled and persisted")
+expect(menu_update_count == 1 and view_items[2].checked_func(),
+    "cover view preference refreshed the settings menu")
+local pagination_item = settings_items[2]
 expect(pagination_item and pagination_item.text == "Paginated bookshelf",
-    "pagination preference is the first settings item")
+    "pagination preference follows the bookshelf view preference")
+expect(pagination_item and not pagination_item.enabled_func(),
+    "pagination preference is disabled while cover view enforces paging")
 expect(pagination_item and pagination_item.checked_func(),
     "pagination preference defaults to enabled for legacy settings")
-local menu_update_count = 0
 pagination_item.callback({
     updateItems = function() menu_update_count = menu_update_count + 1 end,
 })
-expect(shelf.paginated == false and flush_count == 1,
+expect(shelf.paginated == false and flush_count == 2,
     "pagination preference was disabled and persisted")
-expect(menu_update_count == 1,
+expect(menu_update_count == 2,
     "pagination preference refreshed the settings menu")
 pagination_item.callback({ updateItems = function() end })
-expect(shelf.paginated == true and flush_count == 2,
+expect(shelf.paginated == true and flush_count == 3,
     "pagination preference was re-enabled and persisted")
 local last_settings_item = settings_items[#settings_items]
 expect(last_settings_item and last_settings_item.text == "About",

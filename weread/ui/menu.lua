@@ -182,9 +182,45 @@ end
 function M:getSettingsMenuItems()
     return {
         {
+            text = _("Bookshelf view"),
+            sub_item_table_func = function()
+                local function set_view_mode(mode)
+                    return function(touchmenu_instance)
+                        local shelf = self.settings:get("shelf")
+                        shelf.view_mode = mode
+                        self.settings:set("shelf", shelf)
+                        self.settings:flush()
+                        self.shelf_view_pages = { books = 1, public_account = 1 }
+                        if touchmenu_instance then touchmenu_instance:updateItems() end
+                    end
+                end
+                return {
+                    {
+                        text = _("List view"),
+                        checked_func = function()
+                            return self.settings:get("shelf").view_mode ~= "cover"
+                        end,
+                        keep_menu_open = true,
+                        callback = self:safeCallback(_("List view"), set_view_mode("list")),
+                    },
+                    {
+                        text = _("Cover view"),
+                        checked_func = function()
+                            return self.settings:get("shelf").view_mode == "cover"
+                        end,
+                        keep_menu_open = true,
+                        callback = self:safeCallback(_("Cover view"), set_view_mode("cover")),
+                    },
+                }
+            end,
+        },
+        {
             text = _("Paginated bookshelf"),
             keep_menu_open = true,
             check_callback_updates_menu = true,
+            enabled_func = function()
+                return self.settings:get("shelf").view_mode ~= "cover"
+            end,
             checked_func = function()
                 return self.settings:get("shelf").paginated ~= false
             end,
