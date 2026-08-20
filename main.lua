@@ -172,6 +172,14 @@ function WeReadPlugin:init()
             return self.read_report:upload_position(
                 book_id, position, elapsed_seconds)
         end,
+        build_upload_outcome = function(book_id, position, elapsed_seconds)
+            return self.read_report:build_position_upload_outcome(
+                book_id, position, elapsed_seconds)
+        end,
+        apply_upload_outcome = function(book_id, outcome)
+            return self.read_report:apply_position_upload_outcome(
+                book_id, outcome)
+        end,
         goto_fraction = function(fraction)
             local percent = math.floor(
                 math.max(0, math.min(1, tonumber(fraction) or 0))

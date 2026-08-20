@@ -2,6 +2,11 @@ local PositionMapper = require("weread.lib.position_mapper")
 
 local logger = require("weread.lib.logger").scoped("ProgressSync")
 
+local ok_ffiutil, ffiutil = pcall(require, "ffi/util")
+if not ok_ffiutil then
+    ffiutil = nil
+end
+
 local ProgressSync = {}
 ProgressSync.__index = ProgressSync
 
@@ -11,6 +16,9 @@ local BUSY_RETRY_SECONDS = 2
 local BUSY_RETRY_LIMIT = 10
 local SAME_THRESHOLD_PERCENT = 2
 local SOURCE_CONFLICT_THRESHOLD_PERCENT = 2
+local JOB_POLL_INITIAL_SECONDS = 0.25
+local JOB_POLL_MAX_SECONDS = 2
+local JOB_TIMEOUT_SECONDS = 180
 
 local function log(level, ...)
     if type(logger[level]) == "function" then
@@ -23,6 +31,32 @@ local function copy(value)
     local result = {}
     for key, item in pairs(value) do result[key] = copy(item) end
     return result
+end
+
+local function make_subprocess_runner()
+    if not ffiutil or type(ffiutil.runInSubProcess) ~= "function" then
+        return nil
+    end
+    return {
+        run = function(child_func)
+            return ffiutil.runInSubProcess(child_func, true)
+        end,
+        write_all = function(fd, data)
+            return ffiutil.writeToFD(fd, data, true)
+        end,
+        is_done = function(pid)
+            return ffiutil.isSubProcessDone(pid)
+        end,
+        terminate = function(pid)
+            ffiutil.terminateSubProcess(pid)
+        end,
+        read_size = function(fd)
+            return ffiutil.getNonBlockingReadSize(fd)
+        end,
+        read_all = function(fd)
+            return ffiutil.readAllFromFD(fd)
+        end,
+    }
 end
 
 local function is_mp_book(book_id)
@@ -63,6 +97,8 @@ function ProgressSync:new(options)
         get_file_context = options.get_file_context,
         run_online = options.run_online,
         upload_position = options.upload_position,
+        build_upload_outcome = options.build_upload_outcome,
+        apply_upload_outcome = options.apply_upload_outcome,
         goto_fraction = options.goto_fraction,
         open_chapter = options.open_chapter,
         is_online = options.is_online or function() return true end,
@@ -71,6 +107,8 @@ function ProgressSync:new(options)
         end,
         notify = options.notify or function() end,
         now = options.now or os.time,
+        subprocess = options.subprocess == nil and make_subprocess_runner()
+            or options.subprocess,
         state = "idle",
         generation = 0,
         dirty = false,
@@ -81,6 +119,153 @@ end
 
 function ProgressSync:_config()
     return self.settings:get("sync", {})
+end
+
+function ProgressSync:_decode_job_payload(payload)
+    if type(payload) ~= "string" or payload == "" then
+        return nil
+    end
+    local ok, decoded = pcall(function()
+        return self.client:json_decode(payload)
+    end)
+    return ok and type(decoded) == "table" and decoded or nil
+end
+
+function ProgressSync:_start_job(kind, worker, complete)
+    local runner = self.subprocess
+    if not runner then return false, "subprocess_unavailable" end
+    if self.job then return false, "progress_job_busy" end
+
+    local pid, read_fd = runner.run(function(_pid, child_write_fd)
+        local ok, outcome = pcall(worker)
+        if not ok then
+            outcome = { ok = false, error = tostring(outcome) }
+        elseif type(outcome) ~= "table" then
+            outcome = { ok = false, error = "invalid progress job outcome" }
+        else
+            outcome.ok = outcome.ok ~= false
+        end
+        local encoded_ok, encoded = pcall(function()
+            return self.client:json_encode(outcome)
+        end)
+        if not encoded_ok or type(encoded) ~= "string" then
+            encoded = '{"ok":false,"error":"failed to serialize progress job"}'
+        end
+        runner.write_all(child_write_fd, encoded)
+    end)
+    if not pid then return false, tostring(read_fd) end
+
+    local job = {
+        kind = kind,
+        pid = pid,
+        read_fd = read_fd,
+        started_at = self.now(),
+        poll_interval = JOB_POLL_INITIAL_SECONDS,
+        complete = complete,
+    }
+    job.poll = function()
+        self:_poll_job(job)
+    end
+    self.job = job
+    self.scheduler:scheduleIn(job.poll_interval, job.poll)
+    return true
+end
+
+function ProgressSync:_finish_job(job, outcome)
+    if self.job ~= job then return end
+    self.job = nil
+    local ok, err = pcall(job.complete, outcome)
+    if not ok then
+        log("warn", "progress job completion failed:",
+            "kind=", tostring(job.kind), "error=", tostring(err))
+    end
+end
+
+function ProgressSync:_collect_pid(pid)
+    local runner = self.subprocess
+    local collect
+    collect = function()
+        if not runner.is_done(pid) then
+            self.scheduler:scheduleIn(1, collect)
+        end
+    end
+    self.scheduler:scheduleIn(1, collect)
+end
+
+function ProgressSync:_poll_job(job)
+    if self.job ~= job then return end
+    local runner = self.subprocess
+    local done = runner.is_done(job.pid)
+    local readable = job.read_fd and runner.read_size(job.read_fd)
+    if done or (readable and readable > 0) then
+        local payload
+        if job.read_fd then
+            payload = runner.read_all(job.read_fd)
+            job.read_fd = nil
+        end
+        if not done then
+            self:_collect_pid(job.pid)
+        end
+        self:_finish_job(job, self:_decode_job_payload(payload))
+        return
+    end
+    if self.now() - job.started_at > JOB_TIMEOUT_SECONDS then
+        runner.terminate(job.pid)
+        self:_finish_job(job, {
+            ok = false,
+            error = tostring(job.kind) .. " timed out",
+        })
+        return
+    end
+    job.poll_interval = math.min(job.poll_interval * 2, JOB_POLL_MAX_SECONDS)
+    self.scheduler:scheduleIn(job.poll_interval, job.poll)
+end
+
+function ProgressSync:_child_fetch_remote(book_id, chapters)
+    local auth_changed = false
+    local original_flush = self.settings.flush
+    local original_update_auth = self.settings.update_auth
+    self.settings.flush = function() end
+    if type(original_update_auth) == "function" then
+        self.settings.update_auth = function(settings_obj, credentials, options)
+            auth_changed = true
+            options = options or {}
+            options.flush = false
+            return original_update_auth(settings_obj, credentials, options)
+        end
+    end
+
+    local remote, pull_error = self:_fetch_remote(book_id, chapters)
+    local outcome = {
+        remote = remote,
+        pull_error = pull_error and tostring(pull_error) or nil,
+    }
+    if auth_changed then
+        outcome.auth = {
+            cookies = self.settings:get("cookies", {}),
+            wr_ticket = self.settings:get("wr_ticket", ""),
+            wr_wrpa = self.settings:get("wr_wrpa", ""),
+        }
+    end
+    self.settings.flush = original_flush
+    self.settings.update_auth = original_update_auth
+    return outcome
+end
+
+function ProgressSync:_apply_job_auth(outcome)
+    if type(outcome) ~= "table" or type(outcome.auth) ~= "table" then
+        return
+    end
+    local ok, err = pcall(function()
+        self.settings:update_auth({
+            cookies = outcome.auth.cookies,
+            wr_ticket = outcome.auth.wr_ticket,
+            wr_wrpa = outcome.auth.wr_wrpa,
+        }, { replace_cookies = true })
+    end)
+    if not ok then
+        log("warn", "persist progress job auth failed:", tostring(err))
+    end
 end
 
 function ProgressSync:_persist(book_id, patch)
@@ -334,14 +519,23 @@ function ProgressSync:_apply_remote(remote, context, options)
     return true
 end
 
-function ProgressSync:_upload_snapshot(position, reason, show_result)
+function ProgressSync:_queue_snapshot(position, reason)
     if type(position) ~= "table" then return false end
     local book_id = tostring(position.book_id or self.current_book_id or "")
-    if book_id == "" or self.uploading then return false end
+    if book_id == "" then return false end
     self:_persist(book_id, {
         pending_upload_position = position,
         pending_upload_reason = reason or "unspecified",
     })
+    self.state = "queued"
+    return true
+end
+
+function ProgressSync:_upload_snapshot(position, reason, show_result, on_complete)
+    if type(position) ~= "table" then return false end
+    local book_id = tostring(position.book_id or self.current_book_id or "")
+    if book_id == "" or self.uploading then return false end
+    self:_queue_snapshot(position, reason)
     if not self.is_online() then
         self.state = "offline"
         if show_result then self.notify("offline", {}) end
@@ -349,58 +543,115 @@ function ProgressSync:_upload_snapshot(position, reason, show_result)
     end
     self.uploading = true
     self.state = "uploading"
+    local upload_generation = self.generation
     local attempts = 0
     local attempt
     attempt = function()
         attempts = attempts + 1
+        local function finish(ok, accepted, outcome)
+            if ok and not accepted and type(outcome) == "table"
+                and outcome.error_kind == "busy"
+                and attempts < BUSY_RETRY_LIMIT then
+                self.scheduler:scheduleIn(BUSY_RETRY_SECONDS, attempt)
+                return
+            end
+            self.uploading = false
+            local applies_to_current = upload_generation == self.generation
+                and tostring(self.current_book_id or "") == book_id
+            if ok and accepted then
+                if applies_to_current then
+                    self.state = "verified"
+                    self.dirty = false
+                    self.last_uploaded_position = copy(position)
+                end
+                self:_persist(book_id, {
+                    last_local_position = position,
+                    last_uploaded_position = position,
+                    last_upload_at = self.now(),
+                    pending_upload_position = false,
+                    pending_upload_reason = false,
+                    last_sync_error = false,
+                })
+                log("info", "upload accepted:",
+                    "book=", book_id,
+                    "percent=", tostring(position.percent),
+                    "reason=", tostring(reason))
+                if show_result then
+                    self.notify("upload_success", { position = position })
+                end
+                if applies_to_current and on_complete then
+                    on_complete(true, outcome)
+                end
+                if applies_to_current and self.resume_recheck_pending then
+                    self:_run_resume_recheck()
+                end
+                return
+            end
+            local error_message = ok and type(outcome) == "table"
+                and outcome.error or outcome
+            if applies_to_current then
+                self.state = "error"
+            end
+            self:_persist(book_id, {
+                last_sync_error = tostring(error_message or "upload_failed"),
+            })
+            log("warn", "upload failed:", tostring(error_message))
+            if show_result then
+                self.notify("upload_failed", {
+                    error = tostring(error_message or "upload_failed"),
+                })
+            end
+            if applies_to_current and on_complete then
+                on_complete(false, outcome)
+            end
+        end
+
+        if self.subprocess and type(self.build_upload_outcome) == "function" then
+            local started, start_error = self:_start_job("progress_upload", function()
+                return {
+                    upload = self.build_upload_outcome(
+                        book_id, copy(position), 0),
+                }
+            end, function(job_outcome)
+                if type(job_outcome) ~= "table" or job_outcome.ok == false then
+                    finish(false, nil, job_outcome and job_outcome.error)
+                    return
+                end
+                local upload_outcome = job_outcome.upload
+                if type(self.apply_upload_outcome) == "function" then
+                    self.apply_upload_outcome(book_id, upload_outcome)
+                end
+                finish(true,
+                    type(upload_outcome) == "table"
+                        and upload_outcome.accepted == true,
+                    upload_outcome)
+            end)
+            if not started then
+                if start_error == "progress_job_busy"
+                    and attempts < BUSY_RETRY_LIMIT then
+                    self.scheduler:scheduleIn(BUSY_RETRY_SECONDS, attempt)
+                    return
+                end
+                finish(false, nil, start_error)
+            end
+            return
+        end
+
         local ok, accepted, outcome = pcall(
             self.upload_position,
             book_id,
             copy(position),
             0
         )
-        if ok and not accepted and type(outcome) == "table"
-            and outcome.error_kind == "busy"
-            and attempts < BUSY_RETRY_LIMIT then
-            self.scheduler:scheduleIn(BUSY_RETRY_SECONDS, attempt)
-            return
-        end
-        self.uploading = false
-        if ok and accepted then
-            self.state = "verified"
-            self.dirty = false
-            self.last_uploaded_position = copy(position)
-            self:_persist(book_id, {
-                last_local_position = position,
-                last_uploaded_position = position,
-                last_upload_at = self.now(),
-                pending_upload_position = false,
-                pending_upload_reason = false,
-                last_sync_error = false,
-            })
-            log("info", "upload accepted:",
-                "book=", book_id,
-                "percent=", tostring(position.percent),
-                "reason=", tostring(reason))
-            if show_result then
-                self.notify("upload_success", { position = position })
-            end
-            return
-        end
-        local error_message = ok and type(outcome) == "table"
-            and outcome.error or outcome
-        self.state = "error"
-        self:_persist(book_id, {
-            last_sync_error = tostring(error_message or "upload_failed"),
-        })
-        log("warn", "upload failed:", tostring(error_message))
-        if show_result then
-            self.notify("upload_failed", {
-                error = tostring(error_message or "upload_failed"),
-            })
-        end
+        finish(ok, accepted, outcome)
     end
-    local started = self.run_online("progress_upload", attempt)
+    local started
+    if self.subprocess and type(self.build_upload_outcome) == "function" then
+        self.scheduler:scheduleIn(0.1, attempt)
+        started = true
+    else
+        started = self.run_online("progress_upload", attempt)
+    end
     if not started then
         self.uploading = false
         self.state = "offline"
@@ -498,6 +749,38 @@ function ProgressSync:_resolve(local_position, remote, context, options)
     end
 end
 
+function ProgressSync:_complete_pull(generation, local_position, context,
+        options, remote, pull_error)
+    self.pulling = false
+    if generation ~= self.generation
+        or tostring(self.detect_book() or "") ~= context.book_id then
+        return
+    end
+    if not remote then
+        if options.resume_recheck then
+            self.resume_recheck_pending = true
+            self.state = "waiting_for_network"
+        else
+            self.state = "error"
+        end
+        self:_persist(context.book_id, {
+            last_pull_at = self.now(),
+            last_sync_error = tostring(pull_error),
+        })
+        if options.manual then
+            self.notify("pull_failed", { error = tostring(pull_error) })
+        end
+        return
+    end
+    self:_persist(context.book_id, {
+        last_remote_position = remote,
+        last_local_position = local_position,
+        last_pull_at = self.now(),
+        last_sync_error = false,
+    })
+    self:_resolve(local_position, remote, context, options)
+end
+
 function ProgressSync:_pull(options)
     options = options or {}
     if self.pulling then return false end
@@ -526,7 +809,46 @@ function ProgressSync:_pull(options)
     local generation = self.generation
     self.pulling = true
     self.state = "pulling"
-    local started = self.run_online("progress_pull", function()
+
+    local fetch_attempts = 0
+    local start_fetch
+    start_fetch = function()
+        fetch_attempts = fetch_attempts + 1
+        if self.subprocess then
+            local started, start_error = self:_start_job("progress_pull", function()
+                return self:_child_fetch_remote(
+                    context.book_id, context.chapters)
+            end, function(outcome)
+                if type(outcome) ~= "table" or outcome.ok == false then
+                    self:_complete_pull(generation, local_position, context,
+                        options, nil, outcome and outcome.error
+                            or "progress pull job failed")
+                    return
+                end
+                self:_apply_job_auth(outcome)
+                self:_complete_pull(generation, local_position, context,
+                    options, outcome.remote, outcome.pull_error)
+            end)
+            if not started then
+                if start_error == "progress_job_busy"
+                    and fetch_attempts < BUSY_RETRY_LIMIT then
+                    self.scheduler:scheduleIn(BUSY_RETRY_SECONDS, start_fetch)
+                    return true
+                end
+                self:_complete_pull(generation, local_position, context,
+                    options, nil, start_error)
+            end
+            return started
+        end
+
+        local remote, pull_error = self:_fetch_remote(
+            context.book_id, context.chapters)
+        self:_complete_pull(generation, local_position, context,
+            options, remote, pull_error)
+        return true
+    end
+
+    local function prepare()
         if not local_position then
             local book_id = tostring(self.detect_book() or "")
             local refresh_ok, refreshed, refresh_error = pcall(
@@ -543,40 +865,21 @@ function ProgressSync:_pull(options)
                 self.notify("local_unavailable", {
                     error = refresh_error or reason,
                 })
-                return
+                return false
             end
             if type(refreshed) ~= "table" or #refreshed == 0 then
                 log("warn", "catalog refresh returned no chapters for:", book_id)
             end
         end
-        local remote, pull_error = self:_fetch_remote(
-            context.book_id,
-            context.chapters
-        )
-        self.pulling = false
-        if generation ~= self.generation
-            or tostring(self.detect_book() or "") ~= context.book_id then
-            return
-        end
-        if not remote then
-            self.state = "error"
-            self:_persist(context.book_id, {
-                last_pull_at = self.now(),
-                last_sync_error = tostring(pull_error),
-            })
-            if options.manual then
-                self.notify("pull_failed", { error = tostring(pull_error) })
-            end
-            return
-        end
-        self:_persist(context.book_id, {
-            last_remote_position = remote,
-            last_local_position = local_position,
-            last_pull_at = self.now(),
-            last_sync_error = false,
-        })
-        self:_resolve(local_position, remote, context, options)
-    end)
+        return start_fetch()
+    end
+
+    local started
+    if self.subprocess and local_position then
+        started = start_fetch()
+    else
+        started = self.run_online("progress_pull", prepare)
+    end
     if not started then
         self.pulling = false
         self.state = "offline"
@@ -641,6 +944,7 @@ function ProgressSync:on_reader_ready()
     self.document_context = nil
     self.verified = false
     self.dirty = false
+    self.resume_recheck_pending = false
     self.state = "waiting"
 
     self.scheduler:scheduleIn(OPEN_DELAY_SECONDS, function()
@@ -699,6 +1003,7 @@ function ProgressSync:on_close_document()
     self.local_position = nil
     self.remote_position = nil
     self.document_context = nil
+    self.resume_recheck_pending = false
 end
 
 function ProgressSync:on_suspend()
@@ -710,7 +1015,9 @@ function ProgressSync:on_suspend()
     end
     if position and self.verified and self.dirty
         and self:_config().upload_on_close == true then
-        self:_upload_snapshot(position, "suspend", false)
+        -- Suspend handlers must be local-only. The immutable snapshot is
+        -- flushed after KOReader broadcasts NetworkConnected.
+        self:_queue_snapshot(position, "suspend")
     end
 end
 
@@ -719,9 +1026,55 @@ function ProgressSync:on_resume()
     self.suspended_at = nil
     if slept >= RESUME_RECHECK_SECONDS
         and self:_config().pull_on_open == true then
+        self.resume_recheck_pending = true
         self:_clear_verified("resume_recheck")
-        self:_pull({ manual = false })
+        self.state = "waiting_for_network"
     end
+    if self.is_online() then
+        self.scheduler:scheduleIn(0.1, function()
+            self:on_network_connected()
+        end)
+    end
+end
+
+function ProgressSync:_pending_upload()
+    local book_id = tostring(self.current_book_id or "")
+    if book_id == "" then return nil end
+    local book = self.settings:get("books", {})[book_id]
+    if type(book) ~= "table"
+        or type(book.pending_upload_position) ~= "table" then
+        return nil
+    end
+    return copy(book.pending_upload_position),
+        book.pending_upload_reason or "queued"
+end
+
+function ProgressSync:_run_resume_recheck()
+    if not self.resume_recheck_pending then return false end
+    self.resume_recheck_pending = false
+    local started = self:_pull({ manual = false, resume_recheck = true })
+    if not started then
+        self.resume_recheck_pending = true
+    end
+    return started
+end
+
+function ProgressSync:on_network_connected()
+    if not self.current_book_id or not self.is_online() then
+        return false
+    end
+    local pending, reason = self:_pending_upload()
+    if pending and not self.uploading then
+        return self:_upload_snapshot(pending, reason, false, function(success)
+            if success then
+                self:_run_resume_recheck()
+            end
+        end)
+    end
+    if not self.uploading then
+        return self:_run_resume_recheck()
+    end
+    return false
 end
 
 function ProgressSync:sync_now()

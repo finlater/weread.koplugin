@@ -28,6 +28,29 @@ local chapters = {
     { chapterUid = 33, chapterIdx = 3, wordCount = 600 },
 }
 
+local function subprocess_fixture()
+    local payload
+    return {
+        run = function(child)
+            child(100, 200)
+            return 100, 200
+        end,
+        write_all = function(_fd, data)
+            payload = data
+        end,
+        is_done = function() return true end,
+        terminate = function() end,
+        read_size = function()
+            return payload and #payload or 0
+        end,
+        read_all = function()
+            local value = payload
+            payload = nil
+            return value
+        end,
+    }
+end
+
 local function fixture(remote, options)
     options = options or {}
     local document = {
@@ -76,12 +99,27 @@ local function fixture(remote, options)
     local uploads = {}
     local jumps = {}
     local notifications = {}
+    local encoded_payload
     local client = {
         get_progress = function()
-            return { book = remote }
+            local value = remote
+            if options.remote_provider then
+                value = options.remote_provider()
+            end
+            return { book = value }
         end,
         get_web_progress = function()
+            if options.remote_provider then
+                return options.remote_provider()
+            end
             return remote
+        end,
+        json_encode = function(_self, value)
+            encoded_payload = value
+            return "encoded"
+        end,
+        json_decode = function()
+            return encoded_payload
         end,
     }
     local sync = ProgressSync:new{
@@ -105,6 +143,8 @@ local function fixture(remote, options)
             eq(elapsed, 0, "progress upload has zero reading time")
             return true, { accepted = true }
         end,
+        build_upload_outcome = options.build_upload_outcome,
+        apply_upload_outcome = options.apply_upload_outcome,
         goto_fraction = function(fraction)
             jumps[#jumps + 1] = fraction
             document.page = math.floor(fraction * 100 + 0.5)
@@ -118,6 +158,8 @@ local function fixture(remote, options)
             notifications[#notifications + 1] = { code = code, data = data }
         end,
         is_online = options.is_online,
+        now = options.now,
+        subprocess = options.subprocess or false,
     }
     local function drain()
         local count = 0
@@ -157,6 +199,28 @@ test("matching open progress verifies the reporting gate", function()
     eq(reason, nil, "no gate reason")
     eq(position.chapter_uid, 22, "live chapter")
     eq(position.chapter_offset, 150, "live offset")
+end)
+
+test("automatic progress pull runs in a subprocess when available", function()
+    local online_tasks = 0
+    local f = fixture({
+        bookId = "book",
+        progress = 25,
+        chapterUid = 22,
+        chapterIdx = 2,
+        chapterOffset = 150,
+        updateTime = 10,
+    }, {
+        subprocess = subprocess_fixture(),
+        run_online = function()
+            online_tasks = online_tasks + 1
+            return false
+        end,
+    })
+    f.sync:on_reader_ready()
+    f.drain()
+    eq(online_tasks, 0, "UI-thread online wrapper is bypassed")
+    eq(f.sync:status().verified, true, "subprocess result verifies session")
 end)
 
 test("nearby progress within two percent is treated as aligned", function()
@@ -269,7 +333,7 @@ test("busy read report is retried with the immutable snapshot", function()
         "retry success clears pending snapshot")
 end)
 
-test("suspend captures movement even without a page event", function()
+test("suspend queues movement locally and reconnect flushes it", function()
     local f = fixture({
         bookId = "book",
         progress = 25,
@@ -282,8 +346,128 @@ test("suspend captures movement even without a page event", function()
     f.drain()
     f.document.page = 40
     f.sync:on_suspend()
-    eq(#f.uploads, 1, "suspend uploads captured movement")
+    eq(#f.uploads, 0, "suspend performs no network upload")
+    eq(f.values.books.book.pending_upload_position.percent, 40,
+        "suspend persists the immutable position")
+    eq(f.values.books.book.pending_upload_reason, "suspend",
+        "suspend records the queue reason")
+    f.sync:on_network_connected()
+    eq(#f.uploads, 1, "network reconnect flushes queued movement")
     eq(f.uploads[1].percent, 40, "suspend uses current page")
+    eq(f.values.books.book.pending_upload_position, nil,
+        "successful reconnect clears pending snapshot")
+end)
+
+test("reconnect uploads a queued snapshot in a subprocess", function()
+    local built = 0
+    local applied = 0
+    local f = fixture({
+        bookId = "book",
+        progress = 25,
+        chapterUid = 22,
+        chapterIdx = 2,
+        chapterOffset = 150,
+        updateTime = 10,
+    }, {
+        subprocess = subprocess_fixture(),
+        build_upload_outcome = function(_book_id, position, elapsed)
+            built = built + 1
+            eq(position.percent, 40, "child receives immutable snapshot")
+            eq(elapsed, 0, "child upload adds no reading time")
+            return { accepted = true }
+        end,
+        apply_upload_outcome = function(_book_id, outcome)
+            applied = applied + 1
+            return outcome.accepted == true
+        end,
+    })
+    f.sync:on_reader_ready()
+    f.drain()
+    f.document.page = 40
+    f.sync:on_suspend()
+    f.sync:on_network_connected()
+    f.drain()
+    eq(built, 1, "one child upload started")
+    eq(applied, 1, "parent applied one child outcome")
+    eq(#f.uploads, 0, "blocking upload path was not used")
+    eq(f.values.books.book.pending_upload_position, nil,
+        "child success clears pending snapshot")
+end)
+
+test("long resume waits for a real network event before rechecking", function()
+    local online = true
+    local now = 100
+    local f = fixture({
+        bookId = "book",
+        progress = 25,
+        chapterUid = 22,
+        chapterIdx = 2,
+        chapterOffset = 150,
+        updateTime = 10,
+    }, {
+        is_online = function() return online end,
+        now = function() return now end,
+    })
+    f.sync:on_reader_ready()
+    f.drain()
+    eq(f.sync:status().verified, true, "initial open verifies")
+
+    f.sync:on_suspend()
+    online = false
+    now = 100 + 6 * 60
+    f.sync:on_resume()
+    eq(f.sync:status().state, "waiting_for_network",
+        "resume does not start network work")
+    eq(f.sync:status().verified, false,
+        "reading report remains gated until recheck")
+    f.drain()
+    eq(f.sync:status().state, "waiting_for_network",
+        "scheduler stays idle while Wi-Fi is down")
+
+    online = true
+    f.sync:on_network_connected()
+    eq(f.sync:status().verified, true,
+        "network event completes deferred recheck")
+end)
+
+test("stale connected state keeps resume recheck queued after child failure", function()
+    local now = 100
+    local current_remote = {
+        bookId = "book",
+        progress = 25,
+        chapterUid = 22,
+        chapterIdx = 2,
+        chapterOffset = 150,
+        updateTime = 10,
+    }
+    local f = fixture(current_remote, {
+        subprocess = subprocess_fixture(),
+        is_online = function() return true end,
+        now = function() return now end,
+        remote_provider = function() return current_remote end,
+    })
+    f.sync:on_reader_ready()
+    f.drain()
+    f.sync:on_suspend()
+    now = 100 + 6 * 60
+    current_remote = nil
+    f.sync:on_resume()
+    f.drain()
+    eq(f.sync:status().state, "waiting_for_network",
+        "failed stale-state child remains deferred")
+
+    current_remote = {
+        bookId = "book",
+        progress = 25,
+        chapterUid = 22,
+        chapterIdx = 2,
+        chapterOffset = 150,
+        updateTime = 20,
+    }
+    f.sync:on_network_connected()
+    f.drain()
+    eq(f.sync:status().verified, true,
+        "later real network event retries deferred pull")
 end)
 
 test("single chapter cloud choice waits for target chapter then jumps", function()

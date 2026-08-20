@@ -201,6 +201,23 @@ test("report context backfills SQLite from catalog.json", function()
     eq(written_catalog, disk_catalog, "catalog.json backfills SQLite")
 end)
 
+test("suspend detaches an in-flight report without blocking termination", function()
+    local report = fixture()
+    local terminated = 0
+    report.subprocess = {
+        terminate = function() terminated = terminated + 1 end,
+        is_done = function() return false end,
+        read_size = function() return 0 end,
+        read_all = function() return nil end,
+    }
+    report.task = function() end
+    report.job = { pid = 42, poll = function() end }
+    report:on_suspend()
+    eq(terminated, 0, "suspend never waits for child termination")
+    eq(report.job, nil, "stale job detached from report state")
+    eq(report:status().state, "suspended", "report enters suspended state")
+end)
+
 print(string.format(
     "read_report_progress_spec: %d checks, %d failure(s)", checks, failures))
 os.exit(failures == 0 and 0 or 1)

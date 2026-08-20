@@ -303,6 +303,10 @@ function M:onResume()
     self.read_report:on_resume()
 end
 
+function M:onNetworkConnected()
+    self.progress_sync:on_network_connected()
+end
+
 function M:detectWeReadBook()
     if not self.ui.document then
         return nil

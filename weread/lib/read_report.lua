@@ -347,8 +347,9 @@ function ReadReport:start(reason)
     return true
 end
 
-function ReadReport:stop(reason)
+function ReadReport:stop(reason, options)
     reason = reason or "unspecified"
+    options = options or {}
     local had_task = self.task ~= nil
     self.generation = self.generation + 1
     if self.task then
@@ -356,7 +357,7 @@ function ReadReport:stop(reason)
         self.task = nil
     end
     if self.job then
-        self:_abandon_job(self.job)
+        self:_abandon_job(self.job, options.terminate_job ~= false)
     end
     self.state = reason == "suspend" and "suspended"
         or "stopped"
@@ -376,7 +377,9 @@ end
 
 function ReadReport:on_suspend()
     self.suspended = true
-    self:stop("suspend")
+    -- Never wait for a network child while KOReader is entering suspend. The
+    -- detached child is reaped after resume; its stale result is discarded.
+    self:stop("suspend", { terminate_job = false })
 end
 
 function ReadReport:on_resume()
@@ -597,9 +600,9 @@ function ReadReport:_poll_job(job, generation, task)
     self.scheduler:scheduleIn(job.poll_interval, job.poll)
 end
 
--- Kill a running job and keep reaping until the child is collected, so a
--- stopped or timed-out report can never leave a zombie behind.
-function ReadReport:_abandon_job(job)
+-- Detach a running job and keep reaping until the child is collected. Most
+-- callers terminate first; suspend deliberately lets the child exit itself.
+function ReadReport:_abandon_job(job, terminate_job)
     job = job or self.job
     if not job then
         return
@@ -611,7 +614,9 @@ function ReadReport:_abandon_job(job)
     if job.poll then
         self.scheduler:unschedule(job.poll)
     end
-    runner.terminate(job.pid)
+    if terminate_job ~= false then
+        runner.terminate(job.pid)
+    end
     local collect
     collect = function()
         if runner.is_done(job.pid) then
@@ -751,7 +756,7 @@ end
 -- Child entry point. Neuters settings persistence inside the fork and
 -- captures auth changes (Set-Cookie merges, cookie renewal) so the parent
 -- can persist them from the outcome.
-function ReadReport:_child_report(book_id, allow_renewal, position)
+function ReadReport:_child_report(book_id, allow_renewal, position, elapsed_seconds)
     self._no_persist = true
     self.settings.flush = function() end
     local auth_changed = false
@@ -767,6 +772,7 @@ function ReadReport:_child_report(book_id, allow_renewal, position)
         return self:_run_pipeline(book_id, {
             allow_renewal = allow_renewal,
             position = position,
+            elapsed_seconds = elapsed_seconds,
         })
     end)
     if not ok then
@@ -1125,6 +1131,48 @@ function ReadReport:upload_position(book_id, position, elapsed_seconds)
         end
     end
     return outcome.accepted == true, outcome
+end
+
+-- Build a progress-only upload inside a forked child. Persistence is disabled
+-- by _child_report; the parent applies the returned auth/context explicitly.
+function ReadReport:build_position_upload_outcome(book_id, position, elapsed_seconds)
+    return self:_child_report(
+        tostring(book_id),
+        self:_renewal_allowed(),
+        position,
+        elapsed_seconds or 0
+    )
+end
+
+function ReadReport:apply_position_upload_outcome(book_id, outcome)
+    book_id = tostring(book_id)
+    if type(outcome) ~= "table" then
+        return false
+    end
+    if outcome.renew_attempted then
+        self.last_renew_attempt = self.now()
+    end
+    if type(outcome.auth) == "table" then
+        local ok, err = pcall(function()
+            self.settings:update_auth({
+                cookies = outcome.auth.cookies,
+                wr_ticket = outcome.auth.wr_ticket,
+                wr_wrpa = outcome.auth.wr_wrpa,
+            }, { replace_cookies = true })
+        end)
+        if not ok then
+            log("warn", "persist progress upload auth failed:", tostring(err))
+        end
+    end
+    if type(outcome.book) == "table" then
+        local ok, err = pcall(function()
+            self:_persist_context(book_id, outcome.book)
+        end)
+        if not ok then
+            log("warn", "persist progress upload context failed:", tostring(err))
+        end
+    end
+    return outcome.accepted == true
 end
 
 return ReadReport
