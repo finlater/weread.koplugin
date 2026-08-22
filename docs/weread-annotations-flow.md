@@ -4,7 +4,7 @@
 
 ## 一句话原理
 
-**下载时**把划线链接写入 EPUB，并把想法按 `chapter_uid + range + item_index` 存入本书的 `thoughts.db`；**阅读时**拦截划线链接，只查询被点击 range 的几条记录，再用 KOReader 原生 `TextViewer` 展示。
+**下载时**把划线链接写入 EPUB，并把想法按 `chapter_uid + range + item_index` 存入本书的 `thoughts.db`；**阅读时**拦截划线链接，只查询被点击 range 的几条记录，再用原生位图渲染弹窗展示（短内容收缩、长内容滚动）。
 
 展示阶段完全离线，不读取整章想法、不解析整章 JSON，也不启动 HTML/MuPDF 渲染器。
 
@@ -22,7 +22,7 @@
    EPUB 文件（划线链接） + SQLite（想法正文）
         │ (阅读时，离线)
         ▼  点击 → 拦截 tap_link → SQLite 索引查询一个 range
-   KOReader 原生 TextViewer（上一页 / 关闭 / 下一页）
+   KOReader 原生位图渲染弹窗（短内容收缩 / 长内容滚动；点击弹窗外区域关闭）
 ```
 
 ## 阶段一：下载（Download）
@@ -81,9 +81,10 @@
 ### 原生弹框 `_showThoughtPopup` → `ThoughtPopup.show`
 
 - 先 `highlightXPointer` 高亮被点的划线原文。
-- 使用 KOReader 原生文字布局按可见高度动态合并 `pageReview`：短想法一页可显示多条，长想法自动减少；单条超过弹框高度时可在页内滚动。标题栏只显示划线原文，并由原生 TitleBar 在实际右边界截断。
-- 内容由 KOReader 原生 `TextViewer` / `TextBoxWidget` 排版；底部提供“上一页 / 当前已显示条数÷总条数 / 下一页”（例如 `3/21`），关闭使用标题栏右上角 X。
-- 不创建 HTML 文档、不解析 CSS、不加载书籍字体，也不初始化 MuPDF。
+- 内容按可见高度动态合并 `pageReview`：短内容把弹窗收缩到内容高度（一页可显示多条），长内容保持设定高度并在弹窗内滚动，单条不跨页截断。
+- 内容由 KOReader 原生位图渲染：每条按块用 `TextBoxWidget` 排版后合成到内容位图，再按页切片画入滚动视口；弹窗内点击左 / 右半区翻页，上下滑动滚动，点击弹窗外区域、左右滑动或 Back 键关闭。
+- 弹窗位置可选「底部 / 居中」：底部为实线样式底栏（默认）；居中为 TextViewer 风格居中窗口，带标题栏与「上一页 / 下一页」按钮，长内容（含单条长想法）分页显示而非滚动，字号与高度沿用同一组设置。
+- 不创建 HTML 文档、不解析 CSS、不初始化 MuPDF；弹窗沿用书籍字体渲染，书籍字体缺失时回退到内置字体。
 - 关闭时清掉原文高亮。
 
 ### 防错机制 `_reader_session_gen`
@@ -98,6 +99,6 @@
 | `weread/lib/client.lua` | gateway API：`/book/underlines`、`/book/readreviews`，range 分批 |
 | `weread/lib/thoughts.lua` | 下载编排、SQLite 写入、CSS 合并 |
 | `weread/lib/thought_db.lua` | SQLite schema、事务写入、按 range 索引查询 |
-| `weread/lib/annotations.lua` | 注入下划线与普通内部链接，并规范化原生弹框字段 |
-| `weread/ui/thought_popup.lua` | 展示：原生 TextViewer、上一页/下一页导航 |
+| `weread/lib/annotations.lua` | 注入下划线与普通内部链接 |
+| `weread/ui/thought_popup.lua` | 展示：原生位图渲染弹窗（入口），实现见 `weread/ui/thought_popup/` |
 | `main.lua` | tap 拦截、SQLite 查询、显隐开关、会话防错 |

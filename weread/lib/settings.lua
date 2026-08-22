@@ -50,6 +50,29 @@ local defaults = {
         interval_seconds = 30,
         report_on_open = true,
     },
+    thought_popup = {
+        -- Thought popup height as a fraction of the screen height.
+        height_ratio = 0.62,
+        -- Popup font size relative to the document font size; used while
+        -- font_size is unset. Mirrors KOReader's footnote popup default.
+        font_size_relative = -2,
+        -- Fixed absolute popup font size (unscaled px); when set it takes
+        -- precedence over font_size_relative.
+        font_size = nil,
+        -- Popup position: "center" (TextViewer-style centered window with
+        -- page buttons, default) or "bottom" (solid-line bottom bar).
+        position = "center",
+        -- Centered popup width as a fraction of the screen width (only used
+        -- when position is "center").
+        width_ratio = 0.8,
+        -- Text contrast delta for the popup blocks: positive darkens the
+        -- text (the maximum, +9, renders pure black), negative lightens it
+        -- (range -3..9, 0 = default).
+        contrast = 0,
+        -- Tap the left/right half of the popup to turn pages (bottom and
+        -- centered positions; off by default).
+        tap_to_page = false,
+    },
     advanced = {
         developer_logs = false,
     },

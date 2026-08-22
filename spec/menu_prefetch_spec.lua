@@ -63,6 +63,11 @@ local cache = {
 }
 local shelf = { sort_order = "time_desc" }
 local flush_count = 0
+local thought_popup = {
+    height_ratio = 0.62,
+    font_size_relative = -2,
+    position = "bottom",
+}
 local available_version
 local host = {
     ui = {},
@@ -71,6 +76,7 @@ local host = {
         get = function(_self, key, default)
             if key == "cache" then return cache end
             if key == "shelf" then return shelf end
+            if key == "thought_popup" then return thought_popup end
             return default
         end,
         set = function(_self, key, value)
@@ -292,6 +298,39 @@ expect(prefetch_items[2].enabled_func(),
     "annotation setting is enabled while automatic prefetch is on")
 expect(prefetch_items[3].enabled_func(),
     "notification setting is enabled while automatic prefetch is on")
+
+local underline_settings
+for _, item in ipairs(settings_items) do
+    if item.text == "Underline settings" then underline_settings = item end
+end
+local underline_items = underline_settings and underline_settings.sub_item_table_func() or {}
+expect(#underline_items == 3,
+    "underline settings contain edge taps, edge zone, and the popup settings submenu")
+local popup_settings_item = underline_items[3]
+expect(popup_settings_item and popup_settings_item.text == "Thought popup settings",
+    "thought popup settings is a nested submenu")
+local popup_items = popup_settings_item and popup_settings_item.sub_item_table_func() or {}
+expect(#popup_items == 6,
+    "thought popup settings contain height, font size, contrast, position, width, and tap paging")
+expect(popup_items[1] and type(popup_items[1].text_func) == "function"
+        and popup_items[1].text_func() == "Position: %1",
+    "thought popup position entry is first")
+expect(popup_items[2] and type(popup_items[2].text_func) == "function"
+        and popup_items[2].text_func() == "Height: %1%",
+    "thought popup height entry shows the current percentage")
+expect(popup_items[3] and type(popup_items[3].text_func) == "function"
+        and popup_items[3].text_func() == "Width: %1%",
+    "thought popup width entry shows the current percentage")
+expect(popup_items[3] and not popup_items[3].enabled_func(),
+    "thought popup width is disabled while the position is bottom")
+expect(popup_items[4] and popup_items[4].text == "Font size",
+    "thought popup font size entry is present")
+expect(popup_items[5] and popup_items[5].text_func()
+        == "Font contrast: Default",
+    "thought popup font contrast entry shows the default state")
+expect(popup_items[6] and popup_items[6].text == "Tap left/right to turn pages"
+        and not popup_items[6].checked_func(),
+    "tap-to-page entry is present and off by default")
 
 print(string.format(
     "menu_prefetch_spec: %d checks, %d failure(s)", checks, failures))
