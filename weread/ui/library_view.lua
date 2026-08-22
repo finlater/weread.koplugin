@@ -2,6 +2,7 @@
 
 local Blitbuffer = require("ffi/blitbuffer")
 local Button = require("ui/widget/button")
+local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
 local Font = require("ui/font")
 local FocusManager = require("ui/widget/focusmanager")
@@ -10,6 +11,7 @@ local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local HorizontalSpan = require("ui/widget/horizontalspan")
+local ImageWidget = require("ui/widget/imagewidget")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local LineWidget = require("ui/widget/linewidget")
 local ScrollableContainer = require("ui/widget/container/scrollablecontainer")
@@ -96,6 +98,125 @@ function ShelfRow:onUnfocus()
     return true
 end
 
+local CoverCell = InputContainer:extend{
+    book = nil,
+    width = nil,
+    height = nil,
+    cover_path = nil,
+    cover_loading = false,
+    status = "",
+    callback = nil,
+    show_parent = nil,
+}
+
+function CoverCell:init()
+    local padding = Size.padding.small
+    local border = Size.border.thin
+    local cover_width = math.max(1, self.width - 2 * padding)
+    local label_height = math.min(
+        math.max(1, math.floor(self.height * 0.35)),
+        Screen:scaleBySize(52)
+    )
+    local cover_height = math.max(1, self.height - label_height)
+    local image_width = math.max(1, cover_width - 2 * padding - 2 * border)
+    local image_height = math.max(1, cover_height - 2 * padding - 2 * border)
+    local cover_content
+    if self.cover_path then
+        local image
+        local ok = pcall(function()
+            image = ImageWidget:new{
+                file = self.cover_path,
+                width = image_width,
+                height = image_height,
+                scale_factor = 0,
+                -- Shelf thumbnails are short-lived page content. Keeping them
+                -- out of KOReader's 8 MiB global image cache also makes corrupt
+                -- or unexpectedly large legacy files unable to crash the UI.
+                file_do_cache = false,
+            }
+            image:getSize()
+        end)
+        if ok and image then
+            cover_content = image
+            self._has_cover = true
+        elseif image and type(image.free) == "function" then
+            pcall(image.free, image)
+        end
+    end
+    if not cover_content then
+        cover_content = TextWidget:new{
+            text = self.cover_loading and _("Cover loading") or _("No cover"),
+            face = Font:getFace("cfont", 18),
+            max_width = image_width,
+        }
+        self._has_cover = false
+    end
+    local cover = CenterContainer:new{
+        dimen = Geom:new{ w = cover_width, h = cover_height },
+        FrameContainer:new{
+            width = cover_width,
+            height = cover_height,
+            margin = 0,
+            padding = padding,
+            bordersize = border,
+            background = Blitbuffer.COLOR_WHITE,
+            CenterContainer:new{
+                dimen = Geom:new{ w = image_width, h = image_height },
+                cover_content,
+            },
+        },
+    }
+    local title = self.book.title or self.book.bookId or self.book.book_id or _("Untitled")
+    local title_widget = TextWidget:new{
+        text = title,
+        face = Font:getFace("cfont", 18),
+        max_width = cover_width,
+    }
+    local status_widget = TextWidget:new{
+        text = self.status or "",
+        face = Font:getFace("cfont", 14),
+        max_width = cover_width,
+    }
+    self.frame = FrameContainer:new{
+        width = self.width,
+        height = self.height,
+        bordersize = 0,
+        radius = 0,
+        margin = 0,
+        padding = padding,
+        background = Blitbuffer.COLOR_WHITE,
+        show_parent = self.show_parent,
+        VerticalGroup:new{
+            align = "center",
+            cover,
+            title_widget,
+            status_widget,
+        },
+    }
+    self[1] = self.frame
+    self.dimen = self.frame:getSize()
+    self.ges_events = {
+        TapCoverCell = {
+            GestureRange:new{ ges = "tap", range = self.dimen },
+        },
+    }
+end
+
+function CoverCell:onTapCoverCell()
+    if self.callback then self.callback() end
+    return true
+end
+
+function CoverCell:onFocus()
+    self.frame.invert = true
+    return true
+end
+
+function CoverCell:onUnfocus()
+    self.frame.invert = false
+    return true
+end
+
 local LibraryView = FocusManager:extend{
     mode = "books",
     title = nil,
@@ -114,6 +235,12 @@ local LibraryView = FocusManager:extend{
     paged = false,
     page = 1,
     page_size = 10,
+    cover_mode = false,
+    cover_columns = 3,
+    cover_rows = 2,
+    cover_cell_height = nil,
+    cover_paths = nil,
+    cover_loading = nil,
     on_page_changed = nil,
 }
 
@@ -236,9 +363,14 @@ function LibraryView:content()
         HorizontalSpan:new{ width = self.list_width },
     }
     self._item_rows = {}
+    self._focus_item_rows = {}
+    self.page_size = math.max(1, math.floor(tonumber(self.page_size) or 10))
     if self.paged then
         self.page_count = math.max(1, math.ceil(#source / self.page_size))
-        self.page = math.max(1, math.min(tonumber(self.page) or 1, self.page_count))
+        self.page = math.max(
+            1,
+            math.min(math.floor(tonumber(self.page) or 1), self.page_count)
+        )
     end
     if #source == 0 then
         table.insert(content, VerticalSpan:new{ width = Size.padding.large })
@@ -255,27 +387,63 @@ function LibraryView:content()
         first = (self.page - 1) * self.page_size + 1
         last = math.min(#source, first + self.page_size - 1)
     end
-    for index = first, last do
-        local book = source[index]
-        local shelf_row = ShelfRow:new{
-            text = book.title or book.bookId or book.book_id or _("Untitled"),
-            status = self:itemStatus(book),
-            width = self.list_width,
-            font_size = self.mode == "books" and 20 or 22,
-            show_parent = self,
-            callback = function()
-                if self.on_select then self.on_select(book, self.mode) end
-            end,
-        }
-        self._item_rows[#self._item_rows + 1] = shelf_row
-        table.insert(content, shelf_row)
-        table.insert(content, HorizontalGroup:new{
-            HorizontalSpan:new{ width = Size.padding.large },
-            LineWidget:new{
-                dimen = Geom:new{ w = self.list_width - 2 * Size.padding.large, h = 1 },
-                background = Blitbuffer.COLOR_GRAY,
-            },
-        })
+    if self.cover_mode and self.mode == "books" then
+        local columns = math.max(1, math.floor(tonumber(self.cover_columns) or 3))
+        local cell_width = math.floor(self.screen_w / columns)
+        local cell_height = math.max(
+            1,
+            tonumber(self.cover_cell_height) or math.floor(self.screen_h * 0.28)
+        )
+        local grid_row
+        for index = first, last do
+            local book = source[index]
+            local column = ((index - first) % columns) + 1
+            if column == 1 then
+                grid_row = {}
+                self._focus_item_rows[#self._focus_item_rows + 1] = grid_row
+                table.insert(content, HorizontalGroup:new(grid_row))
+            end
+            local width = column == columns and self.screen_w - cell_width * (columns - 1)
+                or cell_width
+            local cover_cell = CoverCell:new{
+                book = book,
+                status = self:itemStatus(book),
+                cover_path = self.cover_paths and self.cover_paths[book] or nil,
+                cover_loading = self.cover_loading and self.cover_loading[book] == true,
+                width = width,
+                height = cell_height,
+                show_parent = self,
+                callback = function()
+                    if self.on_select then self.on_select(book, self.mode) end
+                end,
+            }
+            self._item_rows[#self._item_rows + 1] = cover_cell
+            grid_row[#grid_row + 1] = cover_cell
+        end
+    else
+        for index = first, last do
+            local book = source[index]
+            local shelf_row = ShelfRow:new{
+                text = book.title or book.bookId or book.book_id or _("Untitled"),
+                status = self:itemStatus(book),
+                width = self.list_width,
+                font_size = self.mode == "books" and 20 or 22,
+                show_parent = self,
+                callback = function()
+                    if self.on_select then self.on_select(book, self.mode) end
+                end,
+            }
+            self._item_rows[#self._item_rows + 1] = shelf_row
+            self._focus_item_rows[#self._focus_item_rows + 1] = { shelf_row }
+            table.insert(content, shelf_row)
+            table.insert(content, HorizontalGroup:new{
+                HorizontalSpan:new{ width = Size.padding.large },
+                LineWidget:new{
+                    dimen = Geom:new{ w = self.list_width - 2 * Size.padding.large, h = 1 },
+                    background = Blitbuffer.COLOR_GRAY,
+                },
+            })
+        end
     end
     return content
 end
@@ -283,8 +451,10 @@ end
 function LibraryView:pageBar()
     if not self.paged or (self.page_count or 1) <= 1 then return nil end
     local cell_w = math.floor(self.screen_w / 3)
+    local button_height = Screen:scaleBySize(54)
     local previous = Button:new{
-        text = _("Previous"), width = cell_w, radius = 0, margin = 0,
+        text = _("Previous"), width = cell_w, height = button_height,
+        text_font_size = 22, text_font_bold = true, radius = 0, margin = 0,
         bordersize = 0, enabled = self.page > 1, show_parent = self,
         callback = function()
             if self.page > 1 and self.on_page_changed then
@@ -293,12 +463,14 @@ function LibraryView:pageBar()
         end,
     }
     local page_text = Button:new{
-        text = T(_("Page %1 of %2"), tostring(self.page), tostring(self.page_count)),
-        width = cell_w, radius = 0, margin = 0, bordersize = 0,
+        text = T(_("%1/%2 pages"), tostring(self.page), tostring(self.page_count)),
+        width = cell_w, height = button_height, text_font_size = 18,
+        radius = 0, margin = 0, bordersize = 0,
         enabled = false, show_parent = self,
     }
     local next_page = Button:new{
         text = _("Next"), width = self.screen_w - 2 * cell_w,
+        height = button_height, text_font_size = 22, text_font_bold = true,
         radius = 0, margin = 0, bordersize = 0,
         enabled = self.page < self.page_count, show_parent = self,
         callback = function()
@@ -350,8 +522,8 @@ function LibraryView:init()
         self._action_secondary,
         self._action_primary,
     }
-    for _i, item_row in ipairs(self._item_rows) do
-        rows[#rows + 1] = { item_row }
+    for _i, item_row in ipairs(self._focus_item_rows) do
+        rows[#rows + 1] = item_row
     end
     local outside_scroll = {}
     for _i, button in ipairs(self._tab_buttons) do outside_scroll[button] = true end
@@ -418,6 +590,12 @@ function M.show(data, callbacks)
         paged = data.paged == true,
         page = data.page,
         page_size = data.page_size,
+        cover_mode = data.cover_mode == true,
+        cover_columns = data.cover_columns,
+        cover_rows = data.cover_rows,
+        cover_cell_height = data.cover_cell_height,
+        cover_paths = data.cover_paths,
+        cover_loading = data.cover_loading,
         on_switch = callbacks.on_switch,
         on_search = callbacks.on_search,
         on_refresh = callbacks.on_refresh,

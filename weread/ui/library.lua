@@ -4,6 +4,7 @@ local BookReviewsView = require("weread.ui.book_reviews_view")
 local ButtonDialog = require("ui/widget/buttondialog")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Content = require("weread.lib.content")
+local CoverLayout = require("weread.lib.cover_layout")
 local InputDialog = require("ui/widget/inputdialog")
 local logger = require("weread.lib.logger")
 local ProgressbarDialog = require("ui/widget/progressbardialog")
@@ -20,6 +21,18 @@ local file_exists = PluginUtil.file_exists
 
 local M = {}
 local sortBooks
+
+local function cover_subprocess_runner()
+    local ok, ffiutil = pcall(require, "ffi/util")
+    if not ok or type(ffiutil.runInSubProcess) ~= "function" then return nil end
+    return {
+        run = function(callback) return ffiutil.runInSubProcess(callback, true) end,
+        write_all = function(fd, data) return ffiutil.writeToFD(fd, data, true) end,
+        is_done = function(pid) return ffiutil.isSubProcessDone(pid) end,
+        terminate = function(pid) return ffiutil.terminateSubProcess(pid) end,
+        read_all = function(fd) return ffiutil.readAllFromFD(fd) end,
+    }
+end
 
 local local_cache_fields = {
     cache_dir = true,
@@ -154,6 +167,145 @@ local function shelf_search_match(book, keyword)
     return false
 end
 
+local function shelf_page_items(items, page, page_size)
+    items = type(items) == "table" and items or {}
+    page_size = math.max(1, math.floor(tonumber(page_size) or 1))
+    local page_count = math.max(1, math.ceil(#items / page_size))
+    page = math.max(1, math.min(math.floor(tonumber(page) or 1), page_count))
+    local first = (page - 1) * page_size + 1
+    local last = math.min(#items, first + page_size - 1)
+    local result = {}
+    for index = first, last do result[#result + 1] = items[index] end
+    return result, page
+end
+
+function M:getShelfCoverCache()
+    if not self.shelf_cover_cache then
+        local CoverCache = require("weread.lib.cover_cache")
+        self.shelf_cover_cache = CoverCache:new(self.settings)
+    end
+    return self.shelf_cover_cache
+end
+
+function M:fetchVisibleShelfCovers(view, books, options)
+    if not view or not books or #books == 0 then return end
+    options = options or {}
+    local cache = self:getShelfCoverCache()
+    local visible = shelf_page_items(books, view.page, view.page_size or 6)
+    local missing = {}
+    local online = self:isNetworkOnline()
+    for _, book in ipairs(visible) do
+        if type(book.cover) == "string" and book.cover:match("^https://")
+            and not cache:pathFor(book) then
+            -- Legacy full-resolution cache entries can be converted while
+            -- offline. A network request is only needed when no source exists.
+            if online or cache:sourcePathFor(book) then
+                missing[#missing + 1] = book
+            end
+        end
+    end
+    if #missing == 0 then return end
+
+    if self.shelf_cover_job then
+        -- Keep only the newest visible page while the current child exits.
+        self.shelf_cover_pending = { view = view, books = books, options = options }
+        return
+    end
+
+    local runner = self.shelf_cover_subprocess
+    if runner == nil then
+        runner = cover_subprocess_runner() or false
+        self.shelf_cover_subprocess = runner
+    end
+    if not runner then
+        logger.warn("bookshelf cover background worker is unavailable")
+        return
+    end
+
+    local generation = self.shelf_cover_generation
+    local index, changed = 1, false
+    local function finish_batch()
+        self.shelf_cover_job = nil
+        if changed and generation == self.shelf_cover_generation and self.shelf_view == view then
+            local pruned = pcall(cache.prune, cache)
+            if not pruned then logger.warn("bookshelf cover cache pruning failed") end
+            local next_options = {}
+            for key, value in pairs(options) do next_options[key] = value end
+            next_options.prepared_shelf = {
+                books = books,
+                accounts = options.prepared_accounts or self.shelf_mp or {},
+            }
+            next_options.page = view.page
+            next_options.skip_cover_fetch_once = true
+            self:showShelfView("books", self.shelf_search_keyword, view, next_options)
+        end
+        local pending = self.shelf_cover_pending
+        self.shelf_cover_pending = nil
+        if pending then
+            self:fetchVisibleShelfCovers(pending.view, pending.books, pending.options)
+        end
+    end
+
+    local function fetch_next()
+        if generation ~= self.shelf_cover_generation or self.shelf_view ~= view then
+            finish_batch()
+            return
+        end
+        local book = missing[index]
+        if not book then
+            finish_batch()
+            return
+        end
+
+        local pid, read_fd = runner.run(function(_pid, child_write_fd)
+            local ok, path = pcall(cache.thumbnailFromCached, cache, book)
+            if not (ok and path) and online then
+                local downloaded, data = pcall(function()
+                    return self.client:get_binary(book.cover, {
+                        skip_cookie = true,
+                        persist_response_cookies = false,
+                        timeout = { 8, 12 },
+                    })
+                end)
+                if downloaded then ok, path = pcall(cache.store, cache, book, data) end
+            end
+            runner.write_all(child_write_fd, ok and path and "ok" or "error")
+        end)
+        if not pid then
+            logger.warn("bookshelf cover background worker failed to start")
+            index = index + 1
+            UIManager:scheduleIn(0.1, fetch_next)
+            return
+        end
+
+        local job = { pid = pid, read_fd = read_fd, started_at = os.time() }
+        self.shelf_cover_job = job
+        local poll
+        poll = function()
+            if self.shelf_cover_job ~= job then return end
+            if not runner.is_done(job.pid) then
+                if os.time() - job.started_at > 30 then
+                    runner.terminate(job.pid)
+                end
+                UIManager:scheduleIn(0.15, poll)
+                return
+            end
+            local result = job.read_fd and runner.read_all(job.read_fd) or nil
+            job.read_fd = nil
+            self.shelf_cover_job = nil
+            if result == "ok" and cache:pathFor(book) then
+                changed = true
+            else
+                logger.warn("bookshelf cover background task failed")
+            end
+            index = index + 1
+            fetch_next()
+        end
+        UIManager:scheduleIn(0.15, poll)
+    end
+    fetch_next()
+end
+
 
 function M:showShelfView(mode, keyword, old_view, options)
     local LibraryView = require("weread.ui.library_view")
@@ -161,6 +313,9 @@ function M:showShelfView(mode, keyword, old_view, options)
     mode = mode or "books"
     options.mode = mode
     options.keyword = keyword
+    local skip_cover_fetch_once = options.skip_cover_fetch_once == true
+    options.skip_cover_fetch_once = nil
+    self.shelf_cover_generation = (self.shelf_cover_generation or 0) + 1
     self.shelf_view_mode = mode
     self.shelf_search_keyword = keyword
     self.shelf_view_pages = self.shelf_view_pages or { books = 1, public_account = 1 }
@@ -184,9 +339,39 @@ function M:showShelfView(mode, keyword, old_view, options)
     local prepared = options.prepared_shelf
     local books = prepared and prepared.books or filtered(self.shelf_regular, true)
     local accounts = prepared and prepared.accounts or filtered(self.shelf_mp, false)
-    local paged = self.settings:get("shelf").paginated ~= false
+    local shelf_settings = self.settings:get("shelf")
+    local cover_mode = mode == "books" and shelf_settings.view_mode == "cover"
+    local paged = cover_mode or shelf_settings.paginated ~= false
     local page = paged and (options.page or self.shelf_view_pages[mode] or 1) or 1
-    local page_size = math.max(4, list_items_per_page() - 4)
+    local cover_layout
+    if cover_mode then
+        local Screen = require("device").screen
+        local scaled_size = tonumber(Screen:scaleBySize(1000))
+        local size_scale = scaled_size and scaled_size > 0 and scaled_size / 1000 or 1
+        cover_layout = CoverLayout.calculate{
+            width = Screen:getWidth(),
+            height = Screen:getHeight(),
+            size_scale = size_scale,
+        }
+    end
+    local page_size = cover_layout and cover_layout.page_size
+        or math.max(4, list_items_per_page() - 4)
+    local cover_paths, cover_loading
+    if cover_mode then
+        cover_paths = {}
+        cover_loading = {}
+        local cache = self:getShelfCoverCache()
+        local online = self:isNetworkOnline()
+        local visible, clamped_page = shelf_page_items(books, page, page_size)
+        page = clamped_page
+        for _, book in ipairs(visible) do
+            local path = cache:pathFor(book)
+            cover_paths[book] = path
+            if not path and type(book.cover) == "string" and book.cover:match("^https://") then
+                cover_loading[book] = online or cache:sourcePathFor(book) ~= nil
+            end
+        end
+    end
     if old_view then UIManager:close(old_view) end
     local view
     view = LibraryView.show({
@@ -201,6 +386,12 @@ function M:showShelfView(mode, keyword, old_view, options)
         paged = paged,
         page = page,
         page_size = page_size,
+        cover_mode = cover_mode,
+        cover_columns = cover_layout and cover_layout.columns,
+        cover_rows = cover_layout and cover_layout.rows,
+        cover_cell_height = cover_layout and cover_layout.cell_height,
+        cover_paths = cover_paths,
+        cover_loading = cover_loading,
     }, {
         on_switch = function(new_mode)
             local next_options = {}
@@ -256,6 +447,12 @@ function M:showShelfView(mode, keyword, old_view, options)
     })
     if paged then self.shelf_view_pages[mode] = view.page end
     self.shelf_view = view
+    if cover_mode and not skip_cover_fetch_once then
+        local fetch_options = {}
+        for key, value in pairs(options) do fetch_options[key] = value end
+        fetch_options.prepared_accounts = accounts
+        self:fetchVisibleShelfCovers(view, books, fetch_options)
+    end
 end
 
 function M:showShelfSearchDialog(view, mode, keyword, options)

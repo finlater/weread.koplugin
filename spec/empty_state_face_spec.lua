@@ -112,11 +112,13 @@ end
 for _, name in ipairs({
     "ui/gesturerange",
     "ui/widget/button",
+    "ui/widget/container/centercontainer",
     "ui/widget/container/framecontainer",
     "ui/widget/container/inputcontainer",
     "ui/widget/container/scrollablecontainer",
     "ui/widget/horizontalgroup",
     "ui/widget/horizontalspan",
+    "ui/widget/imagewidget",
     "ui/widget/linewidget",
     "ui/widget/titlebar",
     "ui/widget/verticalgroup",
@@ -172,6 +174,11 @@ expect(#paged_view._item_rows == 10,
     "paged bookshelf created rows outside the current page")
 expect(#paged_view._page_buttons == 3,
     "paged bookshelf did not create navigation controls")
+expect(paged_view._page_buttons[2].text == "2/3 pages",
+    "bookshelf page indicator did not use compact current/total text")
+expect((paged_view._page_buttons[1].height or 0) >= 54
+        and (paged_view._page_buttons[3].height or 0) >= 54,
+    "bookshelf page buttons lost their enlarged tap targets")
 changed_page = nil
 paged_view._page_buttons[1].callback()
 expect(changed_page == 1, "previous-page button returned the wrong page")
@@ -239,6 +246,31 @@ local large_view = LibraryView.show({
 expect(large_view.page_count == 100 and #large_view._item_rows == 10,
     "large bookshelf created more than one page of row widgets")
 
+local cover_paths = { [books[1]] = "/covers/one.jpg" }
+local cover_view = LibraryView.show({
+    mode = "books", books = books, accounts = {},
+    paged = true, page = 1, page_size = 6,
+    cover_mode = true, cover_columns = 3, cover_paths = cover_paths,
+}, {})
+expect(cover_view.page_count == 5 and #cover_view._item_rows == 6,
+    "cover bookshelf created more than the current six-item page")
+expect(#cover_view._focus_item_rows == 2
+        and #cover_view._focus_item_rows[1] == 3
+        and #cover_view._focus_item_rows[2] == 3,
+    "cover bookshelf did not build a three-by-two focus grid")
+expect(cover_view._item_rows[1]._has_cover == true
+        and cover_view._item_rows[2]._has_cover == false,
+    "cover bookshelf did not distinguish cached covers from placeholders")
+
+local invalid_page_size_view = LibraryView.show({
+    mode = "books", books = books, accounts = {},
+    paged = true, page = 2, page_size = 0,
+}, {})
+expect(invalid_page_size_view.page_size == 1
+        and invalid_page_size_view.page_count == #books
+        and #invalid_page_size_view._item_rows == 1,
+    "invalid page size was not clamped to a safe positive value")
+
 local BookReviewsView = require("weread.ui.book_reviews_view")
 ok, error_message = pcall(function()
     BookReviewsView.show({
@@ -248,6 +280,6 @@ ok, error_message = pcall(function()
     }, {})
 end)
 expect(ok, "empty review list failed to build: " .. tostring(error_message))
-expect(#shown == 9, "all bookshelf and empty-state views should be shown")
+expect(#shown == 11, "all bookshelf and empty-state views should be shown")
 
 print(("empty_state_face_spec: %d checks"):format(checks))
