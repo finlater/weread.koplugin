@@ -126,6 +126,20 @@ expect(settings:has_legacy_book_records(),
     "legacy book record check was not delegated")
 expect(minimal_index_checked, "book index was not passed to BookStore")
 
+values.books.flat = {
+    cache_dir = "/meta/flat",
+    cached_file = "/books/flat-book.epub",
+    cached_chapters = {
+        ["chapter-1"] = "/books/flat-chapter-1.epub",
+    },
+}
+expect(settings:find_book_id_by_path("/books/flat-book.epub") == "flat",
+    "raw book indexes find a flat full-book EPUB")
+expect(settings:find_book_id_by_path("/books/flat-chapter-1.epub") == "flat",
+    "raw book indexes find a flat chapter EPUB")
+expect(settings:find_book_id_by_path("/books/missing.epub") == nil,
+    "raw book indexes miss unrelated paths")
+
 settings:update_auth({
     cookies = { wr_gid = "12345" },
     api_key = "new-key",

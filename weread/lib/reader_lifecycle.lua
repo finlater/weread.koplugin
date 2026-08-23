@@ -106,11 +106,15 @@ end
 function M:onReaderReady()
     self._reader_session_gen = (self._reader_session_gen or 0) + 1
     self:_teardownThoughtInterception()
+    self._current_weread_file = nil
+    self._current_weread_book_id = nil
     self:_installReaderHighlightTapGuard()
 
+    local current_file = self.ui and self.ui.document and self.ui.document.file
     local weread_book_id = self:detectWeReadBook()
-    -- Cache it so the per-tap handler (_onThoughtTap) does not have to re-scan
-    -- the whole book table on every screen tap.
+    -- Cache it so lifecycle callbacks and the per-tap handler do not have to
+    -- rescan the whole book table for the same document.
+    self._current_weread_file = current_file
     self._current_weread_book_id = weread_book_id
     if weread_book_id then
         -- Always register the tap interception: even when annotations are hidden
@@ -160,6 +164,7 @@ function M:onCloseDocument()
     self.progress_sync:on_close_document()
     self._reader_session_gen = (self._reader_session_gen or 0) + 1
     self.downloader:cancelPrefetch("document_closed")
+    self._current_weread_file = nil
     self._current_weread_book_id = nil
     self:_teardownThoughtInterception()
     self:_teardownXPointerOverlayPrototype()
@@ -308,58 +313,62 @@ function M:detectWeReadBook()
     if not file then
         return nil
     end
-    local books = self.settings:get("books", {})
 
-    -- 1) Exact content-file index match (flat library title.epub etc.)
-    for book_id, book in pairs(books) do
-        if type(book) == "table" then
-            if file == book.cached_file then
-                return book_id
-            end
-            if type(book.cached_chapters) == "table" then
-                for _uid, chapter_path in pairs(book.cached_chapters) do
-                    if chapter_path == file then
-                        return book_id
-                    end
-                end
-            end
+    if self._current_weread_file == file then
+        return self._current_weread_book_id
+    end
+
+    local function remember(book_id)
+        self._current_weread_file = file
+        self._current_weread_book_id = book_id
+        return book_id
+    end
+
+    -- Flat EPUBs can be resolved from the compact raw index without hydrating
+    -- every BookStore record during the reader lifecycle.
+    if self.settings.find_book_id_by_path then
+        local indexed = self.settings:find_book_id_by_path(file)
+        if indexed then
+            return remember(indexed)
         end
     end
 
-    -- 2) Legacy/nested content still living under a bookId sidecar/content dir.
+    local books = self.settings:get("books", {})
+
+    -- Legacy/nested content still living under a bookId sidecar/content dir.
     for book_id, book in pairs(books) do
         if type(book) == "table" then
             local dir = Content.book_resolved_dir(
                 self.settings, book_id, book):gsub("/+$", "") .. "/"
             if file:sub(1, #dir) == dir then
-                return book_id
+                return remember(book_id)
             end
         end
     end
 
-    -- 3) Legacy path layout only: <download>/<book_id>/file.epub
+    -- Legacy path layout only: <download>/<book_id>/file.epub
     local prefix = self.settings.cache_dir:gsub("/+$", "") .. "/"
     if file:sub(1, #prefix) == prefix then
         local rest = file:sub(#prefix + 1)
         local nested_id = rest:match("^([^/]+)/")
         if nested_id and books[nested_id] then
-            return nested_id
+            return remember(nested_id)
         end
         if nested_id then
-            return nested_id
+            return remember(nested_id)
         end
     end
 
-    -- 4) Opened a file under metadata tree (rare; MP html etc.)
+    -- Opened a file under metadata tree (rare; MP html etc.).
     local meta_root = self.settings.meta_dir
     if type(meta_root) == "string" and meta_root ~= "" then
         local meta_prefix = meta_root:gsub("/+$", "") .. "/"
         if file:sub(1, #meta_prefix) == meta_prefix then
             local rest = file:sub(#meta_prefix + 1)
-            return rest:match("^([^/]+)")
+            return remember(rest:match("^([^/]+)"))
         end
     end
-    return nil
+    return remember(nil)
 end
 
 function M:ensureChaptersLoaded(book)

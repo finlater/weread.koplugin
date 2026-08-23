@@ -200,6 +200,29 @@ function Settings:new()
     return setmetatable(obj, self)
 end
 
+function Settings:find_book_id_by_path(file_path)
+    if type(file_path) ~= "string" or file_path == "" then
+        return nil
+    end
+
+    -- Read only the compact raw index. Do not hydrate every BookStore record
+    -- while KOReader is still opening the current document.
+    local indexes = self.store:readSetting("books", {})
+    for book_id, index in pairs(indexes or {}) do
+        if type(index) == "table" then
+            if index.cached_file == file_path then
+                return tostring(book_id)
+            end
+            for _uid, chapter_path in pairs(index.cached_chapters or {}) do
+                if chapter_path == file_path then
+                    return tostring(book_id)
+                end
+            end
+        end
+    end
+    return nil
+end
+
 function Settings:get(key, default)
     if default == nil then
         default = defaults[key]
