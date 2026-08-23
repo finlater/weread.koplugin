@@ -66,7 +66,7 @@
 
 - `review_items`：每条想法一行，主键 `(chapter_uid, range, item_index)`。
 - `fetched_ranges`：已经向服务端查询过的 range。空结果也会写入，作为负缓存。
-- `underline_ranges`：下载时写入的本章全部可点击划线 range（不表示已经查过想法）。打开书后的静默预取优先读这张表，不必再扫 EPUB 或翻页找锚点。旧书没有这张表时仍回退到 EPUB / 页扫描。
+- `underline_ranges`：下载时写入的本章全部可点击划线 range（不表示已经查过想法）。打开书后的静默预取只读这张表。没有这张表（旧缓存）则不预取。
 - 按需单 range 写入用 `ThoughtDB.putReviewRanges`，不会清掉同章其它 range。
 - 随书整章写入用 `ThoughtDB.putReviews`，并标记本批成功查询过的全部 range。
 
@@ -94,9 +94,9 @@
 6. 成功或确认空结果后，以这条划线为**向前光标**静默预取：
    - 只下本章里起点更靠后、且尚未写入 `fetched_ranges` 的 range。
    - 光标前面的不下；中途再点更后面的想法，光标前移，中间已下的跳过，还没下的丢掉。
-   - range 优先从 `underline_ranges` 读（下载时已写入）；没有则扫当前 EPUB 的本章锚点，再不行才按页扫 `getPageLinks`。不打 `/book/underlines`。已经发出的预取请求挡不住；下一枪等弹窗关上。
+   - range 只从 `underline_ranges` 读（下载时已写入），不扫 EPUB、不按页扫链接，也不打 `/book/underlines`。已经发出的预取请求挡不住；下一枪等弹窗关上。
    - 每批最多 5 条。
-   - 本章尾巴下完、且仍在往前读（没跳到别的章、没明显往回翻）时，**只再接一章**：优先读下一章的 `underline_ranges`；没有则扫已缓存的下一章 EPUB 或全书 EPUB。没有本地划线就停。再下一章要等用户读进去或再点划线。
+   - 本章尾巴下完、且仍在往前读（没跳到别的章、没明显往回翻）时，**只再接一章**：读下一章的 `underline_ranges`。没有这张目录就停。再下一章要等用户读进去或再点划线。
 
 ### 原生弹框 `_showThoughtPopup` → `ThoughtPopup.show`
 

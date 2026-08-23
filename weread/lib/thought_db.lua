@@ -7,7 +7,7 @@ Each pageReview is stored as one row. Tapping an underline performs a single
 indexed lookup by (chapter_uid, range), without decoding JSON or rendering HTML.
 
 underline_ranges lists every clickable underline for a chapter, written at
-download time so thought prefetch can skip EPUB and page-link scans.
+download time. Thought prefetch reads this catalog only.
 fetched_ranges only records ranges that were actually queried.
 --]]--
 

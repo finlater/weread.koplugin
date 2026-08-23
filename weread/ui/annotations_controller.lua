@@ -13,7 +13,6 @@ local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
 local log_error = PluginUtil.log_error
 local thought_perf = PluginUtil.thought_perf
-local file_exists = PluginUtil.file_exists
 
 local M = {}
 
@@ -771,9 +770,6 @@ function M:_removePrefetchRange(book_id, chapter_uid, range)
     end
 end
 
-local SCAN_PAGES_PER_SLICE = 25
-local SCAN_MAX_PAGES = 400
-
 local function rangeStart(range)
     return tonumber((tostring(range or ""):match("^(%d+)%-")))
 end
@@ -796,16 +792,6 @@ local function currentDocumentPage(plugin)
         end
     end)
     return page
-end
-
-local function documentPageCount(plugin)
-    local count
-    pcall(function()
-        if plugin.ui and plugin.ui.document and plugin.ui.document.getPageCount then
-            count = plugin.ui.document:getPageCount()
-        end
-    end)
-    return count
 end
 
 -- Collect thought ranges whose anchors are on the current document page.
@@ -855,74 +841,16 @@ local function collectCurrentPageThoughtRanges(plugin, book_id, chapter_uid)
     return ordered
 end
 
-local function collectThoughtRangesFromEpub(plugin, epub_path, book_id, chapter_uid)
-    local ordered = {}
-    if type(epub_path) ~= "string" or epub_path == "" or not file_exists(epub_path) then
-        return ordered
-    end
-
-    local ok_archiver, Archiver = pcall(require, "ffi/archiver")
-    if not ok_archiver or not Archiver or not Archiver.Reader then
-        return ordered
-    end
-
-    local archive = Archiver.Reader:new()
-    local seen = {}
-    local book_str = tostring(book_id)
-    local chapter_str = tostring(chapter_uid)
-    local ok, err = pcall(function()
-        if not archive:open(epub_path) then
-            error(archive.err or "open epub failed")
-        end
-        for entry in archive:iterate() do
-            local path = entry.path or ""
-            if (entry.mode == "file" or entry.mode == nil)
-                and path:find("%.[Xx]?[Hh][Tt][Mm][Ll]?$") then
-                local data = archive:extractToMemory(entry.path)
-                if type(data) == "string" then
-                    for href in data:gmatch("#?wrthought%-[%w%._%-]+") do
-                        local info = plugin:_parseThoughtHref(href)
-                        if info
-                            and tostring(info.book_id) == book_str
-                            and tostring(info.chapter_uid) == chapter_str
-                            and not seen[info.range]
-                        then
-                            seen[info.range] = true
-                            ordered[#ordered + 1] = info.range
-                        end
-                    end
-                end
-            end
-        end
-    end)
-    pcall(function() archive:close() end)
-    if not ok then
-        logger.warn("thought prefetch epub scan failed:",
-            epub_path, log_error(err or "unknown"))
-        return {}
-    end
-    sortRangesByStart(ordered)
-    return ordered
-end
-
--- Prefer the download-time underline catalog; fall back to EPUB, then pages.
 local function collectPrefetchThoughtRanges(plugin, job)
     local db = plugin:_ensureThoughtDB(job.book_id)
-    if db then
-        local ranges = ThoughtDB.getUnderlineRanges(db, job.chapter_uid)
-        if type(ranges) == "table" and #ranges > 0 then
-            return ranges, "db"
-        end
+    if not db then
+        return {}
     end
-    if job.source ~= "document" then
-        local epub_path = job.epub_path
-        if type(epub_path) == "string" and epub_path ~= "" then
-            return collectThoughtRangesFromEpub(
-                plugin, epub_path, job.book_id, job.chapter_uid
-            ), "epub"
-        end
+    local ranges = ThoughtDB.getUnderlineRanges(db, job.chapter_uid)
+    if type(ranges) ~= "table" then
+        return {}
     end
-    return nil, "document"
+    return ranges
 end
 
 function M:_noteThoughtReadPage()
@@ -983,18 +911,10 @@ function M:_nextChapterForThoughtPrefetch(book_id, chapter_uid)
     end
 
     local next_uid = next_chapter.chapterUid or next_chapter.chapterId
-    local cached = book.cached_chapters and (
-        book.cached_chapters[tostring(next_uid)] or book.cached_chapters[next_uid]
-    )
-    local file = self.ui and self.ui.document and self.ui.document.file
-    local full_book = type(self.getFullBookCachePath) == "function"
-        and self:getFullBookCachePath(book) or nil
-    return {
-        chapter_uid = next_uid,
-        epub_path = (type(cached) == "string" and cached ~= "" and file_exists(cached))
-            and cached or nil,
-        in_open_document = full_book and file == full_book,
-    }
+    if next_uid == nil then
+        return nil
+    end
+    return { chapter_uid = next_uid }
 end
 
 function M:_shouldChainNextChapter(job)
@@ -1046,32 +966,6 @@ function M:_shouldChainNextChapter(job)
     return true
 end
 
-function M:_thoughtPrefetchEpubPath(book_id, chapter_uid)
-    local file = self.ui and self.ui.document and self.ui.document.file
-    if type(file) == "string" and file_exists(file) then
-        return file
-    end
-    local books = self.settings:get("books", {})
-    local book = books[tostring(book_id)] or books[book_id]
-    if type(book) ~= "table" then
-        return nil
-    end
-    local cached = book.cached_chapters and (
-        book.cached_chapters[tostring(chapter_uid)]
-        or book.cached_chapters[chapter_uid]
-    )
-    if type(cached) == "string" and file_exists(cached) then
-        return cached
-    end
-    if type(self.getFullBookCachePath) == "function" then
-        local full = self:getFullBookCachePath(book)
-        if type(full) == "string" and file_exists(full) then
-            return full
-        end
-    end
-    return nil
-end
-
 function M:_deferChapterThoughtPrefetch(book_id, chapter_uid, skip_range)
     local session_gen = self._reader_session_gen or 0
     UIManager:scheduleIn(0.3, function()
@@ -1119,12 +1013,6 @@ function M:_scheduleChapterThoughtPrefetch(book_id, chapter_uid, skip_range, opt
         existing.cancelled = true
     end
 
-    local epub_path = opts.epub_path or self:_thoughtPrefetchEpubPath(book_id, chapter_uid)
-    local source = opts.source
-    if not source then
-        source = epub_path and "epub" or "document"
-    end
-
     local page = self:_noteThoughtReadPage()
     local job = {
         cancelled = false,
@@ -1134,8 +1022,7 @@ function M:_scheduleChapterThoughtPrefetch(book_id, chapter_uid, skip_range, opt
         skip_range = skip_range,
         after_start = after_start,
         allow_chain = opts.allow_chain ~= false,
-        source = source,
-        epub_path = epub_path,
+        source = "db",
         start_page = page,
         max_page_seen = page,
         session_gen = self._reader_session_gen or 0,
@@ -1198,62 +1085,9 @@ function M:_startThoughtPrefetchBatches(job)
         "after=", tostring(cursor),
         "ranges=", #ranges,
         "batches=", #job.batches,
-        "source=", tostring(job.source or "document")
+        "source=", tostring(job.source or "db")
     )
     self:_stepChapterThoughtPrefetch(job)
-end
-
-function M:_scanDocumentThoughtRanges(job)
-    local document = self.ui and self.ui.document
-    if not document or type(document.getPageLinks) ~= "function" then
-        job.scan_page = (job.scan_end or 0) + 1
-        return
-    end
-
-    local book_str = tostring(job.book_id)
-    local chapter_str = tostring(job.chapter_uid)
-    local cursor = job.after_start or -1
-    local scanned = 0
-    while job.scan_page <= job.scan_end and scanned < SCAN_PAGES_PER_SLICE do
-        local page = job.scan_page
-        job.scan_page = job.scan_page + 1
-        scanned = scanned + 1
-        if page > (job.max_page_seen or 0) then
-            job.max_page_seen = page
-        end
-
-        local links
-        pcall(function()
-            links = document:getPageLinks(page)
-        end)
-        local found_this = false
-        local found_other = false
-        if type(links) == "table" then
-            for _, link in ipairs(links) do
-                local info = self:_parseThoughtHref(self:_linkHref(link))
-                if info and tostring(info.book_id) == book_str then
-                    if tostring(info.chapter_uid) == chapter_str then
-                        found_this = true
-                        local start = rangeStart(info.range)
-                        if start and start > cursor and not job.collected_seen[info.range] then
-                            job.collected_seen[info.range] = true
-                            job.collected[#job.collected + 1] = info.range
-                        end
-                    else
-                        found_other = true
-                    end
-                end
-            end
-        end
-
-        if found_this then
-            job.seen_this_chapter = true
-        elseif found_other and job.seen_this_chapter then
-            -- Later pages belong to another chapter in a full-book EPUB.
-            job.scan_page = job.scan_end + 1
-            return
-        end
-    end
 end
 
 function M:_runChapterThoughtPrefetch(job)
@@ -1284,40 +1118,10 @@ function M:_runChapterThoughtPrefetch(job)
     end
 
     if not job.scanned then
-        local ranges, source = collectPrefetchThoughtRanges(self, job)
-        job.source = source
-        if source ~= "document" then
-            job.collected = ranges or {}
-            job.scanned = true
-            self:_startThoughtPrefetchBatches(job)
-            return
-        end
+        job.collected = collectPrefetchThoughtRanges(self, job)
+        job.source = "db"
         job.scanned = true
     end
-
-    if not job.scan_started then
-        local start_page = currentDocumentPage(self) or 1
-        local page_count = documentPageCount(self) or start_page
-        job.scan_started = true
-        job.scan_page = start_page
-        job.scan_end = math.min(page_count, start_page + SCAN_MAX_PAGES - 1)
-        job.collected = {}
-        job.collected_seen = {}
-        job.seen_this_chapter = false
-        job.miss_streak = 0
-    end
-
-    self:_scanDocumentThoughtRanges(job)
-    if job.cancelled or self._chapter_thought_prefetch ~= job then
-        return
-    end
-    if job.scan_page <= job.scan_end then
-        UIManager:scheduleIn(0.12, function()
-            self:_runChapterThoughtPrefetch(job)
-        end)
-        return
-    end
-
     self:_startThoughtPrefetchBatches(job)
 end
 
@@ -1342,33 +1146,21 @@ function M:_finishChapterThoughtPrefetch(job)
         return
     end
 
-    local opts = {
-        allow_chain = false,
-        after_start = -1,
-        immediate = true,
-    }
     local db = self:_ensureThoughtDB(job.book_id)
     local db_ranges = db and ThoughtDB.getUnderlineRanges(db, next_info.chapter_uid)
-    if type(db_ranges) == "table" and #db_ranges > 0 then
-        opts.source = "db"
-    else
-        local epub_path = next_info.epub_path
-        if next_info.in_open_document then
-            epub_path = (self.ui.document and self.ui.document.file) or epub_path
-        end
-        if epub_path then
-            opts.source = "epub"
-            opts.epub_path = epub_path
-        else
-            logger.info("thought prefetch skip next chapter: no local underlines",
-                tostring(next_info.chapter_uid))
-            return
-        end
+    if type(db_ranges) ~= "table" or #db_ranges == 0 then
+        logger.info("thought prefetch skip next chapter: no underline catalog",
+            tostring(next_info.chapter_uid))
+        return
     end
 
     logger.info("thought prefetch chain next chapter:", tostring(next_info.chapter_uid))
     self:_scheduleChapterThoughtPrefetch(
-        job.book_id, next_info.chapter_uid, nil, opts
+        job.book_id, next_info.chapter_uid, nil, {
+            allow_chain = false,
+            after_start = -1,
+            immediate = true,
+        }
     )
 end
 
