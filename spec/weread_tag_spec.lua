@@ -28,6 +28,29 @@ package.preload["readcollection"] = function()
     return { coll = {}, _read = function() end }
 end
 
+local archive_files = {}
+package.preload["ffi/archiver"] = function()
+    local Writer = {}
+    function Writer:new() return setmetatable({}, { __index = self }) end
+    function Writer:open(path)
+        local file = assert(io.open(path, "wb"))
+        file:write("partial")
+        file:close()
+        return true
+    end
+    function Writer:setZipCompression() return true end
+    function Writer:addFileFromMemory(name, data)
+        archive_files[name] = data
+        return true
+    end
+    function Writer:addPath() return true end
+    function Writer:close() end
+    return { Writer = Writer }
+end
+
+local real_os_execute = os.execute
+rawset(os, "execute", function() return 0 end)
+
 local Content = require("weread.lib.content")
 
 eq(Content.WEREAD_TAG, "weread", "tag constant")
@@ -122,6 +145,38 @@ do
     eq(tagged["/b.epub"], "weread", "backfill tags second book")
     eq(tagged["/gone.epub"], nil, "backfill skips missing files")
 end
+
+do
+    local settings = {
+        cache_dir = ".",
+        get = function(_self, _key, default) return default end,
+    }
+    archive_files = {}
+    local path = Content.save_book_epub(settings, {
+        book_id = "book",
+        title = "Tagged",
+        cache_dir = ".",
+    }, { { chapterUid = 1, title = "One" } }, { ["1"] = "<p>body</p>" }, "book")
+    local opf = archive_files["OEBPS/content.opf"] or ""
+    eq(opf:find("<dc:subject>weread</dc:subject>", 1, true) ~= nil, true,
+        "full-book OPF includes dc:subject")
+    eq(opf:find('name="keywords" content="weread"', 1, true) ~= nil, true,
+        "full-book OPF includes keywords meta")
+    if type(path) == "string" then pcall(os.remove, path) end
+
+    archive_files = {}
+    local chapter_path = Content.save_chapter_epub(settings, {
+        book_id = "book",
+        title = "Tagged",
+        cache_dir = ".",
+    }, { chapterUid = 1, title = "One" }, "<p>body</p>")
+    local chapter_opf = archive_files["OEBPS/content.opf"] or ""
+    eq(chapter_opf:find("<dc:subject>weread</dc:subject>", 1, true) == nil, true,
+        "chapter EPUB does not embed the weread subject")
+    if type(chapter_path) == "string" then pcall(os.remove, chapter_path) end
+end
+
+rawset(os, "execute", real_os_execute)
 
 print(string.format("weread_tag_spec: %d checks, %d failure(s)", checks, failures))
 os.exit(failures == 0 and 0 or 1)
