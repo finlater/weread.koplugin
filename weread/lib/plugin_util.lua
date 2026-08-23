@@ -54,7 +54,7 @@ function PluginUtil.perf(stage, started, ...)
     if not PluginUtil.perf_enabled then
         return
     end
-    local elapsed = tonumber(time.now() - started)
+    local elapsed = tonumber(time.now() - started) / 1000
     logger.info("[Perf]", "stage=", stage,
         "ms=", string.format("%.1f", elapsed), ...)
 end

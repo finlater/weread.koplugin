@@ -15,7 +15,7 @@ package.preload["weread.lib.logger"] = function()
     }
 end
 package.preload["ui/time"] = function()
-    return { now = function() return 2500 end }
+    return { now = function() return 2500000 end }
 end
 package.preload["ffi/util"] = function()
     return { template = function(text) return text end }
@@ -36,7 +36,7 @@ PluginUtil.perf("reader_ready.total", 1250, "book=", "855706")
 expect(messages[1] == nil, "performance log is disabled by default")
 
 PluginUtil.set_perf_enabled(true)
-PluginUtil.perf("reader_ready.total", 1250, "book=", "855706")
+PluginUtil.perf("reader_ready.total", 1250000, "book=", "855706")
 local message = messages[1]
 expect(message ~= nil, "enabled performance log is emitted")
 expect(message and message[1] == "[Perf]",
