@@ -29,6 +29,11 @@ package.preload["readcollection"] = function()
 end
 
 local archive_files = {}
+local function clear_archive()
+    for key in pairs(archive_files) do
+        archive_files[key] = nil
+    end
+end
 package.preload["ffi/archiver"] = function()
     local Writer = {}
     function Writer:new() return setmetatable({}, { __index = self }) end
@@ -151,7 +156,7 @@ do
         cache_dir = ".",
         get = function(_self, _key, default) return default end,
     }
-    archive_files = {}
+    clear_archive()
     local path = Content.save_book_epub(settings, {
         book_id = "book",
         title = "Tagged",
@@ -164,7 +169,7 @@ do
         "full-book OPF includes keywords meta")
     if type(path) == "string" then pcall(os.remove, path) end
 
-    archive_files = {}
+    clear_archive()
     local chapter_path = Content.save_chapter_epub(settings, {
         book_id = "book",
         title = "Tagged",
