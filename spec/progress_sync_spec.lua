@@ -612,6 +612,25 @@ test("offline manual catalog refresh reports offline instead of raw reason", fun
     eq(f.notifications[1].code, "offline", "offline message is explicit")
 end)
 
+test("progress persistence updates only the current book", function()
+    local f = fixture({})
+    local updates = {}
+    f.sync.settings = {
+        update_book = function(_self, book_id, patch)
+            updates[#updates + 1] = { book_id = book_id, patch = patch }
+            return true
+        end,
+        get = function()
+            error("full books store must not be loaded")
+        end,
+    }
+    eq(f.sync:_persist("book", { progress = 42 }), true,
+        "progress persistence succeeds through the single-book API")
+    eq(#updates, 1, "one single-book update is issued")
+    eq(updates[1].book_id, "book", "single-book update receives the book id")
+    eq(updates[1].patch.progress, 42, "single-book update receives the patch")
+end)
+
 print(string.format(
     "progress_sync_spec: %d checks, %d failure(s)", checks, failures))
 os.exit(failures == 0 and 0 or 1)

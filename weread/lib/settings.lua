@@ -223,6 +223,43 @@ function Settings:find_book_id_by_path(file_path)
     return nil
 end
 
+function Settings:update_book(book_id, patch)
+    book_id = tostring(book_id or "")
+    if book_id == "" or type(patch) ~= "table" then
+        return false
+    end
+
+    -- Hydrate and persist only the requested book. The old get/set("books")
+    -- path rewrites every book and is too expensive for reader lifecycle state.
+    local indexes = self.store:readSetting("books", {})
+    local numeric_id = tonumber(book_id)
+    local current_index = indexes[book_id]
+        or (numeric_id and indexes[numeric_id])
+        or {}
+    local book = BookStore.load(self, book_id, current_index)
+
+    for key, value in pairs(patch) do
+        if value == false then
+            book[key] = nil
+        else
+            book[key] = value
+        end
+    end
+
+    local ok, new_index = BookStore.save(self, book_id, book)
+    if not ok then
+        error("Could not save book data: " .. tostring(new_index))
+    end
+
+    indexes[book_id] = new_index
+    if numeric_id and numeric_id ~= book_id then
+        indexes[numeric_id] = nil
+    end
+    self.store:saveSetting("books", indexes)
+    self.store:flush()
+    return true
+end
+
 function Settings:get(key, default)
     if default == nil then
         default = defaults[key]

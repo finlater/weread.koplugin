@@ -726,6 +726,21 @@ function ReadReport:_context_snapshot(book)
 end
 
 function ReadReport:_persist_context(book_id, snapshot)
+    if type(self.settings.update_book) == "function" then
+        local patch = {}
+        for _i, field in ipairs(CONTEXT_FIELDS) do
+            local value = snapshot[field]
+            if value == nil then
+                patch[field] = false
+            else
+                patch[field] = value
+            end
+        end
+        self.settings:update_book(book_id, patch)
+        return
+    end
+
+    -- Compatibility fallback for older host/test settings objects.
     local books = self.settings:get("books", {})
     local book = book_record(books, book_id) or { book_id = book_id }
     local changed = false

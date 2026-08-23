@@ -271,6 +271,12 @@ end
 function ProgressSync:_persist(book_id, patch)
     book_id = tostring(book_id or "")
     if book_id == "" or type(patch) ~= "table" then return false end
+
+    if type(self.settings.update_book) == "function" then
+        return self.settings:update_book(book_id, patch)
+    end
+
+    -- Compatibility fallback for older host/test settings objects.
     local books = self.settings:get("books", {})
     local book = books[book_id] or { book_id = book_id }
     for key, value in pairs(patch) do

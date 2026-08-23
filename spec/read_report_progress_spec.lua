@@ -201,6 +201,30 @@ test("report context backfills SQLite from catalog.json", function()
     eq(written_catalog, disk_catalog, "catalog.json backfills SQLite")
 end)
 
+test("report context persistence updates only the current book", function()
+    local report = fixture()
+    local updates = {}
+    report.settings.update_book = function(_self, book_id, patch)
+        updates[#updates + 1] = { book_id = book_id, patch = patch }
+        return true
+    end
+    report.settings.get = function(_self, key)
+        if key == "books" then
+            error("full books store must not be loaded")
+        end
+        return {}
+    end
+    report:_persist_context("book", {
+        title = "Updated",
+        chapter_uid = 22,
+    })
+    eq(#updates, 1, "one single-book context update is issued")
+    eq(updates[1].book_id, "book", "context update receives the book id")
+    eq(updates[1].patch.title, "Updated", "context update preserves present fields")
+    eq(updates[1].patch.psvts, false,
+        "context update clears fields absent from the child snapshot")
+end)
+
 test("suspend detaches an in-flight report without blocking termination", function()
     local report = fixture()
     local terminated = 0

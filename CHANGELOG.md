@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [1.2.4]
+
+### 性能优化
+
+- 新增 `Settings:update_book()` 单书持久化接口，进度和阅读时长上下文更新不再重写整个书库。
+- 关闭书籍时只保存当前书的进度，减少 Kindle 闪存上的同步写入和等待。
+- 阅读时长上报的上下文回写改为单书更新，同时保留旧版 settings 对象的兼容 fallback。
+- 新增 Settings、ProgressSync、ReadReport 单书持久化回归测试。
+
 ## [1.2.3]
 
 ### 性能优化

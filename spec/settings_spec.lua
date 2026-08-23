@@ -140,6 +140,13 @@ expect(settings:find_book_id_by_path("/books/flat-chapter-1.epub") == "flat",
 expect(settings:find_book_id_by_path("/books/missing.epub") == nil,
     "raw book indexes miss unrelated paths")
 
+settings:update_book("42", { progress = 12, last_sync_error = false })
+expect(saved_books["42"].progress == 12
+    and saved_books["42"].last_sync_error == nil,
+    "single-book update applies the patch and deletes false fields")
+expect(values.books["42"].cache_dir == "/saved/42",
+    "single-book update stores only the returned index")
+
 settings:update_auth({
     cookies = { wr_gid = "12345" },
     api_key = "new-key",
