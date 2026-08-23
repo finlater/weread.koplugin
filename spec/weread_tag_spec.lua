@@ -1,7 +1,6 @@
--- Unit tests for weread/lib/local_collection.lua.
--- Covers keyword merge, sidecar/bookinfo tagging, collection add, and backfill.
+-- Unit tests for WeRead keyword tagging on Content.
 -- Run from the repo root with:
---   luajit spec/local_collection_tag_spec.lua
+--   luajit spec/weread_tag_spec.lua
 
 package.path = "./?.lua;" .. package.path
 
@@ -16,49 +15,38 @@ local function eq(got, want, label)
     end
 end
 
-local function is_true(got, label)
-    eq(got and true or false, true, label)
+package.preload["logger"] = function()
+    return { info = function() end, warn = function() end, err = function() end }
 end
-
+package.preload["weread.lib.crypto"] = function() return {} end
+package.preload["weread.lib.reader_state"] = function() return {} end
+package.preload["weread.lib.protocol"] = function()
+    return { reader_url = function() return "" end }
+end
+package.preload["weread.lib.thoughts"] = function() return {} end
 package.preload["readcollection"] = function()
-    return {
-        coll = {},
-        _read = function() end,
-        addCollection = function() end,
-        isFileInCollection = function() return false end,
-        addItem = function() end,
-        write = function() end,
-    }
+    return { coll = {}, _read = function() end }
 end
 
-local LocalCollection = require("weread.lib.local_collection")
+local Content = require("weread.lib.content")
 
-eq(LocalCollection.TAG, "weread", "tag constant")
-eq(LocalCollection.COLLECTION_NAME, "weread", "collection name")
-
-eq(LocalCollection.merge_keywords(nil), "weread", "empty becomes tag")
-eq(LocalCollection.merge_keywords(""), "weread", "blank becomes tag")
-eq(LocalCollection.merge_keywords("history"), "history\nweread",
+eq(Content.WEREAD_TAG, "weread", "tag constant")
+eq(Content.merge_weread_keywords(nil), "weread", "empty becomes tag")
+eq(Content.merge_weread_keywords(""), "weread", "blank becomes tag")
+eq(Content.merge_weread_keywords("history"), "history\nweread",
     "keeps existing keyword")
-eq(LocalCollection.merge_keywords("history, fiction"), "history\nfiction\nweread",
+eq(Content.merge_weread_keywords("history, fiction"), "history\nfiction\nweread",
     "splits comma-separated keywords")
-eq(LocalCollection.merge_keywords("history\nweread"), "history\nweread",
+eq(Content.merge_weread_keywords("history\nweread"), "history\nweread",
     "does not duplicate the weread tag")
-eq(LocalCollection.merge_keywords("weread, history"), "weread\nhistory",
+eq(Content.merge_weread_keywords("weread, history"), "weread\nhistory",
     "keeps weread when it is already first")
 
-local xml = LocalCollection.epub_keyword_xml()
-is_true(xml:find("<dc:subject>weread</dc:subject>", 1, true) ~= nil,
-    "EPUB xml includes dc:subject")
-is_true(xml:find('content="weread"', 1, true) ~= nil,
-    "EPUB xml includes keywords meta")
-
--- apply_tag writes merged custom keywords and updates CoverBrowser.
 do
     local stored = { ["/book.epub"] = "history" }
     local bookinfo = { ["/book.epub"] = "history" }
     local extracted = {}
-    LocalCollection.apply_tag("/book.epub", {
+    Content.apply_weread_tag("/book.epub", {
         read_keywords = function(path) return stored[path] end,
         write_keywords = function(path, keywords) stored[path] = keywords end,
         get_bookinfo_keywords = function(path) return bookinfo[path] end,
@@ -74,11 +62,10 @@ do
     eq(#extracted, 0, "existing bookinfo row is not re-extracted")
 end
 
--- Missing CoverBrowser row triggers extraction after sidecar write.
 do
     local stored = {}
     local extracted = {}
-    LocalCollection.apply_tag("/new.epub", {
+    Content.apply_weread_tag("/new.epub", {
         read_keywords = function() return nil end,
         write_keywords = function(path, keywords) stored[path] = keywords end,
         get_bookinfo_keywords = function() return nil end,
@@ -90,10 +77,9 @@ do
     eq(#extracted, 1, "missing bookinfo row is extracted")
 end
 
--- Missing files are skipped.
 do
     local writes = 0
-    local ok = LocalCollection.apply_tag("/missing.epub", {
+    local ok = Content.apply_weread_tag("/missing.epub", {
         file_exists = function() return false end,
         write_keywords = function() writes = writes + 1 end,
     })
@@ -101,36 +87,16 @@ do
     eq(writes, 0, "missing file is not tagged")
 end
 
--- add_full_book adds the collection item then tags.
 do
-    local coll_adds = {}
-    local tagged = {}
-    package.loaded["readcollection"] = {
-        coll = {},
-        _read = function() end,
-        addCollection = function(self, name)
-            self.coll[name] = self.coll[name] or {}
-        end,
-        isFileInCollection = function() return false end,
-        addItem = function(_self, path, name)
-            coll_adds[#coll_adds + 1] = { path = path, name = name }
-        end,
-        write = function() end,
-    }
-    LocalCollection.add_full_book("/full.epub", {
-        read_keywords = function() return nil end,
-        write_keywords = function(path, keywords) tagged[path] = keywords end,
-        get_bookinfo_keywords = function() return "weread" end,
-        set_bookinfo_keywords = function() end,
-        extract_bookinfo = function() end,
+    local writes = 0
+    Content.apply_weread_tag("/done.epub", {
         file_exists = function() return true end,
+        read_keywords = function() return "history\nweread" end,
+        write_keywords = function() writes = writes + 1 end,
     })
-    eq(#coll_adds, 1, "full book is added to the collection")
-    eq(coll_adds[1] and coll_adds[1].name, "weread", "collection name")
-    eq(tagged["/full.epub"], "weread", "full book is tagged")
+    eq(writes, 0, "already tagged books are not rewritten")
 end
 
--- backfill tags every existing collection file.
 do
     local tagged = {}
     package.loaded["readcollection"] = {
@@ -143,7 +109,7 @@ do
         },
         _read = function() end,
     }
-    local n = LocalCollection.backfill({
+    local n = Content.backfill_weread_tags({
         read_keywords = function() return nil end,
         write_keywords = function(path, keywords) tagged[path] = keywords end,
         get_bookinfo_keywords = function() return "weread" end,
@@ -157,6 +123,5 @@ do
     eq(tagged["/gone.epub"], nil, "backfill skips missing files")
 end
 
-print(string.format(
-    "local_collection_tag_spec: %d checks, %d failure(s)", checks, failures))
+print(string.format("weread_tag_spec: %d checks, %d failure(s)", checks, failures))
 os.exit(failures == 0 and 0 or 1)

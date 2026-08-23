@@ -580,8 +580,7 @@ end
 -- open via FileManager — showing the collection on top of ReaderUI leaves the
 -- document underneath, so navigating up/closing the shelf drops back into it.
 function M:showWereadCollection()
-    local LocalCollection = require("weread.lib.local_collection")
-    local COLLECTION_NAME = LocalCollection.COLLECTION_NAME
+    local COLLECTION_NAME = "weread"
     local FileManager = require("apps/filemanager/filemanager")
     local ReadCollection = require("readcollection")
 

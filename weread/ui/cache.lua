@@ -572,9 +572,7 @@ function M:scanLocalCache(root, allowed, dry_run)
     if not dry_run then
         self.settings:set("books", books)
         self.settings:flush()
-        pcall(function()
-            require("weread.lib.local_collection").backfill()
-        end)
+        pcall(Content.backfill_weread_tags)
     end
     return added, updated
 end
