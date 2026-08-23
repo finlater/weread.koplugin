@@ -63,6 +63,10 @@ end
 function WeReadPlugin:init()
     math.randomseed(os.time())
     self.settings = Settings:new()
+    if type(PluginUtil.set_perf_enabled) == "function" then
+        local advanced = self.settings:get("advanced", {})
+        PluginUtil.set_perf_enabled(advanced.developer_logs == true)
+    end
     self.external_annotations_db = ExternalAnnotationsDB:new(self.settings)
     self.library_db = LibraryDB:new(self.settings)
     self.client = Client:new(self.settings)

@@ -1,6 +1,12 @@
 local PositionMapper = require("weread.lib.position_mapper")
 
 local logger = require("weread.lib.logger").scoped("ProgressSync")
+local PluginUtil = require("weread.lib.plugin_util")
+local ok_time, time = pcall(require, "ui/time")
+if not ok_time then
+    time = { now = function() return 0 end }
+end
+local perf = PluginUtil.perf or function() end
 
 local ok_ffiutil, ffiutil = pcall(require, "ffi/util")
 if not ok_ffiutil then
@@ -273,7 +279,10 @@ function ProgressSync:_persist(book_id, patch)
     if book_id == "" or type(patch) ~= "table" then return false end
 
     if type(self.settings.update_book) == "function" then
-        return self.settings:update_book(book_id, patch)
+        local started = time.now()
+        local ok = self.settings:update_book(book_id, patch)
+        perf("progress.update_book", started, "book=", book_id)
+        return ok
     end
 
     -- Compatibility fallback for older host/test settings objects.
@@ -625,7 +634,9 @@ function ProgressSync:_upload_snapshot(position, reason, show_result, on_complet
                 end
                 local upload_outcome = job_outcome.upload
                 if type(self.apply_upload_outcome) == "function" then
+                    local apply_started = time.now()
                     self.apply_upload_outcome(book_id, upload_outcome)
+                    perf("upload.parent_apply", apply_started, "book=", book_id)
                 end
                 finish(true,
                     type(upload_outcome) == "table"

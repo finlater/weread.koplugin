@@ -2,6 +2,12 @@ local Content = require("weread.lib.content")
 local WeRead = require("weread.lib.protocol")
 
 local logger = require("weread.lib.logger").scoped("ReadReport")
+local PluginUtil = require("weread.lib.plugin_util")
+local ok_time, time = pcall(require, "ui/time")
+if not ok_time then
+    time = { now = function() return 0 end }
+end
+local perf = PluginUtil.perf or function() end
 
 local ok_ffiutil, ffiutil = pcall(require, "ffi/util")
 if not ok_ffiutil then
@@ -736,7 +742,9 @@ function ReadReport:_persist_context(book_id, snapshot)
                 patch[field] = value
             end
         end
+        local started = time.now()
         self.settings:update_book(book_id, patch)
+        perf("read_report.update_book", started, "book=", tostring(book_id))
         return
     end
 

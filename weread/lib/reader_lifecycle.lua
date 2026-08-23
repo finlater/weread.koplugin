@@ -9,6 +9,11 @@ local T = PluginUtil.T
 local display_error = PluginUtil.display_error
 local file_exists = PluginUtil.file_exists
 local log_error = PluginUtil.log_error
+local ok_time, time = pcall(require, "ui/time")
+if not ok_time then
+    time = { now = function() return 0 end }
+end
+local perf = PluginUtil.perf or function() end
 
 local M = {}
 
@@ -104,6 +109,7 @@ function M:handleEndOfBook(status_self)
 end
 
 function M:onReaderReady()
+    local total_started = time.now()
     self._reader_session_gen = (self._reader_session_gen or 0) + 1
     self:_teardownThoughtInterception()
     self._current_weread_file = nil
@@ -111,7 +117,9 @@ function M:onReaderReady()
     self:_installReaderHighlightTapGuard()
 
     local current_file = self.ui and self.ui.document and self.ui.document.file
+    local detect_started = time.now()
     local weread_book_id = self:detectWeReadBook()
+    perf("reader_ready.detect_book", detect_started)
     -- Cache it so lifecycle callbacks and the per-tap handler do not have to
     -- rescan the whole book table for the same document.
     self._current_weread_file = current_file
@@ -143,14 +151,19 @@ function M:onReaderReady()
     -- function call during paint.
     self:_setupXPointerOverlayPrototype()
 
+    local sync_started = time.now()
     self.progress_sync:on_reader_ready()
+    perf("reader_ready.progress_sync", sync_started)
     -- Auto mode silently skips non-WeRead documents; no toast (still logged by ReadReport).
     local prefetch_session_gen = self._reader_session_gen
     UIManager:scheduleIn(0.2, function()
         if prefetch_session_gen ~= self._reader_session_gen then return end
         self:maybePrefetchNextChapter(weread_book_id)
     end)
+    local report_started = time.now()
     self.read_report:on_reader_ready()
+    perf("reader_ready.read_report", report_started)
+    perf("reader_ready.total", total_started)
 end
 
 function M:onPageUpdate()
@@ -158,10 +171,13 @@ function M:onPageUpdate()
 end
 
 function M:onCloseDocument()
+    local total_started = time.now()
     -- Capture the immutable local position while the document is still alive.
     -- The network upload is scheduled; stopping ReadReport below also frees any
     -- in-flight report slot before that scheduled upload begins.
+    local sync_started = time.now()
     self.progress_sync:on_close_document()
+    perf("close.progress_sync", sync_started)
     self._reader_session_gen = (self._reader_session_gen or 0) + 1
     self.downloader:cancelPrefetch("document_closed")
     self._current_weread_file = nil
@@ -175,7 +191,10 @@ function M:onCloseDocument()
         self._orig_onEndOfBook = nil
     end
 
+    local report_started = time.now()
     self.read_report:on_close_document()
+    perf("close.read_report", report_started)
+    perf("close.total", total_started)
 end
 
 function M:showPrefetchNotice(text, timeout)

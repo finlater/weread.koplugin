@@ -15,6 +15,7 @@ local T = PluginUtil.T
 local log_error = PluginUtil.log_error
 local display_error = PluginUtil.display_error
 local thought_perf = PluginUtil.thought_perf
+local perf = PluginUtil.perf or function() end
 
 local M = {}
 
@@ -443,6 +444,7 @@ function M:_ensureThoughtDB(book_id)
     self._thought_db = ThoughtDB.open(book_dir)
     self._thought_db_dir = self._thought_db and book_dir or nil
     self._thought_db_book_id = self._thought_db and book_id or nil
+    perf("thought_db.open", db_open_started, "book=", tostring(book_id))
     thought_perf("sqlite_open", db_open_started,
         "ok=", tostring(self._thought_db ~= nil))
     return self._thought_db

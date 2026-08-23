@@ -3,6 +3,12 @@ local BookStore = require("weread.lib.book_store")
 local Cookie = require("weread.lib.cookie")
 local LuaSettings = require("luasettings")
 local lfs = require("libs/libkoreader-lfs")
+local ok_time, time = pcall(require, "ui/time")
+if not ok_time then
+    time = { now = function() return 0 end }
+end
+local PluginUtil = require("weread.lib.plugin_util")
+local perf = PluginUtil.perf or function() end
 
 local Settings = {}
 Settings.__index = Settings
@@ -201,7 +207,9 @@ function Settings:new()
 end
 
 function Settings:find_book_id_by_path(file_path)
+    local started = time.now()
     if type(file_path) ~= "string" or file_path == "" then
+        perf("path_index.invalid", started)
         return nil
     end
 
@@ -211,32 +219,42 @@ function Settings:find_book_id_by_path(file_path)
     for book_id, index in pairs(indexes or {}) do
         if type(index) == "table" then
             if index.cached_file == file_path then
+                perf("path_index.hit", started, "kind=full_book")
                 return tostring(book_id)
             end
             for _uid, chapter_path in pairs(index.cached_chapters or {}) do
                 if chapter_path == file_path then
+                    perf("path_index.hit", started, "kind=chapter")
                     return tostring(book_id)
                 end
             end
         end
     end
+    perf("path_index.miss", started)
     return nil
 end
 
 function Settings:update_book(book_id, patch)
+    local total_started = time.now()
     book_id = tostring(book_id or "")
     if book_id == "" or type(patch) ~= "table" then
+        perf("update_book.invalid", total_started)
         return false
     end
 
     -- Hydrate and persist only the requested book. The old get/set("books")
     -- path rewrites every book and is too expensive for reader lifecycle state.
+    local index_started = time.now()
     local indexes = self.store:readSetting("books", {})
     local numeric_id = tonumber(book_id)
     local current_index = indexes[book_id]
         or (numeric_id and indexes[numeric_id])
         or {}
+    perf("update_book.read_index", index_started, "book=", book_id)
+
+    local load_started = time.now()
     local book = BookStore.load(self, book_id, current_index)
+    perf("update_book.load_book", load_started, "book=", book_id)
 
     for key, value in pairs(patch) do
         if value == false then
@@ -246,7 +264,9 @@ function Settings:update_book(book_id, patch)
         end
     end
 
+    local save_started = time.now()
     local ok, new_index = BookStore.save(self, book_id, book)
+    perf("update_book.save_book", save_started, "book=", book_id)
     if not ok then
         error("Could not save book data: " .. tostring(new_index))
     end
@@ -255,8 +275,11 @@ function Settings:update_book(book_id, patch)
     if numeric_id and numeric_id ~= book_id then
         indexes[numeric_id] = nil
     end
+    local flush_started = time.now()
     self.store:saveSetting("books", indexes)
     self.store:flush()
+    perf("update_book.flush", flush_started, "book=", book_id)
+    perf("update_book.total", total_started, "book=", book_id)
     return true
 end
 

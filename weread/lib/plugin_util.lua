@@ -1,11 +1,16 @@
 local I18n = require("weread.lib.i18n")
 local logger = require("weread.lib.logger")
-local time = require("ui/time")
-local T = require("ffi/util").template
+local ok_time, time = pcall(require, "ui/time")
+if not ok_time then
+    time = { now = function() return 0 end }
+end
+local ok_ffiutil, ffiutil = pcall(require, "ffi/util")
+local T = ok_ffiutil and ffiutil.template or function(text) return text end
 
 local PluginUtil = {
     T = T,
     unpack_args = unpack or table.unpack,
+    perf_enabled = false,
 }
 
 function PluginUtil.tr(text)
@@ -39,6 +44,19 @@ function PluginUtil.file_exists(path)
     end
     file:close()
     return true
+end
+
+function PluginUtil.set_perf_enabled(enabled)
+    PluginUtil.perf_enabled = enabled == true
+end
+
+function PluginUtil.perf(stage, started, ...)
+    if not PluginUtil.perf_enabled then
+        return
+    end
+    local elapsed = tonumber(time.now() - started)
+    logger.info("[Perf]", "stage=", stage,
+        "ms=", string.format("%.1f", elapsed), ...)
 end
 
 function PluginUtil.thought_perf(stage, started, ...)

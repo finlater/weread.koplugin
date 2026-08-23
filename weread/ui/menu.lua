@@ -516,6 +516,34 @@ function M:getSettingsMenuItems()
             end,
         },
         {
+            text = _("Developer diagnostics"),
+            sub_item_table_func = function()
+                return {
+                    {
+                        text = _("Performance timing logs"),
+                        keep_menu_open = true,
+                        check_callback_updates_menu = true,
+                        checked_func = function()
+                            return self.settings:get("advanced", {}).developer_logs == true
+                        end,
+                        callback = self:safeCallback(_("Performance timing logs"),
+                            function(touchmenu_instance)
+                                local advanced = self.settings:get("advanced", {})
+                                advanced.developer_logs = not (advanced.developer_logs == true)
+                                self.settings:set("advanced", advanced)
+                                self.settings:flush()
+                                if type(PluginUtil.set_perf_enabled) == "function" then
+                                    PluginUtil.set_perf_enabled(advanced.developer_logs == true)
+                                end
+                                if touchmenu_instance then
+                                    touchmenu_instance:updateItems()
+                                end
+                            end),
+                    },
+                }
+            end,
+        },
+        {
             text = _("Account management"),
             sub_item_table_func = function()
                 return {
