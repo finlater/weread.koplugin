@@ -51,7 +51,9 @@ function Thoughts.apply_data(settings, book_id, chapter_uid, xhtml, underlines_d
     local has_checked = type(checked_ranges) == "table" and #checked_ranges > 0
     local underline_ranges = Thoughts.collect_ranges(underlines_data)
     local has_underlines = #underline_ranges > 0
-    if rebuild_db or has_reviews or has_checked or has_underlines then
+    local close_db = not (opts and opts.close_thought_db == false)
+    local db = opts and opts.thought_db
+    if (db == nil and close_db) and (rebuild_db or has_reviews or has_checked or has_underlines) then
         local Content = require("weread.lib.content")
         local book_dir = Content.book_resolved_dir(settings, book_id, book)
         local ThoughtDB = require("weread.lib.thought_db")
@@ -59,19 +61,22 @@ function Thoughts.apply_data(settings, book_id, chapter_uid, xhtml, underlines_d
             ThoughtDB.remove_db(book_dir)
         end
         if has_reviews or has_checked or has_underlines then
-            local db = ThoughtDB.open(book_dir)
-            if db then
-                if has_reviews then
-                    pcall(ThoughtDB.putReviews, db, chapter_uid, reviews)
-                end
-                if has_checked then
-                    pcall(ThoughtDB.markRangesFetched, db, chapter_uid, checked_ranges)
-                end
-                if has_underlines then
-                    pcall(ThoughtDB.putUnderlineRanges, db, chapter_uid, underline_ranges)
-                end
-                ThoughtDB.close(db)
-            end
+            db = ThoughtDB.open(book_dir)
+        end
+    end
+    if db and (has_reviews or has_checked or has_underlines) then
+        local ThoughtDB = require("weread.lib.thought_db")
+        if has_reviews then
+            pcall(ThoughtDB.putReviews, db, chapter_uid, reviews)
+        end
+        if has_checked then
+            pcall(ThoughtDB.markRangesFetched, db, chapter_uid, checked_ranges)
+        end
+        if has_underlines then
+            pcall(ThoughtDB.putUnderlineRanges, db, chapter_uid, underline_ranges)
+        end
+        if close_db then
+            ThoughtDB.close(db)
         end
     end
     underlines_data.chapterUid = chapter_uid

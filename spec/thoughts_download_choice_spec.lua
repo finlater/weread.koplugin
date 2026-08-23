@@ -18,9 +18,13 @@ package.preload["weread.lib.content"] = function()
     }
 end
 local stored_underlines
+local open_count, close_count = 0, 0
 package.preload["weread.lib.thought_db"] = function()
     return {
-        open = function() return { id = "db" } end,
+        open = function()
+            open_count = open_count + 1
+            return { id = "db" }
+        end,
         putReviews = function() end,
         putUnderlineRanges = function(_db, chapter_uid, ranges)
             stored_underlines = { chapter_uid = chapter_uid, ranges = ranges }
@@ -28,7 +32,9 @@ package.preload["weread.lib.thought_db"] = function()
         end,
         markRangesFetched = function() end,
         remove_db = function() end,
-        close = function() end,
+        close = function()
+            close_count = close_count + 1
+        end,
     }
 end
 
@@ -85,6 +91,29 @@ expect(css ~= nil, "content-path apply still returns css")
 expect(stored_underlines and stored_underlines.ranges
         and stored_underlines.ranges[1] == "1-2",
     "apply_data persists underline ranges without downloading thoughts")
+expect(open_count == 1 and close_count == 1,
+    "content-path apply opens and closes its own thought db")
+
+local shared = { id = "shared" }
+open_count, close_count = 0, 0
+stored_underlines = nil
+Thoughts.apply_data(apply_settings, "book", 11, "<p>hi</p>", {
+    underlines = { { range = "3-4" } },
+}, nil, nil, {
+    thought_db = shared,
+    close_thought_db = false,
+})
+Thoughts.apply_data(apply_settings, "book", 12, "<p>hi</p>", {
+    underlines = { { range = "5-6" } },
+}, nil, nil, {
+    thought_db = shared,
+    close_thought_db = false,
+})
+expect(open_count == 0 and close_count == 0,
+    "shared thought db is not opened or closed per chapter")
+expect(stored_underlines and stored_underlines.chapter_uid == 12
+        and stored_underlines.ranges[1] == "5-6",
+    "shared thought db still receives later chapter underline ranges")
 
 print(string.format(
     "thoughts_download_choice_spec: %d checks, %d failure(s)", checks, failures))

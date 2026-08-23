@@ -513,9 +513,6 @@ function M:_downloadMissingThought(info, href, link, tap_started)
     local book_id = info.book_id
     local fetch_key = self:_thoughtFetchKey(book_id, chapter_uid, range)
 
-    -- Drop this range from silent prefetch so the tap fetch is the only request.
-    self:_removePrefetchRange(book_id, chapter_uid, range)
-
     -- Coalesce duplicate taps for the same range.
     self._thought_inflight = self._thought_inflight or {}
     local inflight = self._thought_inflight[fetch_key]
@@ -720,43 +717,8 @@ function M:_yieldThoughtPrefetchForReading()
             return
         end
         job.paused = false
-        if job.batches then
-            self:_stepChapterThoughtPrefetch(job)
-        else
-            self:_runChapterThoughtPrefetch(job)
-        end
+        self:_stepChapterThoughtPrefetch(job)
     end)
-end
-
-function M:_removePrefetchRange(book_id, chapter_uid, range)
-    local job = self._chapter_thought_prefetch
-    if not job or job.cancelled or not job.batches then
-        return
-    end
-    if tostring(job.book_id) ~= tostring(book_id) then
-        return
-    end
-    if tostring(job.chapter_uid) ~= tostring(chapter_uid) then
-        return
-    end
-    if type(range) ~= "string" or range == "" then
-        return
-    end
-
-    local start_i = job.batch_index or 1
-    for i = #job.batches, start_i, -1 do
-        local batch = job.batches[i]
-        if type(batch) == "table" then
-            for j = #batch, 1, -1 do
-                if type(batch[j]) == "table" and batch[j].range == range then
-                    table.remove(batch, j)
-                end
-            end
-            if #batch == 0 then
-                table.remove(job.batches, i)
-            end
-        end
-    end
 end
 
 local function rangeStart(range)
@@ -936,9 +898,6 @@ function M:_scheduleChapterThoughtPrefetch(book_id, chapter_uid, skip_range, opt
             existing.skip_range = skip_range
             self:_trimPrefetchBeforeCursor(existing)
         end
-        if skip_range then
-            self:_removePrefetchRange(book_id, chapter_uid, skip_range)
-        end
         return
     end
 
@@ -961,7 +920,7 @@ function M:_scheduleChapterThoughtPrefetch(book_id, chapter_uid, skip_range, opt
 
     local start_delay = opts.immediate and 0.2 or (1.0 + math.random() * 0.6)
     UIManager:scheduleIn(start_delay, function()
-        self:_runChapterThoughtPrefetch(job)
+        self:_stepChapterThoughtPrefetch(job)
     end)
 end
 
@@ -990,63 +949,28 @@ function M:_shouldSkipPrefetchRange(job, range)
     return db and ThoughtDB.isRangeFetched(db, job.chapter_uid, range) or false
 end
 
-function M:_startThoughtPrefetchBatches(job)
-    local cursor = job.after_start or -1
-    local ranges = {}
-    for _, range in ipairs(job.collected or {}) do
-        if not self:_shouldSkipPrefetchRange(job, range) then
-            ranges[#ranges + 1] = range
-        end
-    end
-
-    if #ranges == 0 then
-        self:_finishChapterThoughtPrefetch(job)
-        return
-    end
-
-    job.batches = self.client:build_chapter_review_batches(ranges)
-    job.batch_index = 1
-    job.batch_retry = 0
-    logger.info(
-        "thought prefetch start:",
-        "chapter=", tostring(job.chapter_uid),
-        "after=", tostring(cursor),
-        "ranges=", #ranges,
-        "batches=", #job.batches
-    )
-    self:_stepChapterThoughtPrefetch(job)
-end
-
-function M:_runChapterThoughtPrefetch(job)
+function M:_thoughtPrefetchCanRun(job)
     if not job or job.cancelled then
-        return
+        return false
     end
     if job.session_gen ~= (self._reader_session_gen or 0) then
         job.cancelled = true
-        return
+        return false
     end
     if self._chapter_thought_prefetch ~= job then
-        return
+        return false
     end
     if job.paused then
-        return
+        return false
     end
     if self:_thoughtPrefetchShouldStayPaused() then
         job.paused = true
-        return
+        return false
     end
     if not self:isNetworkConnected() then
-        return
+        return false
     end
-
-    if job.batches then
-        self:_stepChapterThoughtPrefetch(job)
-        return
-    end
-
-    local db = self:_ensureThoughtDB(job.book_id)
-    job.collected = db and ThoughtDB.getUnderlineRanges(db, job.chapter_uid) or {}
-    self:_startThoughtPrefetchBatches(job)
+    return true
 end
 
 function M:_finishChapterThoughtPrefetch(job)
@@ -1088,25 +1012,33 @@ function M:_finishChapterThoughtPrefetch(job)
 end
 
 function M:_stepChapterThoughtPrefetch(job)
-    if not job or job.cancelled then
+    if not self:_thoughtPrefetchCanRun(job) then
         return
     end
-    if job.session_gen ~= (self._reader_session_gen or 0) then
-        job.cancelled = true
-        return
-    end
-    if self._chapter_thought_prefetch ~= job then
-        return
-    end
-    if job.paused then
-        return
-    end
-    if self:_thoughtPrefetchShouldStayPaused() then
-        job.paused = true
-        return
-    end
-    if not self:isNetworkConnected() then
-        return
+
+    if not job.batches then
+        local db = self:_ensureThoughtDB(job.book_id)
+        local collected = db and ThoughtDB.getUnderlineRanges(db, job.chapter_uid) or {}
+        local ranges = {}
+        for _, range in ipairs(collected) do
+            if not self:_shouldSkipPrefetchRange(job, range) then
+                ranges[#ranges + 1] = range
+            end
+        end
+        if #ranges == 0 then
+            self:_finishChapterThoughtPrefetch(job)
+            return
+        end
+        job.batches = self.client:build_chapter_review_batches(ranges)
+        job.batch_index = 1
+        job.batch_retry = 0
+        logger.info(
+            "thought prefetch start:",
+            "chapter=", tostring(job.chapter_uid),
+            "after=", tostring(job.after_start or -1),
+            "ranges=", #ranges,
+            "batches=", #job.batches
+        )
     end
 
     if not job.batches or job.batch_index > #job.batches then

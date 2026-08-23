@@ -125,7 +125,36 @@ function Downloader:_notifyCompletion(dl, ok, value)
     end
 end
 
+function Downloader:_closeThoughtDb(dl)
+    if not dl or not dl.thought_db then
+        return
+    end
+    local ThoughtDB = require("weread.lib.thought_db")
+    ThoughtDB.close(dl.thought_db)
+    dl.thought_db = nil
+end
+
+function Downloader:_ensureThoughtDb(dl)
+    if not dl then
+        return nil
+    end
+    if dl.thought_db then
+        return dl.thought_db
+    end
+    local ThoughtDB = require("weread.lib.thought_db")
+    local book = dl.book or {}
+    local book_id = book.book_id or book.bookId
+    local book_dir = Content.book_resolved_dir(self.settings, book_id, book)
+    if not dl.single_chapter and not dl.thought_db_ready then
+        ThoughtDB.remove_db(book_dir)
+    end
+    dl.thought_db_ready = true
+    dl.thought_db = ThoughtDB.open(book_dir)
+    return dl.thought_db
+end
+
 function Downloader:_finishJob(dl)
+    self:_closeThoughtDb(dl)
     if self._active_job == dl then
         self._active_job = nil
     end
@@ -679,7 +708,8 @@ function Downloader:_applyAnnotations(dl)
     local ok, processed, annotation_css = pcall(function()
         return Thoughts.apply_data(self.settings, book_id, chapter.chapterUid,
             dl.current.xhtml, annotation.underlines, annotation.reviews, dl.book, {
-            rebuild_thought_db = not dl.single_chapter and dl.index == 1,
+            thought_db = self:_ensureThoughtDb(dl),
+            close_thought_db = false,
             checked_ranges = annotation.checked_ranges,
         })
     end)
