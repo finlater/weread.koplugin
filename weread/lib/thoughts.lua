@@ -46,17 +46,25 @@ function Thoughts.apply_data(settings, book_id, chapter_uid, xhtml, underlines_d
         underlines_data = {}
     end
     local rebuild_db = opts and opts.rebuild_thought_db
-    if rebuild_db or type(reviews) == "table" then
+    local checked_ranges = opts and opts.checked_ranges
+    local has_reviews = type(reviews) == "table" and #reviews > 0
+    local has_checked = type(checked_ranges) == "table" and #checked_ranges > 0
+    if rebuild_db or has_reviews or has_checked then
         local Content = require("weread.lib.content")
         local book_dir = Content.book_resolved_dir(settings, book_id, book)
         local ThoughtDB = require("weread.lib.thought_db")
         if rebuild_db then
             ThoughtDB.remove_db(book_dir)
         end
-        if type(reviews) == "table" then
+        if has_reviews or has_checked then
             local db = ThoughtDB.open(book_dir)
             if db then
-                pcall(ThoughtDB.putReviews, db, chapter_uid, reviews)
+                if has_reviews then
+                    pcall(ThoughtDB.putReviews, db, chapter_uid, reviews)
+                end
+                if has_checked then
+                    pcall(ThoughtDB.markRangesFetched, db, chapter_uid, checked_ranges)
+                end
                 ThoughtDB.close(db)
             end
         end
@@ -83,7 +91,7 @@ function Thoughts.apply(client, settings, book_id, chapter_uid, xhtml)
         logger.info(...)
     end
 
-    local ok_ul, ul_data, ranges, err_ul = Thoughts.fetch_underlines(
+    local ok_ul, ul_data, _ranges, err_ul = Thoughts.fetch_underlines(
         client, settings, book_id, chapter_uid
     )
     if not ok_ul or type(ul_data) ~= "table" then
@@ -91,14 +99,9 @@ function Thoughts.apply(client, settings, book_id, chapter_uid, xhtml)
         return xhtml, ""
     end
 
-    local thought_reviews
-    if #ranges > 0 then
-        local ok_tr, tr_data = client:get_chapter_reviews(book_id, chapter_uid, ranges)
-        if ok_tr and type(tr_data) == "table" and #(tr_data.reviews or {}) > 0 then
-            thought_reviews = tr_data.reviews
-        end
-    end
-    return Thoughts.apply_data(settings, book_id, chapter_uid, xhtml, ul_data, thought_reviews)
+    -- Content-path apply only embeds underlines. Bulk thought download stays
+    -- in the downloader job so the UI can stay cooperative.
+    return Thoughts.apply_data(settings, book_id, chapter_uid, xhtml, ul_data, nil)
 end
 
 function Thoughts.merge_css(base_css, annotation_css)

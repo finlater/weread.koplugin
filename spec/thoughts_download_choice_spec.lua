@@ -6,7 +6,23 @@ package.preload["weread.lib.logger"] = function()
     return { info = function() end }
 end
 package.preload["weread.lib.annotations"] = function()
-    return {}
+    return {
+        process = function(xhtml)
+            return xhtml, ""
+        end,
+    }
+end
+package.preload["weread.lib.content"] = function()
+    return {
+        book_resolved_dir = function() return "/tmp/book" end,
+    }
+end
+package.preload["weread.lib.thought_db"] = function()
+    return {
+        open = function() return nil end,
+        putReviews = function() end,
+        close = function() end,
+    }
 end
 
 local Thoughts = require("weread.lib.thoughts")
@@ -41,6 +57,24 @@ expect(ok and data == nil and request_count == 0,
 ok, data = Thoughts.fetch_underlines(client, settings, "book", "chapter", true)
 expect(ok and data and request_count == 1,
     "explicit per-download choice fetches annotations")
+
+local review_requests = 0
+client.get_chapter_reviews = function()
+    review_requests = review_requests + 1
+    return true, { reviews = { { range = "1-2", pageReviews = {} } } }
+end
+local apply_settings = {
+    get = function()
+        return {
+            download_underlines_and_thoughts = true,
+        }
+    end,
+    is_cookie_configured = function() return true end,
+}
+local xhtml, css = Thoughts.apply(client, apply_settings, "book", "chapter", "<p>hi</p>")
+expect(review_requests == 0, "content-path apply skips chapter review fetch")
+expect(type(xhtml) == "string", "content-path apply still returns html")
+expect(css ~= nil, "content-path apply still returns css")
 
 print(string.format(
     "thoughts_download_choice_spec: %d checks, %d failure(s)", checks, failures))

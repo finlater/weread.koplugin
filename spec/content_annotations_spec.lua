@@ -73,6 +73,18 @@ expect(css:find(".wr%-underline") and css:find(".wr%-thought%-link"),
     "annotation CSS did not include underline and thought styles")
 expect(css:find("wr%-star") == nil,
     "annotation CSS still included obsolete thought star styles")
+expect(annotated:find("wr%-star") == nil,
+    "confirmed thoughts should not show a star marker")
+
+local on_demand, on_demand_css = Annotations.process("<p>hello</p>", {
+    chapterUid = "chapter",
+    underlines = { { range = "3-8" } },
+}, nil, "book")
+expect(on_demand:find("wr%-thought%-link") ~= nil
+    and on_demand:find("wr%-star") == nil,
+    "on-demand underlines stay clickable without a star")
+expect(on_demand_css:find(".wr%-thought%-link") ~= nil,
+    "on-demand underlines still include thought-link CSS")
 
 local xhtml = Content.txt_to_xhtml("first & <tag>\r\n\r\nsecond")
 expect(xhtml:find("<p>first &amp; &lt;tag&gt;</p>", 1, true),

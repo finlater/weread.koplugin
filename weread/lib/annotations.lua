@@ -284,7 +284,7 @@ end
 --- 在 HTML 中注入下划线标记。
 -- @string html  完整的原始 HTML（包含 body 标签）
 -- @table  underlines  划线列表
--- @table  thought_reviews  想法数据 map
+-- @table  thought_reviews  可点击 range 的 map
 -- @return processed_html
 function Annotations.injectUnderlines(html, underlines, thought_reviews, chapter_uid, book_id)
     if type(html) ~= "string" or html == "" then
@@ -361,7 +361,7 @@ function Annotations.injectUnderlines(html, underlines, thought_reviews, chapter
         -- 使用 wrapTextSegments 处理跨标签边界
         local wrapped = wrapTextSegments(inner, "wr-underline")
 
-        -- 如果有想法数据，每个 wr-underline span 单独包裹 <a>（跨段可点击）
+        -- 每个可点击 range 的 wr-underline span 单独包裹 <a>（跨段可点击）。
         if thought_reviews and thought_reviews[ul.range_str] then
             local underline_open = '<span class="wr-underline">'
             local underline_close = '</span>'
@@ -436,7 +436,7 @@ end
 --- 处理章节数据中的划线标注。
 -- @string html  原始 HTML 内容
 -- @table  chapter_underlines  章节划线数据（来自 API）
--- @table  thought_reviews  想法数据 map（可选），keyed by range string
+-- @table  thought_reviews  想法列表（可选，保留参数以兼容调用方）
 -- @return processed_html, css  处理后的 HTML 和额外的 CSS
 function Annotations.process(html, chapter_underlines, thought_reviews, book_id)
     if type(html) ~= "string" or html == "" then
@@ -452,31 +452,28 @@ function Annotations.process(html, chapter_underlines, thought_reviews, book_id)
         return html, ""
     end
 
-    -- 构建 thought range 快速查找表
-    local thought_map = nil
-    if type(thought_reviews) == "table" then
-        thought_map = {}
-        for _, rv in ipairs(thought_reviews) do
-            if rv.range and rv.pageReviews and #rv.pageReviews > 0 then
-                thought_map[rv.range] = true
-            end
+    -- Every underline stays clickable so on-demand loading can intercept taps.
+    local link_map = {}
+    for _, ul in ipairs(underlines) do
+        if type(ul.range) == "string" and ul.range ~= "" then
+            link_map[ul.range] = true
         end
-        if not next(thought_map) then
-            thought_map = nil
-        end
+    end
+    if not next(link_map) then
+        link_map = nil
     end
 
     logger.info("annotations: processing", #underlines, "underlines",
-        thought_map and ("thoughts on " .. #underlines) or "")
+        link_map and "links only" or "")
 
-    local processed = Annotations.injectUnderlines(html, underlines, thought_map,
+    local processed = Annotations.injectUnderlines(html, underlines, link_map,
         chapter_underlines.chapterUid, book_id)
 
     -- 想法内容不再注入 EPUB（不生成 <aside> 脚注），改为点击时从缓存 JSON 现取。
 
     if processed ~= html then
         local css = Annotations.UNDERLINE_CSS
-        if thought_map then
+        if link_map then
             css = css .. "\n" .. Annotations.THOUGHT_LINK_CSS
         end
         return processed, css

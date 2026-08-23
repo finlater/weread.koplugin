@@ -1550,19 +1550,24 @@ function M:confirmAndDownloadChapters(book, chapters, suffix, options)
         or T(_("Download %1 selected chapter(s)?"), tostring(#chapters))
     if suffix == "full" then
         text = text .. "\n" .. _(
-            "A book with many chapters may take a long time. Prefer single- or multi-chapter downloads when possible."
+            "When a book has many chapters, a full-book download takes much longer. Prefer chapter downloads or prefetching."
         )
     end
     text = text .. "\n" .. _(
-        "Downloading underlines and thoughts may significantly increase download time."
+        "Embedding underlines only and loading thoughts on tap is about as fast as downloading text only.\nDownloading all thoughts with the book takes much longer, and some thoughts may fail to download."
     )
 
     local dialog
-    local function start(include_annotations)
+    local function start(include_annotations, thoughts_on_demand)
         UIManager:close(dialog)
         local job_options = {}
         for key, value in pairs(options) do job_options[key] = value end
         job_options.include_annotations = include_annotations == true
+        -- true: embed underlines only, fetch thoughts on tap
+        -- false: legacy bulk thought download during the job
+        if include_annotations then
+            job_options.thoughts_on_demand = thoughts_on_demand == true
+        end
         self.downloader:start(book, chapters, suffix, job_options)
     end
     dialog = ButtonDialog:new{
@@ -1575,9 +1580,15 @@ function M:confirmAndDownloadChapters(book, chapters, suffix, options)
                 end),
             }},
             {{
+                text = _("Download with underlines (thoughts on demand)"),
+                callback = self:safeCallback(_("Download with underlines (thoughts on demand)"), function()
+                    start(true, true)
+                end),
+            }},
+            {{
                 text = _("Download with underlines and thoughts"),
                 callback = self:safeCallback(_("Download with underlines and thoughts"), function()
-                    start(true)
+                    start(true, false)
                 end),
             }},
             {{
