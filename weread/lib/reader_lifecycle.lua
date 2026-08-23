@@ -117,16 +117,9 @@ function M:onReaderReady()
         -- we must intercept taps on thought links to suppress the native footnote
         -- popup. Visibility is decided inside _onThoughtTap / applyAnnotationVisibility.
         self:_setupThoughtInterception()
-        if self.settings:get("cache").show_annotations ~= false then
-            local db_session_gen = self._reader_session_gen
-            UIManager:scheduleIn(0.1, function()
-                if db_session_gen ~= self._reader_session_gen
-                    or self._current_weread_book_id ~= weread_book_id then
-                    return
-                end
-                self:_ensureThoughtDB(weread_book_id)
-            end)
-        end
+        -- ThoughtDB is intentionally lazy: opening a document must not perform
+        -- SQLite I/O on the reader lifecycle. It is opened on the first thought
+        -- tap instead.
         if not self._orig_onEndOfBook and self.ui.status and type(self.ui.status.onEndOfBook) == "function" then
             self._orig_onEndOfBook = self.ui.status.onEndOfBook
             self.ui.status.onEndOfBook = function(status_self)

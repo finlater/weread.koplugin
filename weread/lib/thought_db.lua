@@ -60,8 +60,8 @@ function ThoughtDB.open(book_dir)
     pcall(function() db:exec("PRAGMA synchronous=NORMAL") end)
 
     local schema_ok, schema_err = pcall(function()
-        -- Development-only predecessor; this format was never released.
-        db:exec("DROP TABLE IF EXISTS reviews")
+        -- Keep schema setup idempotent. The old development-only `reviews`
+        -- table is harmless and must not be dropped on every document open.
         db:exec([[
             CREATE TABLE IF NOT EXISTS review_items (
                 chapter_uid INTEGER NOT NULL,
