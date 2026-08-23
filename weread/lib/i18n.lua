@@ -201,10 +201,11 @@ local zh = {
     ["Download full book"] = "下载全书",
     ["Download all %1 chapters as one EPUB?"] = "将全部 %1 章下载为一个 EPUB？",
     ["Download %1 selected chapter(s)?"] = "下载选中的 %1 个章节？",
-    ["A book with many chapters may take a long time. Prefer single- or multi-chapter downloads when possible."] = "全书下载耗时长，建议使用章节缓存或预下载。",
-    ["Downloading underlines and thoughts may significantly increase download time."] = "下载划线和想法会显著延长下载时间。",
+    ["When a book has many chapters, a full-book download takes much longer. Prefer chapter downloads or prefetching."] = "章节较多时，全书下载会显著延长时间，建议改用分章下载或预下载。",
+    ["Embedding underlines only and loading thoughts on tap is about as fast as downloading text only.\nDownloading all thoughts with the book takes much longer, and some thoughts may fail to download."] = "先只嵌入划线、点开再加载想法，速度与仅下载正文接近。\n随书下载全部想法会显著延长时间，且部分想法可能下载失败。",
     ["Download text only"] = "仅下载正文",
     ["Download with underlines and thoughts"] = "下载正文、划线和想法",
+    ["Download with underlines (thoughts on demand)"] = "下载并嵌入划线（想法按需加载）",
     ["Download"] = "下载",
     ["EPUB"] = "EPUB",
     ["Downloaded %1 chapters.\n\nBook saved:\n%2\n\nRead now?"] = "已下载 %1 章。\n\n书籍已保存：\n%2\n\n现在阅读？",
@@ -452,6 +453,7 @@ local zh = {
     ["%1 h %2 min"] = "%1 小时 %2 分钟",
     ["%1 h"] = "%1 小时",
     ["%1 min"] = "%1 分钟",
+    ["Loading thoughts…"] = "想法加载中……"
 }
 
 function I18n.language()

@@ -5,6 +5,10 @@ One database per book directory: {book_dir}/thoughts.db
 
 Each pageReview is stored as one row. Tapping an underline performs a single
 indexed lookup by (chapter_uid, range), without decoding JSON or rendering HTML.
+
+underline_ranges lists every clickable underline for a chapter, written at
+download time. Thought prefetch reads this catalog only.
+fetched_ranges only records ranges that were actually queried.
 --]]--
 
 local logger = require("weread.lib.logger")
@@ -74,6 +78,20 @@ function ThoughtDB.open(book_dir)
                 PRIMARY KEY (chapter_uid, range, item_index)
             ) WITHOUT ROWID
         ]])
+        db:exec([[
+            CREATE TABLE IF NOT EXISTS fetched_ranges (
+                chapter_uid INTEGER NOT NULL,
+                range       TEXT    NOT NULL,
+                PRIMARY KEY (chapter_uid, range)
+            ) WITHOUT ROWID
+        ]])
+        db:exec([[
+            CREATE TABLE IF NOT EXISTS underline_ranges (
+                chapter_uid INTEGER NOT NULL,
+                range       TEXT    NOT NULL,
+                PRIMARY KEY (chapter_uid, range)
+            ) WITHOUT ROWID
+        ]])
     end)
     if not schema_ok then
         logger.warn("thought_db schema init failed:", db_path, schema_err)
@@ -87,6 +105,7 @@ end
 
 --- Look up native-dialog thought records for a (chapter_uid, range) pair.
 function ThoughtDB.getReviewItems(db, chapter_uid, range_str)
+    chapter_uid = tonumber(chapter_uid) or chapter_uid
     if not db then return nil end
 
     local ok, stmt = pcall(function()
@@ -122,6 +141,175 @@ function ThoughtDB.getReviewItems(db, chapter_uid, range_str)
     end
     pcall(function() stmt:close() end)
     return items
+end
+
+--- True when this range was already queried (including a confirmed empty result).
+function ThoughtDB.isRangeFetched(db, chapter_uid, range_str)
+    chapter_uid = tonumber(chapter_uid) or chapter_uid
+    if not db or type(range_str) ~= "string" or range_str == "" then
+        return false
+    end
+
+    local ok, stmt = pcall(function()
+        return db:prepare(
+            "SELECT 1 FROM fetched_ranges WHERE chapter_uid=? AND range=? LIMIT 1"
+        )
+    end)
+    if not ok or not stmt then
+        return false
+    end
+    local step_ok, row = pcall(function()
+        return stmt:reset():bind(chapter_uid, range_str):step()
+    end)
+    pcall(function() stmt:close() end)
+    return step_ok and row ~= nil
+end
+
+local function mark_ranges(db, chapter_uid, ranges)
+    if type(ranges) ~= "table" then
+        return
+    end
+    local stmt = db:prepare(
+        "INSERT OR IGNORE INTO fetched_ranges (chapter_uid, range) VALUES (?, ?)"
+    )
+    local seen = {}
+    for _, range_str in ipairs(ranges) do
+        if type(range_str) == "string" and range_str ~= "" and not seen[range_str] then
+            seen[range_str] = true
+            stmt:reset():bind(chapter_uid, range_str):step()
+        end
+    end
+    stmt:close()
+end
+
+local function range_start(range_str)
+    return tonumber((tostring(range_str or ""):match("^(%d+)%-")))
+end
+
+--- Replace the clickable underline catalog for one chapter.
+-- Does not mark ranges as fetched; prefetch still queries uncached thoughts.
+function ThoughtDB.putUnderlineRanges(db, chapter_uid, ranges)
+    chapter_uid = tonumber(chapter_uid) or chapter_uid
+    if not db or type(ranges) ~= "table" then
+        return false
+    end
+
+    local transaction_open = false
+    local ok, err = pcall(function()
+        db:exec("BEGIN")
+        transaction_open = true
+
+        local delete_stmt = db:prepare(
+            "DELETE FROM underline_ranges WHERE chapter_uid=?"
+        )
+        delete_stmt:reset():bind(chapter_uid):step()
+        delete_stmt:close()
+
+        local insert_stmt = db:prepare(
+            "INSERT OR IGNORE INTO underline_ranges (chapter_uid, range) VALUES (?, ?)"
+        )
+        local seen = {}
+        for _, range_str in ipairs(ranges) do
+            if type(range_str) == "string" and range_str ~= "" and not seen[range_str] then
+                seen[range_str] = true
+                insert_stmt:reset():bind(chapter_uid, range_str):step()
+            end
+        end
+        insert_stmt:close()
+
+        db:exec("COMMIT")
+        transaction_open = false
+    end)
+
+    if not ok then
+        if transaction_open then
+            pcall(function() db:exec("ROLLBACK") end)
+        end
+        logger.warn("thought_db underline catalog write failed:",
+            "chapter_uid=", tostring(chapter_uid), "error=", tostring(err))
+        return false
+    end
+    return true
+end
+
+--- Return this chapter's underline ranges in reading order.
+function ThoughtDB.getUnderlineRanges(db, chapter_uid)
+    chapter_uid = tonumber(chapter_uid) or chapter_uid
+    if not db then
+        return {}
+    end
+
+    local ok, stmt = pcall(function()
+        return db:prepare(
+            "SELECT range FROM underline_ranges WHERE chapter_uid=?"
+        )
+    end)
+    if not ok or not stmt then
+        return {}
+    end
+
+    local ranges = {}
+    local step_ok, row = pcall(function()
+        return stmt:reset():bind(chapter_uid):step()
+    end)
+    if not step_ok then
+        pcall(function() stmt:close() end)
+        return {}
+    end
+    while row do
+        local range_str = row[1]
+        if type(range_str) == "string" and range_str ~= "" then
+            ranges[#ranges + 1] = range_str
+        end
+        step_ok, row = pcall(function() return stmt:step() end)
+        if not step_ok then
+            pcall(function() stmt:close() end)
+            return {}
+        end
+    end
+    pcall(function() stmt:close() end)
+
+    table.sort(ranges, function(a, b)
+        local sa, sb = range_start(a) or 0, range_start(b) or 0
+        if sa == sb then
+            return tostring(a) < tostring(b)
+        end
+        return sa < sb
+    end)
+    return ranges
+end
+
+--- Record that these ranges were queried, even when no thoughts were returned.
+function ThoughtDB.markRangesFetched(db, chapter_uid, ranges)
+    chapter_uid = tonumber(chapter_uid) or chapter_uid
+    if not db or type(ranges) ~= "table" then
+        return false
+    end
+    local ok, err = pcall(function()
+        mark_ranges(db, chapter_uid, ranges)
+    end)
+    if not ok then
+        logger.warn("thought_db mark fetched failed:",
+            "chapter_uid=", tostring(chapter_uid), "error=", tostring(err))
+        return false
+    end
+    return true
+end
+
+local function collect_review_ranges(reviews)
+    local ranges = {}
+    local seen = {}
+    if type(reviews) ~= "table" then
+        return ranges
+    end
+    for _, review in ipairs(reviews) do
+        local range_str = type(review) == "table" and review.range or nil
+        if type(range_str) == "string" and range_str ~= "" and not seen[range_str] then
+            seen[range_str] = true
+            ranges[#ranges + 1] = range_str
+        end
+    end
+    return ranges
 end
 
 local function insert_reviews(db, chapter_uid, reviews)
@@ -161,6 +349,7 @@ end
 
 --- Replace all thought rows for one chapter in a single transaction.
 function ThoughtDB.putReviews(db, chapter_uid, reviews)
+    chapter_uid = tonumber(chapter_uid) or chapter_uid
     if not db or type(reviews) ~= "table" then return false end
 
     local transaction_open = false
@@ -174,7 +363,14 @@ function ThoughtDB.putReviews(db, chapter_uid, reviews)
         delete_stmt:reset():bind(chapter_uid):step()
         delete_stmt:close()
 
+        local delete_fetched = db:prepare(
+            "DELETE FROM fetched_ranges WHERE chapter_uid=?"
+        )
+        delete_fetched:reset():bind(chapter_uid):step()
+        delete_fetched:close()
+
         insert_reviews(db, chapter_uid, reviews)
+        mark_ranges(db, chapter_uid, collect_review_ranges(reviews))
 
         db:exec("COMMIT")
         transaction_open = false
@@ -191,6 +387,68 @@ function ThoughtDB.putReviews(db, chapter_uid, reviews)
 
     logger.info("thought_db written chapter_uid=", chapter_uid,
         " ranges=", #reviews)
+    return true
+end
+
+--- Upsert thought items for specific ranges only.
+-- Unlike putReviews(), this does NOT delete other ranges in the same chapter,
+-- so on-demand single-range fetches do not wipe sibling cache entries.
+function ThoughtDB.putReviewRanges(db, chapter_uid, reviews, extra_ranges)
+    chapter_uid = tonumber(chapter_uid) or chapter_uid
+    if not db then
+        return false
+    end
+    if type(reviews) ~= "table" then
+        reviews = {}
+    end
+
+    local transaction_open = false
+    local ok, err = pcall(function()
+        db:exec("BEGIN")
+        transaction_open = true
+
+        local delete_stmt = db:prepare(
+            "DELETE FROM review_items WHERE chapter_uid=? AND range=?"
+        )
+        local seen = {}
+        local function delete_range(range_str)
+            if type(range_str) == "string" and range_str ~= "" and not seen[range_str] then
+                seen[range_str] = true
+                delete_stmt:reset():bind(chapter_uid, range_str):step()
+            end
+        end
+        for _, review in ipairs(reviews) do
+            delete_range(type(review) == "table" and review.range or nil)
+        end
+        if type(extra_ranges) == "table" then
+            for _, range_str in ipairs(extra_ranges) do
+                delete_range(range_str)
+            end
+        end
+        delete_stmt:close()
+
+        insert_reviews(db, chapter_uid, reviews)
+
+        local fetched = collect_review_ranges(reviews)
+        if type(extra_ranges) == "table" then
+            for _, range_str in ipairs(extra_ranges) do
+                fetched[#fetched + 1] = range_str
+            end
+        end
+        mark_ranges(db, chapter_uid, fetched)
+
+        db:exec("COMMIT")
+        transaction_open = false
+    end)
+
+    if not ok then
+        if transaction_open then
+            pcall(function() db:exec("ROLLBACK") end)
+        end
+        logger.warn("thought_db range upsert failed:",
+            "chapter_uid=", tostring(chapter_uid), "error=", tostring(err))
+        return false
+    end
     return true
 end
 

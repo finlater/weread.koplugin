@@ -4,37 +4,54 @@
 
 ## 一句话原理
 
-**下载时**把划线链接写入 EPUB，并把想法按 `chapter_uid + range + item_index` 存入本书的 `thoughts.db`；**阅读时**拦截划线链接，只查询被点击 range 的几条记录，再用 KOReader 原生 `TextViewer` 展示。
+**下载时**把每条划线做成可点击链接写入 EPUB。想法可以：
 
-展示阶段完全离线，不读取整章想法、不解析整章 JSON，也不启动 HTML/MuPDF 渲染器。
+- **按需加载**（默认下载选项）：下载只嵌入划线，点划线再拉这一条 range 的想法；
+- **随书下载**：下载阶段按批拉取本章全部想法并写入 `thoughts.db`。
+
+**阅读时**拦截划线链接，按 `chapter_uid + range` 查 SQLite（或现场补拉），再用 KOReader 原生 `TextViewer` 展示。
+
+展示阶段不解析整章 JSON，也不启动 HTML/MuPDF 渲染器。
 
 ## 数据流总览
 
 ```
 微信读书 gateway API
-  /book/underlines   → 划线 range[]        ┐
-  /book/readreviews  → 想法 reviews[]       ┘
-        │ (下载时)
+  /book/underlines   → 划线 range[]
+  /book/readreviews  → 想法 reviews[]   （按需：点击/当前页预取；随书：下载时整章分批）
+        │
         ▼  Annotations.process
   原始章节 HTML ──► <a href="#wrthought-BOOK-UID-RANGE"><span wr-underline>划线</span></a>
-        │                         想法 ──► thoughts.db / review_items
+        │            想法 ──► thoughts.db / review_items
+        │            已查询过的 range（含空结果）──► thoughts.db / fetched_ranges
         ▼
-   EPUB 文件（划线链接） + SQLite（想法正文）
-        │ (阅读时，离线)
-        ▼  点击 → 拦截 tap_link → SQLite 索引查询一个 range
+   EPUB 文件（划线链接） + SQLite（想法正文 + 负缓存）
+        │ (阅读时)
+        ▼  点击 → 拦截 tap_link → SQLite 查 range
+           未查过则单 range 在线补拉，并从该位置往后静默预取（本章结束且连续阅读时再接一章）
    KOReader 原生 TextViewer（上一页 / 关闭 / 下一页）
 ```
 
 ## 阶段一：下载（Download）
 
-前提：开启「下载划线和想法」（设置项 `cache.download_underlines_and_thoughts`）。在 `weread/lib/downloader.lua` 的每章下载流程中：
+每次手动下载都会弹出三项选择，**没有全局设置项**：
 
-1. **拉划线** —— `_startAnnotations` → `Thoughts.fetch_underlines`（`weread/lib/thoughts.lua`）→ `client:get_chapter_underlines`（`weread/lib/client.lua`）→ gateway API **`/book/underlines`**。返回该章所有划线，每条带一个 `range`，如 `"383-415"` —— 这是**原始章节 HTML 的 rune（UTF-8 字符）索引区间**。
-2. **分批拉想法** —— 收集所有 range → `build_chapter_review_batches`（`weread/lib/client.lua`，每 5 个 range 一批）→ `_annotationBatch` 逐批 → `get_chapter_reviews_batch` → gateway API **`/book/readreviews`**。返回每个 range 上的想法 `reviews`（含作者、内容、点赞数、引用原文 `abstract`）。批次间 0.3s 间隔 + 失败重试 2 次（防限流）。
+1. 仅下载正文
+2. 下载并嵌入划线（想法按需加载）
+3. 下载正文、划线和想法（随书批量拉想法，更慢）
+
+章节预下载若开启「预下载划线和想法」，按按需模式只嵌入划线，不在后台整章拉想法。
+
+在 `weread/lib/downloader.lua` 的每章下载流程中：
+
+1. **拉划线** —— `_startAnnotations` → `Thoughts.fetch_underlines`（`weread/lib/thoughts.lua`）→ `client:get_chapter_underlines` → gateway **`/book/underlines`**。返回该章所有划线，每条带一个 `range`，如 `"383-415"` —— 这是**原始章节 HTML 的 rune（UTF-8 字符）索引区间**。
+2. **想法**
+   - 按需：不组 review batch，直接进入嵌入。
+   - 随书：`build_chapter_review_batches`（每 5 个 range 一批）→ `_annotationBatch` → `get_chapter_reviews_batch` → **`/book/readreviews`**。批次间 0.3s 间隔 + 失败重试 2 次。成功批次里的 range（含空结果）记入 `checked_ranges`，写入 `fetched_ranges`，避免以后再打。
 
 ## 阶段二：嵌入 EPUB（Process & Save）
 
-`_applyAnnotations` → `Thoughts.apply_data`（`weread/lib/thoughts.lua`）→ **`Annotations.process`**（`weread/lib/annotations.lua`）。这是核心。
+`_applyAnnotations` → `Thoughts.apply_data` → **`Annotations.process`**。
 
 > **关键约束**：range 是**原始 HTML 的字符索引**，因此注释注入必须在图片改写等步骤之前完成，否则索引会错位。
 
@@ -43,48 +60,49 @@
 - 把 HTML 拆成 rune 数组（range 是字符索引，不是字节索引）；range 是 0 索引（JS 惯例）→ +1 转 Lua 1 索引。
 - `snapStartToSafeBoundary` / `snapEndToSafeBoundary`：把区间端点从 HTML 标签 / 实体内部挪出来，避免切坏标签。
 - `wrapTextSegments`：区间内的**文本段**逐段用 `<span class="wr-underline">` 包裹，遇标签自动断开重开（不跨标签边界）。
-- **若这条 range 有想法**：把每个下划线 span 用普通内部链接 `<a class="wr-thought-link" href="#wrthought-BOOK-UID-RANGE">` 包起来，使划线本身可点击（不使用 `epub:type="noteref"`，避免进入 KOReader 内建脚注路径）。
+- **每条划线**都包上内部链接 `<a class="wr-thought-link" href="#wrthought-BOOK-UID-RANGE">`（不使用 `epub:type="noteref"`，避免进入 KOReader 内建脚注路径），以便按需点击补拉。划线本身可点，不另加星号。
 
 ### b) 写入 SQLite
 
-`ThoughtDB.putReviews` 在同一事务中写入 `review_items`。每条想法保存引用原文、作者、正文和点赞数，主键为 `(chapter_uid, range, item_index)`。
+- `review_items`：每条想法一行，主键 `(chapter_uid, range, item_index)`。
+- `fetched_ranges`：已经向服务端查询过的 range。空结果也会写入，作为负缓存。
+- `underline_ranges`：下载时写入的本章全部可点击划线 range（不表示已经查过想法）。打开书后的静默预取只读这张表。没有这张表（旧缓存）则不预取。
+- 按需单 range 写入用 `ThoughtDB.putReviewRanges`，不会清掉同章其它 range。
+- 随书整章写入用 `ThoughtDB.putReviews`，并标记本批成功查询过的全部 range。
 
 ### CSS（`Annotations.UNDERLINE_CSS` / `THOUGHT_LINK_CSS`）
 
 - `.wr-underline`：橙色虚线下划线。
 - `.wr-thought-link`：保持正文原有文字样式。
+
 处理后的 HTML + 注释 CSS 经 `Thoughts.merge_css` 合并，最终由 `Content.save_book_epub` 打包；想法正文保存在书籍目录的 `thoughts.db`。
 
 ## 阶段三：阅读时展示（Display）
 
-### 打开书 `onReaderReady`（`main.lua`）
+### 打开书 `onReaderReady`
 
-- 检测是 WeRead 书 → `_setupThoughtInterception`：注册一个**覆盖全屏的 tap 手势区**，`overrides = {"tap_link"}` —— **抢在 KOReader 内建的脚注弹窗（tap_link）之前**接管点击。
-- `applyAnnotationVisibility`：按 `show_annotations` 开关，决定是否往排版样式表追加隐藏注释的 CSS —— 这就是「显示 / 隐藏划线」开关的实现。
+- 检测是 WeRead 书 → `_setupThoughtInterception`：注册覆盖全屏的 tap 手势区，`overrides = {"tap_link"}`。
+- `applyAnnotationVisibility`：按 `show_annotations` 决定是否隐藏划线样式。
 
-### 点击划线 `_onThoughtTap`（`main.lua`）
+### 点击划线 `_onThoughtTap`（`weread/ui/annotations_controller.lua`）
 
-1. `self.ui.link:getLinkFromGes(ges)` 拿到点击处链接。划线由 `<a href="#wrthought-...">` 包裹，因此 KOReader 能直接命中该链接。
+1. `self.ui.link:getLinkFromGes(ges)` 拿到点击处链接。
 2. 从链接解析 `book_id / chapter_uid / range`。
-3. 用覆盖索引只查询 `review_items` 中该 range 的记录；结果按 href 做会话内缓存。
-4. 若 `show_annotations == false`，让点击继续作为普通翻页手势处理；否则消费点击，并在 `nextTick` 里显示原生弹框。
-
-### 旧缓存自动修复
-
-如果 EPUB 中已有划线链接，但 `review_items` 查不到对应记录，说明书籍可能来自早期 HTML/单章 JSON 缓存。点击拦截同时识别旧版 `#thought_CHAPTER_START_END` 和新版 `#wrthought-BOOK-CHAPTER-START-END`：
-
-- 当前打开的是单章 EPUB：自动重新下载该章全部划线想法并写入 SQLite。
-- 当前打开的是合并全文 EPUB：按章节分批重新下载全书想法并重建 `thoughts.db`。
-
-修复沿用每批 5 个 range、批次间隔和失败重试，并提供取消按钮；完成后若用户仍停留在原页，会自动打开刚才点击的想法。
+3. 查 `review_items`；若 `fetched_ranges` 已记录且没有正文，视为「这条没有想法」，不再请求。
+4. 未查过则只拉当前 range（超时 1.5s，最多 3 次），写入 SQLite 后弹框。
+5. 点任何划线都先 pause 静默预取（和翻页一样）。弹窗关闭后再闲约 1.2 秒才继续；没有弹窗（空结果/失败）同样闲一会儿再继续。
+6. 成功或确认空结果后，以这条划线为**向前光标**静默预取：
+   - 只下本章里起点更靠后、且尚未写入 `fetched_ranges` 的 range。
+   - 光标前面的不下；中途再点更后面的想法，光标前移，中间已下的跳过，还没下的丢掉。
+   - range 只从 `underline_ranges` 读（下载时已写入），不扫 EPUB、不按页扫链接，也不打 `/book/underlines`。已经发出的预取请求挡不住；下一枪等弹窗关上。
+   - 每批最多 5 条。
+   - 本章尾巴下完、且仍在往前读（没跳到别的章、没明显往回翻）时，**只再接一章**：读下一章的 `underline_ranges`。没有这张目录就停。再下一章要等用户读进去或再点划线。
 
 ### 原生弹框 `_showThoughtPopup` → `ThoughtPopup.show`
 
-- 先 `highlightXPointer` 高亮被点的划线原文。
-- 使用 KOReader 原生文字布局按可见高度动态合并 `pageReview`：短想法一页可显示多条，长想法自动减少；单条超过弹框高度时可在页内滚动。标题栏只显示划线原文，并由原生 TitleBar 在实际右边界截断。
-- 内容由 KOReader 原生 `TextViewer` / `TextBoxWidget` 排版；底部提供“上一页 / 当前已显示条数÷总条数 / 下一页”（例如 `3/21`），关闭使用标题栏右上角 X。
-- 不创建 HTML 文档、不解析 CSS、不加载书籍字体，也不初始化 MuPDF。
-- 关闭时清掉原文高亮。
+- 使用 KOReader 原生文字布局按可见高度动态合并 `pageReview`。
+- 底部提供“上一页 / 当前已显示条数÷总条数 / 下一页”，关闭使用标题栏右上角 X。
+- 不额外高亮原文（弹窗会挡住划线）。关闭后开始静默预取。
 
 ### 防错机制 `_reader_session_gen`
 
@@ -94,10 +112,11 @@
 
 | 文件 | 职责 |
 |------|------|
-| `weread/lib/downloader.lua` | 下载状态机，逐章调用划线/想法抓取与嵌入 |
+| `weread/lib/downloader.lua` | 下载状态机；按需跳过想法批次，随书分批拉取 |
 | `weread/lib/client.lua` | gateway API：`/book/underlines`、`/book/readreviews`，range 分批 |
-| `weread/lib/thoughts.lua` | 下载编排、SQLite 写入、CSS 合并 |
-| `weread/lib/thought_db.lua` | SQLite schema、事务写入、按 range 索引查询 |
-| `weread/lib/annotations.lua` | 注入下划线与普通内部链接，并规范化原生弹框字段 |
+| `weread/lib/thoughts.lua` | 划线嵌入编排、SQLite 写入、CSS 合并 |
+| `weread/lib/thought_db.lua` | `review_items` / `fetched_ranges` / `underline_ranges`、按 range 查询与负缓存 |
+| `weread/lib/annotations.lua` | 注入下划线链接 |
+| `weread/ui/annotations_controller.lua` | tap 拦截、按需补拉、静默预取 |
 | `weread/ui/thought_popup.lua` | 展示：原生 TextViewer、上一页/下一页导航 |
-| `main.lua` | tap 拦截、SQLite 查询、显隐开关、会话防错 |
+| `weread/ui/library.lua` | 每次下载时的三项选择 |
