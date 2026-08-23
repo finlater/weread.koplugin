@@ -436,9 +436,8 @@ end
 --- 处理章节数据中的划线标注。
 -- @string html  原始 HTML 内容
 -- @table  chapter_underlines  章节划线数据（来自 API）
--- @table  thought_reviews  想法列表（可选，保留参数以兼容调用方）
 -- @return processed_html, css  处理后的 HTML 和额外的 CSS
-function Annotations.process(html, chapter_underlines, thought_reviews, book_id)
+function Annotations.process(html, chapter_underlines, book_id)
     if type(html) ~= "string" or html == "" then
         return html, ""
     end

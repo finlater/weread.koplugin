@@ -233,7 +233,6 @@ function M:_teardownThoughtInterception()
         self._thought_db_book_id = nil
     end
     self._thought_popup_open = nil
-    self._current_thought_popup = nil
     self._thought_page_cache = nil
     self._thought_page_cache_n = nil
     self._current_weread_book_id = nil
@@ -311,7 +310,6 @@ function M:_showThoughtPopup(pages, link, session_gen, tap_started)
             dialog = self.dialog,
             close_callback = function()
                 self._thought_popup_open = nil
-                self._current_thought_popup = nil
                 self:_yieldThoughtPrefetchForReading()
             end,
         })
@@ -326,7 +324,6 @@ function M:_showThoughtPopup(pages, link, session_gen, tap_started)
         return
     end
 
-    self._current_thought_popup = popup
     thought_perf("show_pipeline", show_started, "pages=", tostring(#pages))
     if tap_started then
         thought_perf("tap_to_popup_return", tap_started, "pages=", tostring(#pages))
@@ -517,7 +514,6 @@ function M:_downloadMissingThought(info, href, link, tap_started)
     local fetch_key = self:_thoughtFetchKey(book_id, chapter_uid, range)
 
     -- Drop this range from silent prefetch so the tap fetch is the only request.
-    self:_pauseChapterThoughtPrefetch()
     self:_removePrefetchRange(book_id, chapter_uid, range)
 
     -- Coalesce duplicate taps for the same range.
@@ -681,13 +677,6 @@ local function thoughtPrefetchBatchGap()
     return 0.8 + math.random() * 0.7
 end
 
-function M:_pauseChapterThoughtPrefetch()
-    local job = self._chapter_thought_prefetch
-    if job and not job.cancelled then
-        job.paused = true
-    end
-end
-
 function M:_thoughtFetchInFlight()
     local inflight = self._thought_inflight
     return type(inflight) == "table" and next(inflight) ~= nil
@@ -774,16 +763,6 @@ local function rangeStart(range)
     return tonumber((tostring(range or ""):match("^(%d+)%-")))
 end
 
-local function sortRangesByStart(ranges)
-    table.sort(ranges, function(a, b)
-        local sa, sb = rangeStart(a) or 0, rangeStart(b) or 0
-        if sa == sb then
-            return tostring(a) < tostring(b)
-        end
-        return sa < sb
-    end)
-end
-
 local function currentDocumentPage(plugin)
     local page
     pcall(function()
@@ -794,63 +773,38 @@ local function currentDocumentPage(plugin)
     return page
 end
 
--- Collect thought ranges whose anchors are on the current document page.
-local function collectCurrentPageThoughtRanges(plugin, book_id, chapter_uid)
-    local ordered = {}
-    local seen = {}
+-- True/false for whether the current page still has this chapter's thought
+-- links, or already shows another chapter's links (full-book EPUB boundary).
+local function currentPageThoughtChapterFlags(plugin, book_id, chapter_uid)
     local document = plugin.ui and plugin.ui.document
-    if not document then
-        return ordered
+    if not document or type(document.getPageLinks) ~= "function" then
+        return false, false
     end
-
-    local page = nil
-    pcall(function()
-        page = document:getCurrentPage()
-    end)
+    local page = currentDocumentPage(plugin)
     if not page then
-        return ordered
+        return false, false
     end
-
-    local links = nil
+    local links
     pcall(function()
-        if type(document.getPageLinks) == "function" then
-            links = document:getPageLinks(page)
-        end
+        links = document:getPageLinks(page)
     end)
     if type(links) ~= "table" then
-        return ordered
+        return false, false
     end
-
-    local chapter_str = tostring(chapter_uid)
+    local same, other = false, false
     local book_str = tostring(book_id)
+    local chapter_str = tostring(chapter_uid)
     for _, link in ipairs(links) do
-        local href = plugin:_linkHref(link)
-        if type(href) == "string" then
-            local info = plugin:_parseThoughtHref(href)
-            if info
-                and tostring(info.book_id) == book_str
-                and tostring(info.chapter_uid) == chapter_str
-                and type(info.range) == "string"
-                and not seen[info.range]
-            then
-                seen[info.range] = true
-                ordered[#ordered + 1] = info.range
+        local info = plugin:_parseThoughtHref(plugin:_linkHref(link))
+        if info and tostring(info.book_id) == book_str then
+            if tostring(info.chapter_uid) == chapter_str then
+                same = true
+            else
+                other = true
             end
         end
     end
-    return ordered
-end
-
-local function collectPrefetchThoughtRanges(plugin, job)
-    local db = plugin:_ensureThoughtDB(job.book_id)
-    if not db then
-        return {}
-    end
-    local ranges = ThoughtDB.getUnderlineRanges(db, job.chapter_uid)
-    if type(ranges) ~= "table" then
-        return {}
-    end
-    return ranges
+    return same, other
 end
 
 function M:_noteThoughtReadPage()
@@ -910,11 +864,7 @@ function M:_nextChapterForThoughtPrefetch(book_id, chapter_uid)
         return nil
     end
 
-    local next_uid = next_chapter.chapterUid or next_chapter.chapterId
-    if next_uid == nil then
-        return nil
-    end
-    return { chapter_uid = next_uid }
+    return next_chapter.chapterUid or next_chapter.chapterId
 end
 
 function M:_shouldChainNextChapter(job)
@@ -932,36 +882,19 @@ function M:_shouldChainNextChapter(job)
     end
 
     local page = currentDocumentPage(self)
-    local max_page = self._thought_read_max_page or job.max_page_seen or job.start_page
+    local max_page = self._thought_read_max_page
     if page and max_page and page + 2 < max_page then
         return false
     end
 
-    local same_chapter = collectCurrentPageThoughtRanges(
+    local same_chapter, other_chapter = currentPageThoughtChapterFlags(
         self, job.book_id, job.chapter_uid
     )
-    if #same_chapter > 0 then
+    if same_chapter then
         return true
     end
-
-    local links
-    pcall(function()
-        if page and self.ui.document.getPageLinks then
-            links = self.ui.document:getPageLinks(page)
-        end
-    end)
-    if type(links) == "table" then
-        local book_str = tostring(job.book_id)
-        local chapter_str = tostring(job.chapter_uid)
-        for _, link in ipairs(links) do
-            local info = self:_parseThoughtHref(self:_linkHref(link))
-            if info
-                and tostring(info.book_id) == book_str
-                and tostring(info.chapter_uid) ~= chapter_str
-            then
-                return false
-            end
-        end
+    if other_chapter then
+        return false
     end
     return true
 end
@@ -1013,7 +946,7 @@ function M:_scheduleChapterThoughtPrefetch(book_id, chapter_uid, skip_range, opt
         existing.cancelled = true
     end
 
-    local page = self:_noteThoughtReadPage()
+    self:_noteThoughtReadPage()
     local job = {
         cancelled = false,
         paused = self:_thoughtPrefetchShouldStayPaused(),
@@ -1022,11 +955,7 @@ function M:_scheduleChapterThoughtPrefetch(book_id, chapter_uid, skip_range, opt
         skip_range = skip_range,
         after_start = after_start,
         allow_chain = opts.allow_chain ~= false,
-        source = "db",
-        start_page = page,
-        max_page_seen = page,
         session_gen = self._reader_session_gen or 0,
-        key = tostring(book_id) .. ":" .. tostring(chapter_uid) .. ":" .. tostring(after_start),
     }
     self._chapter_thought_prefetch = job
 
@@ -1069,7 +998,6 @@ function M:_startThoughtPrefetchBatches(job)
             ranges[#ranges + 1] = range
         end
     end
-    sortRangesByStart(ranges)
 
     if #ranges == 0 then
         self:_finishChapterThoughtPrefetch(job)
@@ -1084,8 +1012,7 @@ function M:_startThoughtPrefetchBatches(job)
         "chapter=", tostring(job.chapter_uid),
         "after=", tostring(cursor),
         "ranges=", #ranges,
-        "batches=", #job.batches,
-        "source=", tostring(job.source or "db")
+        "batches=", #job.batches
     )
     self:_stepChapterThoughtPrefetch(job)
 end
@@ -1117,11 +1044,8 @@ function M:_runChapterThoughtPrefetch(job)
         return
     end
 
-    if not job.scanned then
-        job.collected = collectPrefetchThoughtRanges(self, job)
-        job.source = "db"
-        job.scanned = true
-    end
+    local db = self:_ensureThoughtDB(job.book_id)
+    job.collected = db and ThoughtDB.getUnderlineRanges(db, job.chapter_uid) or {}
     self:_startThoughtPrefetchBatches(job)
 end
 
@@ -1141,24 +1065,23 @@ function M:_finishChapterThoughtPrefetch(job)
         return
     end
 
-    local next_info = self:_nextChapterForThoughtPrefetch(job.book_id, job.chapter_uid)
-    if not next_info then
+    local next_uid = self:_nextChapterForThoughtPrefetch(job.book_id, job.chapter_uid)
+    if next_uid == nil then
         return
     end
 
     local db = self:_ensureThoughtDB(job.book_id)
-    local db_ranges = db and ThoughtDB.getUnderlineRanges(db, next_info.chapter_uid)
+    local db_ranges = db and ThoughtDB.getUnderlineRanges(db, next_uid)
     if type(db_ranges) ~= "table" or #db_ranges == 0 then
         logger.info("thought prefetch skip next chapter: no underline catalog",
-            tostring(next_info.chapter_uid))
+            tostring(next_uid))
         return
     end
 
-    logger.info("thought prefetch chain next chapter:", tostring(next_info.chapter_uid))
+    logger.info("thought prefetch chain next chapter:", tostring(next_uid))
     self:_scheduleChapterThoughtPrefetch(
-        job.book_id, next_info.chapter_uid, nil, {
+        job.book_id, next_uid, nil, {
             allow_chain = false,
-            after_start = -1,
             immediate = true,
         }
     )

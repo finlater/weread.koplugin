@@ -75,7 +75,7 @@ function Thoughts.apply_data(settings, book_id, chapter_uid, xhtml, underlines_d
         end
     end
     underlines_data.chapterUid = chapter_uid
-    local processed, annotation_css = Annotations.process(xhtml, underlines_data, reviews, book_id)
+    local processed, annotation_css = Annotations.process(xhtml, underlines_data, book_id)
     return processed, annotation_css or ""
 end
 
@@ -92,15 +92,11 @@ function Thoughts.apply(client, settings, book_id, chapter_uid, xhtml)
     if not book_id or not chapter_uid then
         return xhtml, ""
     end
-    local function log_info(...)
-        logger.info(...)
-    end
-
     local ok_ul, ul_data, _, err_ul = Thoughts.fetch_underlines(
         client, settings, book_id, chapter_uid
     )
     if not ok_ul or type(ul_data) ~= "table" then
-        log_info("skip underlines:", err_ul or "no data")
+        logger.info("skip underlines:", err_ul or "no data")
         return xhtml, ""
     end
 

@@ -65,8 +65,6 @@ expect(unchanged == "<p>safe</p>", "invalid ranges changed the document")
 local annotated, css = Annotations.process("<p>hello</p>", {
     chapterUid = "chapter",
     underlines = { { range = "3-8" } },
-}, {
-    { range = "3-8", pageReviews = { { review = { content = "idea" } } } },
 }, "book")
 expect(annotated ~= "<p>hello</p>", "annotation process did not change HTML")
 expect(css:find(".wr%-underline") and css:find(".wr%-thought%-link"),
@@ -79,7 +77,7 @@ expect(annotated:find("wr%-star") == nil,
 local on_demand, on_demand_css = Annotations.process("<p>hello</p>", {
     chapterUid = "chapter",
     underlines = { { range = "3-8" } },
-}, nil, "book")
+}, "book")
 expect(on_demand:find("wr%-thought%-link") ~= nil
     and on_demand:find("wr%-star") == nil,
     "on-demand underlines stay clickable without a star")
