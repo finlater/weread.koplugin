@@ -61,7 +61,7 @@ package.preload["ffi/archiver"] = function()
     end
     function Writer:addFileFromMemory(name, data)
         archive_calls[#archive_calls + 1] = {
-            kind = "memory", name = name, bytes = #data,
+            kind = "memory", name = name, bytes = #data, data = data,
         }
         return true
     end
@@ -197,6 +197,16 @@ local book = { book_id = "book", title = "Disk Assets", cache_dir = root }
 local output = Content.save_book_epub(settings, book,
     { { chapterUid = 7, title = "Chapter" } },
     { ["7"] = "<p>body</p>" }, "book", assets, "body{}")
+local opf_has_tag = false
+for _, call in ipairs(archive_calls) do
+    if call.kind == "memory" and call.name == "OEBPS/content.opf"
+            and type(call.data) == "string"
+            and call.data:find("<dc:subject>weread</dc:subject>", 1, true)
+            and call.data:find('content="weread"', 1, true) then
+        opf_has_tag = true
+    end
+end
+expect(opf_has_tag, "full-book EPUB did not embed the weread keyword tag")
 local used_path = false
 local path_calls = 0
 for _, call in ipairs(archive_calls) do

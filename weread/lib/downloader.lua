@@ -21,6 +21,7 @@ local Content = require("weread.lib.content")
 local DownloadDialog = require("weread.ui.download_dialog")
 local Footnotes = require("weread.lib.footnotes")
 local I18n = require("weread.lib.i18n")
+local LocalCollection = require("weread.lib.local_collection")
 local StandbyGuard = require("weread.lib.standby_guard")
 local Thoughts = require("weread.lib.thoughts")
 local WeRead = require("weread.lib.protocol")
@@ -949,20 +950,7 @@ function Downloader:_step(dl)
         -- Add only a combined full-book EPUB to the local collection. In
         -- separate-chapter mode `path` is an individual chapter EPUB.
         if not dl.single_chapter and not dl.separate_chapters then
-            pcall(function()
-                local ReadCollection = require("readcollection")
-                local COLLECTION_NAME = "weread"
-                if not ReadCollection.coll then
-                    ReadCollection:_read()
-                end
-                if not ReadCollection.coll[COLLECTION_NAME] then
-                    ReadCollection:addCollection(COLLECTION_NAME)
-                end
-                if not ReadCollection:isFileInCollection(path, COLLECTION_NAME) then
-                    ReadCollection:addItem(path, COLLECTION_NAME)
-                    ReadCollection:write({ [COLLECTION_NAME] = true })
-                end
-            end)
+            pcall(LocalCollection.add_full_book, path)
         end
         if #dl.failed > 0 then
             logger.warn(

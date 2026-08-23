@@ -1,4 +1,5 @@
 local Crypto = require("weread.lib.crypto")
+local LocalCollection = require("weread.lib.local_collection")
 local ReaderState = require("weread.lib.reader_state")
 local WeRead = require("weread.lib.protocol")
 local Thoughts = require("weread.lib.thoughts")
@@ -855,7 +856,7 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
 <dc:publisher>WeRead</dc:publisher>
 <dc:source>]] .. xml_escape(WeRead.reader_url(book_id)) .. [[</dc:source>
 <dc:language>zh-CN</dc:language>
-<meta property="dcterms:modified">]] .. utc_modified() .. [[</meta>]] .. cover_meta .. [[
+]] .. LocalCollection.epub_keyword_xml() .. [[<meta property="dcterms:modified">]] .. utc_modified() .. [[</meta>]] .. cover_meta .. [[
 </metadata>
 <manifest>
 ]] .. table.concat(manifest_items, "\n") .. [[
