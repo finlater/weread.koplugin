@@ -49,14 +49,16 @@ function Thoughts.apply_data(settings, book_id, chapter_uid, xhtml, underlines_d
     local checked_ranges = opts and opts.checked_ranges
     local has_reviews = type(reviews) == "table" and #reviews > 0
     local has_checked = type(checked_ranges) == "table" and #checked_ranges > 0
-    if rebuild_db or has_reviews or has_checked then
+    local underline_ranges = Thoughts.collect_ranges(underlines_data)
+    local has_underlines = #underline_ranges > 0
+    if rebuild_db or has_reviews or has_checked or has_underlines then
         local Content = require("weread.lib.content")
         local book_dir = Content.book_resolved_dir(settings, book_id, book)
         local ThoughtDB = require("weread.lib.thought_db")
         if rebuild_db then
             ThoughtDB.remove_db(book_dir)
         end
-        if has_reviews or has_checked then
+        if has_reviews or has_checked or has_underlines then
             local db = ThoughtDB.open(book_dir)
             if db then
                 if has_reviews then
@@ -64,6 +66,9 @@ function Thoughts.apply_data(settings, book_id, chapter_uid, xhtml, underlines_d
                 end
                 if has_checked then
                     pcall(ThoughtDB.markRangesFetched, db, chapter_uid, checked_ranges)
+                end
+                if has_underlines then
+                    pcall(ThoughtDB.putUnderlineRanges, db, chapter_uid, underline_ranges)
                 end
                 ThoughtDB.close(db)
             end

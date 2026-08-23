@@ -17,10 +17,17 @@ package.preload["weread.lib.content"] = function()
         book_resolved_dir = function() return "/tmp/book" end,
     }
 end
+local stored_underlines
 package.preload["weread.lib.thought_db"] = function()
     return {
-        open = function() return nil end,
+        open = function() return { id = "db" } end,
         putReviews = function() end,
+        putUnderlineRanges = function(_db, chapter_uid, ranges)
+            stored_underlines = { chapter_uid = chapter_uid, ranges = ranges }
+            return true
+        end,
+        markRangesFetched = function() end,
+        remove_db = function() end,
         close = function() end,
     }
 end
@@ -75,6 +82,9 @@ local xhtml, css = Thoughts.apply(client, apply_settings, "book", "chapter", "<p
 expect(review_requests == 0, "content-path apply skips chapter review fetch")
 expect(type(xhtml) == "string", "content-path apply still returns html")
 expect(css ~= nil, "content-path apply still returns css")
+expect(stored_underlines and stored_underlines.ranges
+        and stored_underlines.ranges[1] == "1-2",
+    "apply_data persists underline ranges without downloading thoughts")
 
 print(string.format(
     "thoughts_download_choice_spec: %d checks, %d failure(s)", checks, failures))

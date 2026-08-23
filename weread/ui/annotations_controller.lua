@@ -905,6 +905,26 @@ local function collectThoughtRangesFromEpub(plugin, epub_path, book_id, chapter_
     return ordered
 end
 
+-- Prefer the download-time underline catalog; fall back to EPUB, then pages.
+local function collectPrefetchThoughtRanges(plugin, job)
+    local db = plugin:_ensureThoughtDB(job.book_id)
+    if db then
+        local ranges = ThoughtDB.getUnderlineRanges(db, job.chapter_uid)
+        if type(ranges) == "table" and #ranges > 0 then
+            return ranges, "db"
+        end
+    end
+    if job.source ~= "document" then
+        local epub_path = job.epub_path
+        if type(epub_path) == "string" and epub_path ~= "" then
+            return collectThoughtRangesFromEpub(
+                plugin, epub_path, job.book_id, job.chapter_uid
+            ), "epub"
+        end
+    end
+    return nil, "document"
+end
+
 function M:_noteThoughtReadPage()
     local page = currentDocumentPage(self)
     if page then
@@ -1263,15 +1283,16 @@ function M:_runChapterThoughtPrefetch(job)
         return
     end
 
-    if job.source == "epub" then
-        if not job.scanned then
-            job.collected = collectThoughtRangesFromEpub(
-                self, job.epub_path, job.book_id, job.chapter_uid
-            )
+    if not job.scanned then
+        local ranges, source = collectPrefetchThoughtRanges(self, job)
+        job.source = source
+        if source ~= "document" then
+            job.collected = ranges or {}
             job.scanned = true
+            self:_startThoughtPrefetchBatches(job)
+            return
         end
-        self:_startThoughtPrefetchBatches(job)
-        return
+        job.scanned = true
     end
 
     if not job.scan_started then
@@ -1326,17 +1347,23 @@ function M:_finishChapterThoughtPrefetch(job)
         after_start = -1,
         immediate = true,
     }
-    local epub_path = next_info.epub_path
-    if next_info.in_open_document then
-        epub_path = (self.ui.document and self.ui.document.file) or epub_path
-    end
-    if epub_path then
-        opts.source = "epub"
-        opts.epub_path = epub_path
+    local db = self:_ensureThoughtDB(job.book_id)
+    local db_ranges = db and ThoughtDB.getUnderlineRanges(db, next_info.chapter_uid)
+    if type(db_ranges) == "table" and #db_ranges > 0 then
+        opts.source = "db"
     else
-        logger.info("thought prefetch skip next chapter: no local underlines",
-            tostring(next_info.chapter_uid))
-        return
+        local epub_path = next_info.epub_path
+        if next_info.in_open_document then
+            epub_path = (self.ui.document and self.ui.document.file) or epub_path
+        end
+        if epub_path then
+            opts.source = "epub"
+            opts.epub_path = epub_path
+        else
+            logger.info("thought prefetch skip next chapter: no local underlines",
+                tostring(next_info.chapter_uid))
+            return
+        end
     end
 
     logger.info("thought prefetch chain next chapter:", tostring(next_info.chapter_uid))
