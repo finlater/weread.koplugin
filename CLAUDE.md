@@ -43,7 +43,7 @@ weread/ui/reader_navigation.lua End-of-book navigation integration
 weread/ui/download_dialog.lua Custom download progress dialog with cancel button
 weread/ui/updater.lua        Update dialogs and background-task progress presentation
 weread/ui/progress_sync_dialog.lua Progress conflict and sync-result dialogs
-weread/ui/thought_popup.lua   Native underline/thought TextViewer with previous/next paging
+weread/ui/thought_popup.lua   Native thought popup entry; rendering in weread/ui/thought_popup/ (bitmap viewport)
 ```
 
 ## Key Conventions
