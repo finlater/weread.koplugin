@@ -19,6 +19,19 @@ local M = {}
 local SYNC_FORMAT_VERSION = 6
 local VIEW_MODULE = "weread_xpointer_overlay"
 local TOUCH_ZONE = "weread_xpointer_overlay_tap"
+local PERF_TAG = "external_annotation_perf"
+
+local function perf(...)
+    local parts = {}
+    for i = 1, select("#", ...) do
+        parts[i] = tostring(select(i, ...))
+    end
+    logger.info(PERF_TAG .. " " .. table.concat(parts, ""))
+end
+
+local function elapsed_ms(started)
+    return (os.clock() - started) * 1000
+end
 
 local function current_file(plugin)
     return plugin.ui and plugin.ui.document and plugin.ui.document.file
@@ -29,6 +42,210 @@ local function current_records(plugin)
     if not file then return {} end
     local value = plugin.external_annotations_db:getDocument(file)
     return value and type(value.records) == "table" and value.records or {}
+end
+
+local function current_reading_fraction(plugin)
+    local document = plugin.ui and plugin.ui.document
+    if not document then return nil end
+    local footer = plugin.ui.view and plugin.ui.view.footer
+    local fraction = footer and tonumber(footer.percent_finished)
+    if fraction then
+        if fraction > 1 then fraction = fraction / 100 end
+        return math.max(0, math.min(1, fraction))
+    end
+    local page, total
+    if type(document.getCurrentPage) == "function" then
+        local ok, value = pcall(document.getCurrentPage, document)
+        if ok then page = tonumber(value) end
+    end
+    if type(document.getPageCount) == "function" then
+        local ok, value = pcall(document.getPageCount, document)
+        if ok then total = tonumber(value) end
+    end
+    if page and total and total > 0 then
+        return math.max(0, math.min(1, page / total))
+    end
+    local current_pos = tonumber(document.current_pos)
+    local doc_height = tonumber(document.info and document.info.doc_height)
+        or tonumber(document.doc_height)
+    if current_pos and doc_height and doc_height > 0 then
+        return math.max(0, math.min(1, current_pos / doc_height))
+    end
+end
+
+local function chapter_index_for_fraction(catalog, fraction)
+    if not fraction or #catalog == 0 then return 1 end
+    local total_words = 0
+    for _, chapter in ipairs(catalog) do
+        total_words = total_words + math.max(0,
+            tonumber(chapter.wordCount or chapter.word_count or chapter.words) or 0)
+    end
+    if total_words > 0 then
+        local target = fraction * total_words
+        local consumed = 0
+        for index, chapter in ipairs(catalog) do
+            consumed = consumed + math.max(0,
+                tonumber(chapter.wordCount or chapter.word_count or chapter.words) or 0)
+            if target <= consumed then return index end
+        end
+    end
+    return math.max(1, math.min(#catalog, math.ceil(fraction * #catalog)))
+end
+
+-- WeRead web-novel chapter titles carry per-update metadata suffixes such as
+-- （第一更求推荐票）,(第二更),（求订阅）that the local EPUB TOC omits.  Only
+-- groups containing an update keyword are stripped, so legitimate
+-- parenthetical parts like （上） are preserved.
+local UPDATE_SUFFIX_KEYWORDS = { "更", "求", "订", "阅", "票", "藏", "赏" }
+
+local function has_update_keyword(text)
+    for _i, keyword in ipairs(UPDATE_SUFFIX_KEYWORDS) do
+        if text:find(keyword, 1, true) then return true end
+    end
+    return false
+end
+
+-- Strips a trailing （…）or (…) group that contains an update keyword.  Uses a
+-- byte scan instead of Lua patterns, whose character classes operate on bytes
+-- and would truncate multi-byte UTF-8 characters.  Paren positions point at
+-- the first byte of each paren.
+local function strip_update_suffix(title)
+    for _ = 1, 3 do
+        local close
+        for i = #title, 1, -1 do
+            local b = title:byte(i)
+            if b == 0x29 then -- )
+                close = i
+                break
+            end
+            if b == 0x89 and i >= 3 -- ） (EF BC 89)
+                and title:byte(i - 1) == 0xBC and title:byte(i - 2) == 0xEF then
+                close = i - 2
+                break
+            end
+        end
+        if not close then return title end
+        local open, open_len
+        for i = close, 1, -1 do
+            local b = title:byte(i)
+            if b == 0x28 then -- (
+                open, open_len = i, 1
+                break
+            end
+            if b == 0x88 and i >= 3 -- （ (EF BC 88)
+                and title:byte(i - 1) == 0xBC and title:byte(i - 2) == 0xEF then
+                open, open_len = i - 2, 3
+                break
+            end
+        end
+        if not open then return title end
+        local inner = title:sub(open + open_len, close - 1)
+        if not has_update_keyword(inner) then return title end
+        title = title:sub(1, open - 1)
+    end
+    return title
+end
+
+local function normalized_chapter_title(value)
+    local title = tostring(value or "")
+    title = title:gsub("^%s+", ""):gsub("%s+$", "")
+    -- Normalize full-width punctuation and spaces to ASCII up front so the
+    -- patterns below never place multi-byte characters inside a class.
+    title = title:gsub("\xE3\x80\x80", " ") -- full-width space U+3000
+    title = title:gsub("\xEF\xBC\x9A", ":") -- full-width colon ：
+    title = title:gsub("\xE3\x80\x81", ",") -- ideographic comma 、
+    for _, marker in ipairs({ "章", "节", "回" }) do
+        local stripped, count = title:gsub(
+            "^第.-" .. marker .. "[%s:%.%-]*", "", 1)
+        if count > 0 then
+            title = stripped
+            break
+        end
+    end
+    title = title:gsub(
+        "^[Cc][Hh][Aa][Pp][Tt][Ee][Rr]%s+[%divxlcdmIVXLCDM%d]+[%s:%.%-]*", "")
+    title = strip_update_suffix(title)
+    title = title:gsub("^%s+", ""):gsub("%s+$", "")
+    return title:gsub("%s+", " ")
+end
+
+local function local_catalog_matches(document, catalog, book_id)
+    if not document or type(document.getToc) ~= "function" then return {} end
+    local started = os.clock()
+    local toc_started = os.clock()
+    local ok, toc = pcall(document.getToc, document)
+    local toc_ms = elapsed_ms(toc_started)
+    if not ok or type(toc) ~= "table" then
+        perf("book_id=", tostring(book_id or ""), "stage=catalog_match",
+            "toc_ms=", string.format("%.1f", toc_ms),
+            "match_ms=0.0", "matched=0", "error=true")
+        return {}
+    end
+    local matched = {}
+    local matched_count = 0
+    -- Normalize every local TOC title once, then index them by normalized
+    -- name (ordered occurrence lists) so the whole catalog matches in one
+    -- linear pass instead of repeatedly re-normalizing TOC titles.
+    local by_title = {}
+    for index, entry in ipairs(toc) do
+        if type(entry) == "table" then
+            local norm = normalized_chapter_title(entry.title)
+            if norm ~= "" then
+                local list = by_title[norm]
+                if not list then
+                    list = {}
+                    by_title[norm] = list
+                end
+                list[#list + 1] = index
+            end
+        end
+    end
+    local toc_index = 1
+    for chapter_index, chapter in ipairs(catalog) do
+        local target = normalized_chapter_title(chapter.title)
+        if target ~= "" then
+            local list = by_title[target]
+            if list then
+                for _, index in ipairs(list) do
+                    if index >= toc_index then
+                        local local_title = type(toc[index]) == "table"
+                            and toc[index].title
+                        matched[chapter_index] = {
+                            title = tostring(local_title),
+                            start_xpointer = toc[index].xpointer,
+                            end_xpointer = type(toc[index + 1]) == "table"
+                                and toc[index + 1].xpointer or nil,
+                        }
+                        matched_count = matched_count + 1
+                        toc_index = index + 1
+                        break
+                    end
+                end
+            end
+        end
+    end
+    perf("book_id=", tostring(book_id or ""), "stage=catalog_match",
+        "toc_entries=", tostring(#toc),
+        "toc_ms=", string.format("%.1f", toc_ms),
+        "match_ms=", string.format("%.1f", elapsed_ms(started) - toc_ms),
+        "matched=", tostring(matched_count))
+    return matched
+end
+
+local function local_ranges(catalog, matches)
+    local ranges = {}
+    for index, chapter in ipairs(catalog) do
+        local uid = chapter.chapterUid or chapter.chapterId
+        local match = matches[index]
+        if uid ~= nil and match and match.start_xpointer then
+            ranges[tostring(uid)] = {
+                start_xpointer = match.start_xpointer,
+                end_xpointer = match.end_xpointer,
+                title = match.title,
+            }
+        end
+    end
+    return ranges
 end
 
 local function is_supported(plugin)
@@ -206,6 +423,16 @@ function M:bindExternalAnnotationsBook(touchmenu_instance)
 end
 
 function M:syncExternalAnnotations()
+    self:startExternalAnnotationSync{}
+end
+
+-- Full-book or single-chapter annotation sync. opts.only_uid limits the
+-- download to one catalog chapter (already-completed chapters stay in the
+-- checkpoint and are re-located locally without network requests); passing
+-- opts.source_catalog skips the chapterInfos fetch, so the single-chapter
+-- picker does not trigger a second request when the sync starts.
+function M:startExternalAnnotationSync(opts)
+    opts = opts or {}
     local path = current_file(self)
     local entry = current_entry(self)
     local binding = entry and entry.binding
@@ -226,6 +453,11 @@ function M:syncExternalAnnotations()
         entry = entry,
         binding = binding,
         cancelled = false,
+        only_uid = opts.only_uid,
+        source_catalog = opts.source_catalog,
+        local_ranges = opts.local_ranges,
+        chapter_titles = opts.chapter_titles,
+        chapter_local_titles = opts.chapter_local_titles,
     }
     local cancel_request
     local progress
@@ -310,32 +542,79 @@ function M:syncExternalAnnotations()
 
     finish_sync = function()
         request.progress:setTitle(_("Matching underlines in the local book…"))
+        -- For a single-chapter sync, locating the whole accumulated checkpoint
+        -- on every pick makes matching slower and slower as the checkpoint
+        -- grows.  Chapters whose records were already saved are kept as-is;
+        -- only the picked chapter and any completed chapter that never
+        -- produced records (e.g. an earlier interrupted run) are re-located.
+        local saved_uids = {}
+        for _i, record in ipairs(type(request.entry.records) == "table"
+            and request.entry.records or {}) do
+            saved_uids[tostring(record.chapter_uid or "")] = true
+        end
         local chapters = {}
         for _, chapter in ipairs(request.catalog) do
             local uid = tostring(chapter.chapterUid or chapter.chapterId)
             local downloaded = request.completed[uid]
             if downloaded and #(downloaded.underlines or {}) > 0 then
-                chapters[#chapters + 1] = downloaded
+                if not request.only_uid or uid == request.only_uid
+                    or not saved_uids[uid] then
+                    chapters[#chapters + 1] = downloaded
+                end
             end
         end
-        local records, stats = External.locate(self.ui.document, chapters)
+        local locate_started = os.clock()
+        local records, stats = External.locate(self.ui.document, chapters, {
+            chapter_ranges = request.local_ranges,
+            chapter_titles = request.chapter_titles,
+            chapter_local_titles = request.chapter_local_titles,
+        })
+        local locate_ms = elapsed_ms(locate_started)
         if stats.total > 0 and stats.located == 0 then
             error(T(_(
                 "Downloaded %1 underlines, but none could be matched. Existing data was not changed; retry to continue."),
                 tostring(stats.total)))
         end
-        request.entry.records = records
+        -- Keep projected records outside this run, including records created
+        -- before the current chapter checkpoint existed.
+        local synced_uids = {}
+        for _i, chapter in ipairs(chapters) do
+            synced_uids[chapter.chapter_uid] = true
+        end
+        local merged = {}
+        for _i, record in ipairs(type(request.entry.records) == "table"
+            and request.entry.records or {}) do
+            if not synced_uids[tostring(record.chapter_uid or "")] then
+                merged[#merged + 1] = record
+            end
+        end
+        for _i, record in ipairs(records) do
+            merged[#merged + 1] = record
+        end
+        request.entry.records = merged
         request.entry.stats = stats
         request.entry.synced_at = os.time()
+        local save_started = os.clock()
         local saved, save_err = self.external_annotations_db:saveDocument(
             request.path, request.entry)
+        local save_ms = elapsed_ms(save_started)
         if not saved then error(save_err) end
-        local cleared, clear_err = self.external_annotations_db:clearSyncCheckpoint(
-            request.path)
-        if not cleared then error(clear_err) end
-        if self._xpointer_overlay then self._xpointer_overlay:setRecords(records) end
+        if not request.only_uid then
+            local cleared, clear_err = self.external_annotations_db:clearSyncCheckpoint(
+                request.path)
+            if not cleared then error(clear_err) end
+        end
+        local overlay_started = os.clock()
+        if self._xpointer_overlay then self._xpointer_overlay:setRecords(merged) end
         UIManager:setDirty(self.dialog, "ui")
+        local overlay_ms = elapsed_ms(overlay_started)
         finish_request()
+        perf("book_id=", tostring(binding.book_id), "stage=sync_finish",
+            "chapters=", tostring(#chapters),
+            "located=", tostring(stats.located), "total=", tostring(stats.total),
+            "locate_ms=", string.format("%.1f", locate_ms),
+            "save_ms=", string.format("%.1f", save_ms),
+            "overlay_ms=", string.format("%.1f", overlay_ms))
         logger.info("external annotation sync completed:",
             "located=", tostring(stats.located), "total=", tostring(stats.total))
         self:showInfo(T(_("Sync completed: %1/%2 underlines matched."),
@@ -418,13 +697,26 @@ function M:syncExternalAnnotations()
 
     download_next_chapter = function()
         local selected_index, selected_chapter, selected_uid, selected_api_uid
-        for chapter_index, chapter in ipairs(request.catalog) do
+        local function consider(chapter_index, chapter)
             local api_uid = chapter.chapterUid or chapter.chapterId
             local uid = tostring(api_uid)
             if not request.completed[uid] then
                 selected_index, selected_chapter, selected_uid, selected_api_uid =
                     chapter_index, chapter, uid, api_uid
-                break
+                return true
+            end
+            return false
+        end
+        if request.only_uid then
+            for chapter_index, chapter in ipairs(request.catalog) do
+                if tostring(chapter.chapterUid or chapter.chapterId) == request.only_uid then
+                    consider(chapter_index, chapter)
+                    break
+                end
+            end
+        else
+            for chapter_index, chapter in ipairs(request.catalog) do
+                if consider(chapter_index, chapter) then break end
             end
         end
         if not selected_chapter then
@@ -476,8 +768,11 @@ function M:syncExternalAnnotations()
         request.progress:setTitle(_("Loading WeRead chapter list…"))
         local book = { bookId = binding.book_id, book_id = binding.book_id,
             title = binding.title, author = binding.author }
-        Content.ensure_reader_state(self.client, book)
-        local source_catalog = Content.fetch_catalog(self.client, book)
+        local source_catalog = request.source_catalog
+        if not source_catalog then
+            Content.ensure_reader_state(self.client, book)
+            source_catalog = Content.fetch_catalog(self.client, book)
+        end
         request.catalog = {}
         local signature_parts = { tostring(binding.book_id) }
         for _, chapter in ipairs(type(source_catalog) == "table" and source_catalog or {}) do
@@ -488,6 +783,23 @@ function M:syncExternalAnnotations()
             end
         end
         if #request.catalog == 0 then error("empty chapter catalog") end
+        if not request.local_ranges then
+            request.local_ranges = local_ranges(request.catalog,
+                local_catalog_matches(self.ui.document, request.catalog, binding.book_id))
+        end
+        if not request.chapter_titles then
+            request.chapter_titles = {}
+            for _index, chapter in ipairs(request.catalog) do
+                local uid = tostring(chapter.chapterUid or chapter.chapterId)
+                request.chapter_titles[uid] = tostring(chapter.title or "")
+            end
+        end
+        if not request.chapter_local_titles then
+            request.chapter_local_titles = {}
+            for uid, range in pairs(request.local_ranges or {}) do
+                if range.title then request.chapter_local_titles[uid] = range.title end
+            end
+        end
         local signature = Crypto.sha256_hex(table.concat(signature_parts, ":"))
         local checkpoint = self.external_annotations_db:getSyncCheckpoint(path)
         if not checkpoint
@@ -540,6 +852,94 @@ function M:syncExternalAnnotations()
     if not started then finish_request() end
 end
 
+-- On-demand single-chapter sync: lets the user pick one WeRead chapter whose
+-- underlines and thoughts are downloaded instead of the whole book at once,
+-- which keeps per-session request counts low enough to stay under WeRead's
+-- rate limits. Chapters already checkpointed as complete are marked and are
+-- never re-downloaded.
+function M:syncExternalAnnotationsChapter()
+    local path = current_file(self)
+    local entry = current_entry(self)
+    local binding = entry and entry.binding
+    if not binding then
+        self:showInfo(_("Match this local book with a WeRead book first."))
+        return
+    end
+    if not self:requireLogin(true, true) then return end
+    if self._external_annotation_sync then
+        self:showTransientInfo(
+            _("Underlines and thoughts sync is already in progress."), 2)
+        return
+    end
+    self:runOnlineTask(_("Loading WeRead chapter list…"), function()
+        local book = { bookId = binding.book_id, book_id = binding.book_id,
+            title = binding.title, author = binding.author }
+        Content.ensure_reader_state(self.client, book)
+        local catalog = Content.fetch_catalog(self.client, book)
+        if #catalog == 0 then
+            self:showInfo(_("No chapters to sync."))
+            return
+        end
+        -- Mark chapters already checkpointed as complete so the user can
+        -- drive the sync chapter by chapter over time without re-downloading.
+        local completed = {}
+        local signature_parts = { tostring(binding.book_id) }
+        for _index, chapter in ipairs(catalog) do
+            local uid = chapter.chapterUid or chapter.chapterId
+            if uid ~= nil then
+                signature_parts[#signature_parts + 1] = tostring(uid)
+            end
+        end
+        local checkpoint = self.external_annotations_db:getSyncCheckpoint(path)
+        if checkpoint
+            and tostring(checkpoint.book_id or "") == tostring(binding.book_id)
+            and checkpoint.catalog_signature
+                == Crypto.sha256_hex(table.concat(signature_parts, ":"))
+            and tonumber(checkpoint.format_version) == SYNC_FORMAT_VERSION then
+            for _index, chapter in ipairs(checkpoint.chapters or {}) do
+                if chapter.complete == true then
+                    completed[tostring(chapter.chapter_uid or "")] = true
+                end
+            end
+        end
+        local items = {}
+        local match_started = os.clock()
+        local local_matches = local_catalog_matches(self.ui.document, catalog, binding.book_id)
+        local chapter_ranges = local_ranges(catalog, local_matches)
+        local matched_count = 0
+        for _uid in pairs(chapter_ranges) do matched_count = matched_count + 1 end
+        local chapter_titles = {}
+        local chapter_local_titles = {}
+        for index, chapter in ipairs(catalog) do
+            local api_uid = chapter.chapterUid or chapter.chapterId
+            local uid = tostring(api_uid)
+            chapter_titles[uid] = tostring(chapter.title or "")
+            local match = local_matches[index]
+            if match and match.title then chapter_local_titles[uid] = match.title end
+            items[#items + 1] = {
+                text = match and match.title or chapter.title or uid,
+                post_text = completed[uid] and _("Synced") or nil,
+                callback = function()
+                    self:startExternalAnnotationSync{
+                        source_catalog = catalog,
+                        only_uid = uid,
+                        local_ranges = chapter_ranges,
+                        chapter_titles = chapter_titles,
+                        chapter_local_titles = chapter_local_titles,
+                    }
+                end,
+            }
+        end
+        perf("book_id=", tostring(binding.book_id), "stage=chapter_picker",
+            "catalog=", tostring(#catalog),
+            "matched=", tostring(matched_count),
+            "match_ms=", string.format("%.1f", elapsed_ms(match_started)))
+        items.current = chapter_index_for_fraction(
+            catalog, current_reading_fraction(self))
+        self:showList(_("Select chapter to sync"), items, _("No chapters to sync."))
+    end)
+end
+
 function M:clearExternalAnnotations(touchmenu_instance)
     local cleared, clear_err = self.external_annotations_db:clearDocument(current_file(self))
     if not cleared then
@@ -583,6 +983,14 @@ function M:getXPointerOverlayPrototypeMenuItems()
                 return entry and entry.binding ~= nil
             end,
             callback = function() self:syncExternalAnnotations() end,
+        },
+        {
+            text = _("Sync single chapter…"),
+            enabled_func = function()
+                local entry = current_entry(self)
+                return entry and entry.binding ~= nil
+            end,
+            callback = function() self:syncExternalAnnotationsChapter() end,
         },
         {
             text = _("Clear data"),

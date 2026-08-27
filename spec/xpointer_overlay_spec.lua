@@ -224,10 +224,11 @@ confirm_options.ok_callback()
 expect(sync_calls == 1,
     "confirming the match did not start annotation sync")
 local local_book_items = bind_host:getXPointerOverlayPrototypeMenuItems()
-expect(#local_book_items == 3,
+expect(#local_book_items == 4,
     "local-book menu retained duplicate visibility or diagnostic items")
 expect(local_book_items[2].text_func() == "Sync underlines and thoughts"
-        and local_book_items[3].text
+        and local_book_items[3].text == "Sync single chapter…"
+        and local_book_items[4].text
             == "Clear data",
     "local-book menu actions did not use unified terminology")
 saved_document.stats = { located = 242, total = 379 }
@@ -235,7 +236,7 @@ expect(bind_host:getXPointerOverlayPrototypeMenuItems()[2].text_func()
         == "Sync underlines and thoughts · 242 matched",
     "local-book sync menu did not show the last matched count")
 local menu_updates = 0
-local_book_items[3].callback({
+local_book_items[4].callback({
     updateItems = function() menu_updates = menu_updates + 1 end,
 })
 expect(saved_document == nil and menu_updates == 1,
