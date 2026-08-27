@@ -4,36 +4,6 @@
 
 在 KOReader 上阅读微信读书中的书籍、公众号文章的插件。支持同步进度同步，阅读时长同步和统计，查看书评、划线和想法。让Kindle、Kobo等封闭系统设备也能体验微信读书！
 
-
-## 其它项目推荐
-
-| 插件 | 简介                                                  |
-|------|-----------------------------------------------------|
-| [kindlebtcontroller.koplugin](https://github.com/finlater/kindlebtcontroller.koplugin) | 蓝牙手柄/遥控器控制 Kindle —— 翻页、调节亮度、章节跳转等 20+ 操作，按键完全可自定义。 |
-| [one.koplugin](https://github.com/finlater/one.koplugin) | 在 KOReader 上离线阅读「ONE · 一个」每日更新：一图、一文、一问答。           |
-
-## 功能
-
-| 主菜单 | 书架 | 公众号 |
-|:---:|:---:|:---:|
-| ![主菜单](screenshots/main_manu.png) | ![微信读书书架](screenshots/bookshelf.png) | ![公众号](screenshots/bookshelf_wp.png) |
-
-| 阅读时间上报 | 阅读统计 | 阅读进度同步 |
-|:---:|:---:|:---:|
-| ![阅读时间上报](screenshots/read_report.png) | ![阅读统计](screenshots/read_stats.png) | ![阅读进度同步](screenshots/read_progress.png) |
-
-| 多选章节下载 | 章节预下载 | 下载全书 |
-|:---:|:---:|:---:|
-| ![多选章节下载](screenshots/download_multi_chapter.png) | ![章节预下载](screenshots/pre_download_next_chapter.png) | ![下载全书](screenshots/download.png) |
-
-| 书籍详情 | 书评 | 划线和想法 |
-|:---:|:---:|:---:|
-| ![书籍详情](screenshots/book_detail.png) | ![书评](screenshots/book_review.png) | ![划线和想法](screenshots/thought.png) |
-
-| 搜索书籍 | 快捷菜单 | 设置 |
-|:---:|:---:|:---:|
-| ![搜索书籍](screenshots/book_search.png) | ![快捷菜单](screenshots/quick_menu.png) | ![设置](screenshots/setting.png) |
-
 ## 安装
 
 > ⚠️ 建议使用 **KOReader 2026.03 或更高版本**。旧版本可能无法正常加载或使用插件，例如「工具」菜单中找不到「微信读书」。详见 [#14](https://github.com/finlater/weread.koplugin/issues/14)。
@@ -63,6 +33,29 @@ koreader/plugins/weread.koplugin/
 3. 点击 **获取 API Key**，确认已经生成个人官方 API Key。
 4. 在 KOReader 打开 **工具 → 微信读书 → 微信扫码登录**。
 5. 使用微信扫码并在手机端确认；若手机显示四位验证码，请在 KOReader 中输入。
+
+## 功能
+
+| 主菜单 | 书架 | 公众号 |
+|:---:|:---:|:---:|
+| ![主菜单](screenshots/main_manu.png) | ![微信读书书架](screenshots/bookshelf.png) | ![公众号](screenshots/bookshelf_wp.png) |
+
+| 阅读时间上报 | 阅读统计 | 阅读进度同步 |
+|:---:|:---:|:---:|
+| ![阅读时间上报](screenshots/read_report.png) | ![阅读统计](screenshots/read_stats.png) | ![阅读进度同步](screenshots/read_progress.png) |
+
+| 多选章节下载 | 章节预下载 | 下载全书 |
+|:---:|:---:|:---:|
+| ![多选章节下载](screenshots/download_multi_chapter.png) | ![章节预下载](screenshots/pre_download_next_chapter.png) | ![下载全书](screenshots/download.png) |
+
+| 书籍详情 | 书评 | 划线和想法 |
+|:---:|:---:|:---:|
+| ![书籍详情](screenshots/book_detail.png) | ![书评](screenshots/book_review.png) | ![划线和想法](screenshots/thought.png) |
+
+| 搜索书籍 | 快捷菜单 | 设置 |
+|:---:|:---:|:---:|
+| ![搜索书籍](screenshots/book_search.png) | ![快捷菜单](screenshots/quick_menu.png) | ![设置](screenshots/setting.png) |
+
 
 ## SimpleUI / Zen_UI 集成
 
@@ -159,3 +152,11 @@ XPointer 外部标注层仍是实验性功能，测试步骤和限制见
 `fonts/NotoEmoji-Regular.ttf` 是第三方字体，采用 [SIL Open Font License 1.1](fonts/LICENSE)，不适用本项目的 AGPL-3.0。
 
 Copyright © 2026 finlater and contributors.
+
+## 项目推荐
+
+| 插件 | 简介                                                  |
+|------|-----------------------------------------------------|
+| [kindlebtcontroller.koplugin](https://github.com/finlater/kindlebtcontroller.koplugin) | 蓝牙手柄/遥控器控制 Kindle —— 翻页、调节亮度、章节跳转等 20+ 操作，按键完全可自定义。 |
+| [one.koplugin](https://github.com/finlater/one.koplugin) | 在 KOReader 上离线阅读「ONE · 一个」每日更新：一图、一文、一问答。           |
+
