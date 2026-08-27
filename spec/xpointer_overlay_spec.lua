@@ -135,6 +135,14 @@ Controller.onDocumentRerendered(host)
 expect(invalidations == 2,
     "DocumentRerendered did not retain the layout invalidation fallback")
 
+local original_items = {
+    {
+        abstract = "微信读书返回的相邻上下文",
+        author = "读者",
+        content = "想法正文",
+        likes_count = 3,
+    },
+}
 local popup_host = {
     ui = {
         font = { font_face = "Book Font" },
@@ -164,9 +172,8 @@ local popup_host = {
         enabled = true,
         hitTest = function()
             return {
-                items = {
-                    { abstract = "quote", author = "alice", content = "body" },
-                },
+                text = "本地实际划线句子",
+                items = original_items,
             }
         end,
     },
@@ -183,6 +190,14 @@ expect(shown_popup and shown_popup.position == "bottom"
 expect(shown_popup.doc_font_name == "Book Font"
         and shown_popup.doc_margins.left == 11,
     "local-book popup did not reuse the document typography")
+expect(shown_popup.pages[1].abstract == "本地实际划线句子",
+    "thought popup title did not use the tapped underline text")
+expect(shown_popup.pages[1].content == "想法正文"
+        and shown_popup.pages[1].author == "读者"
+        and shown_popup.pages[1].likes_count == 3,
+    "replacing the popup title changed the thought details")
+expect(original_items[1].abstract == "微信读书返回的相邻上下文",
+    "opening the popup mutated the saved review items")
 
 local bind_host = {
     ui = { document = { file = "/books/test.epub" } },

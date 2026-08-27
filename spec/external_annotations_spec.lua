@@ -50,13 +50,16 @@ local document = {
         end
         return {}
     end,
-    getTextFromXPointers = function(_self, start_xp)
+    getTextFromXPointers = function(_self, start_xp, end_xp)
         get_text_calls = get_text_calls + 1
         if start_xp == "ch1s" then return chapter1_text end
         if start_xp == "ch2s" then return chapter2_text end
+        if start_xp == "w10" and end_xp == "w6" then return "重复原文" end
+        if start_xp == "w5" and end_xp == "w1" then return "重复原文" end
+        if start_xp == "w16" and end_xp == "ch3s" then return chapter2_text end
         return ""
     end,
-    getNextVisibleChar = function()
+    getPrevVisibleChar = function()
         walk_steps = walk_steps + 1
         return "w" .. walk_steps
     end,
@@ -105,15 +108,15 @@ local records, stats = External.locate(document, {
 
 -- Chapter 1: both repeated quotations resolved in document order through the
 -- chapter text index (no CREngine search at all).
-expect(#records == 4 and records[1].pos0 == "w2" and records[1].pos1 == "w6",
+expect(#records == 4 and records[1].pos0 == "w10" and records[1].pos1 == "w6",
     "first repeated quotation was not located inside the chapter bounds")
-expect(records[2].pos0 == "w7" and records[2].pos1 == "w11",
+expect(records[2].pos0 == "w5" and records[2].pos1 == "w1",
     "second repeated quotation was not located after the first")
 expect(records[1].book_id == "7" and records[1].chapter_uid == "1"
         and records[1].range == "2-3",
     "located record lost its identity fields")
 -- Chapter 2: review-abstract fallback quote located in the chapter text.
-expect(records[3].pos0 == "w12" and records[3].pos1 == "ch3s"
+expect(records[3].pos0 == "w16" and records[3].pos1 == "ch3s"
         and records[3].items[1].content == "想法",
     "review abstract fallback was not preserved or bounded by the chapter end")
 -- Chapter 3 (no end bound): chapter-start findText with a single hit.
@@ -125,10 +128,10 @@ expect(find_all_calls == 1,
     "chapter-bounded matching scanned the whole book per quote")
 expect(find_text_calls == 1 and chapter_search_max_hits == 1,
     "chapter findText fallback did not stop after its first forward match")
-expect(get_text_calls == 2,
-    "chapter text was extracted more than once per bounded chapter")
-expect(walk_steps == 12,
-    "visible-character walk did not stop at the furthest needed offset")
+expect(get_text_calls == 5,
+    "chapter text extraction or mapped-range validation count is wrong")
+expect(walk_steps == 16,
+    "reverse visible-character walk did not cover the needed offsets")
 expect(goto_calls == 2 and current_xpointer == "reading-position",
     "matching moved the reading position: " .. tostring(current_xpointer))
 
@@ -141,7 +144,7 @@ local diverged = {
         return { { start = "w9", ["end"] = "w9e" } }
     end,
     getTextFromXPointers = function() return "甲乙丙" end,
-    getNextVisibleChar = function()
+    getPrevVisibleChar = function()
         diverged_walk_calls = diverged_walk_calls + 1
         return nil -- the walk cannot produce any XPointer
     end,

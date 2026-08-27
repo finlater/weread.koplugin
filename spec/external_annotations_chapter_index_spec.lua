@@ -59,21 +59,21 @@ expect(External.find_in_flat("来自想法摘要", "来自 想法 摘要", 0) ~=
 expect(External.find_in_flat("来自想法摘要", "不存在", 0) == nil,
     "absent quote was found in the chapter text")
 
--- advance_chapter_walk maps flat byte offsets to XPointers, consuming a walk
--- step for whitespace characters (which have no flat offset of their own) but
--- not for the '\n' paragraph separators inserted by getTextFromXPointers.
+-- advance_chapter_walk maps flat byte offsets backwards from the next chapter
+-- boundary, consuming a walk step for whitespace characters (which have no
+-- flat offset of their own) but not for inserted paragraph separators.
 local steps = 0
 local walk_document = {
-    getNextVisibleChar = function()
+    getPrevVisibleChar = function()
         steps = steps + 1
         return "w" .. steps
     end,
 }
 local extracted = "甲 乙\n丙"
-local walk = External.new_chapter_walk(walk_document, extracted, "ch1s")
-expect(External.advance_chapter_walk(walk, 7) == true,
-    "walk could not reach the last needed character")
-expect(walk.xp_at[1] == "w1" and walk.xp_at[4] == "w3" and walk.xp_at[7] == "w4",
+local walk = External.new_chapter_walk(walk_document, extracted, "ch2s")
+expect(External.advance_chapter_walk(walk, 1) == true,
+    "walk could not reach the first needed character")
+expect(walk.xp_at[1] == "w4" and walk.xp_at[4] == "w2" and walk.xp_at[7] == "w1",
     "walk did not skip whitespace and separators in flat offset space")
 expect(walk.xp_at[2] == nil and steps == 4,
     "walk visited the wrong number of visible characters")
@@ -81,8 +81,8 @@ expect(walk.xp_at[2] == nil and steps == 4,
 -- A walk that cannot produce XPointers (document API divergence) is invalid
 -- and forces the caller onto the whole-book fallback.
 local dry = External.new_chapter_walk({
-    getNextVisibleChar = function() return nil end,
-}, extracted, "ch1s")
+    getPrevVisibleChar = function() return nil end,
+}, extracted, "ch2s")
 expect(External.advance_chapter_walk(dry, 1) == false and dry.valid == false,
     "diverged walk was not invalidated")
 
@@ -103,8 +103,12 @@ local document = {
         find_text_calls = find_text_calls + 1
         return {}
     end,
-    getTextFromXPointers = function() return "甲敏感原文内容" end,
-    getNextVisibleChar = function()
+    getTextFromXPointers = function(_self, start_xp)
+        if start_xp == "ch1s" then return "甲敏感原文内容" end
+        if start_xp == "w6" then return "敏感原文内容" end
+        return ""
+    end,
+    getPrevVisibleChar = function()
         locate_steps = locate_steps + 1
         return "w" .. locate_steps
     end,
@@ -126,7 +130,7 @@ local records, stats = External.locate(document, {
 }, chapter_titles = { ["42"] = "序列2" },
     chapter_local_titles = { ["42"] = "第二十四章 序列2" } })
 
-expect(#records == 1 and records[1].pos0 == "w2" and records[1].pos1 == "ch2s",
+expect(#records == 1 and records[1].pos0 == "w6" and records[1].pos1 == "ch2s",
     "chapter-bounded locate did not resolve the quote through the text index")
 expect(stats.total == 1 and stats.located == 1 and stats.unmatched == 0,
     "chapter-bounded locate reported wrong statistics")

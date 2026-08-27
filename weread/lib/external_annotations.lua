@@ -120,7 +120,10 @@ end
 -- Chapter text indexing.  A chapter bounded by two TOC XPointers is extracted
 -- once (getTextFromXPointers is a plain DOM walk, no page formatting), quotes
 -- are matched against a whitespace-normalized rendering in pure Lua, and a
--- getNextVisibleChar walk maps flat-text byte offsets back to XPointers.
+-- A reverse visible-character walk maps flat-text byte offsets back to
+-- XPointers.  Walking from the next chapter boundary avoids ambiguous TOC
+-- element XPointers: CREngine may treat getNextVisibleChar(<heading element>)
+-- as a move past the element rather than into its first text node.
 -- This replaces one CREngine full-text search per underline, which CREngine
 -- cannot bound to a chapter: findText with origin=0 always scans from the
 -- current viewport page to the end of the book, and findAllText scans the
@@ -186,18 +189,30 @@ function ExternalAnnotations.find_in_flat(flat, quote, from)
     return s, e + 1
 end
 
--- Incremental visible-character walk used to map flat-text byte offsets to
--- XPointers.  Created per chapter; advance_chapter_walk() grows it lazily up
--- to the furthest offset any matched quote needs, so a chapter whose quotes
--- all sit near the start is never walked to its end.
-function ExternalAnnotations.new_chapter_walk(document, extracted, start_xpointer)
+local function char_start_before(text, byte_index)
+    local index = byte_index
+    while index > 1 do
+        local byte = text:byte(index)
+        if byte < 0x80 or byte >= 0xC0 then break end
+        index = index - 1
+    end
+    return index
+end
+
+-- Reverse visible-character walk used to map flat-text byte offsets to
+-- XPointers.  The next chapter's TOC XPointer is a stable exclusive boundary;
+-- getPrevVisibleChar() from it lands on the final visible character of the
+-- current chapter even when the current chapter's TOC XPointer names an
+-- element instead of a text position.
+function ExternalAnnotations.new_chapter_walk(document, extracted, end_xpointer)
+    local flat_bytes = #ExternalAnnotations.flatten_text(extracted)
     return {
         document = document,
         extracted = extracted,
-        xp = start_xpointer,
-        ptr = 1,
-        flat_byte = 0,
-        xp_at = {},
+        xp = end_xpointer,
+        ptr = #extracted,
+        flat_byte = flat_bytes,
+        xp_at = { [flat_bytes + 1] = end_xpointer },
         valid = true,
         n = #extracted,
     }
@@ -211,28 +226,29 @@ end
 function ExternalAnnotations.advance_chapter_walk(walk, target_byte)
     if not walk.valid then return false end
     if walk.xp_at[target_byte] then return true end
-    local getNextVisibleChar = walk.document.getNextVisibleChar
+    local getPrevVisibleChar = walk.document.getPrevVisibleChar
     local extracted = walk.extracted
-    while walk.ptr <= walk.n and walk.flat_byte < target_byte do
-        local byte = extracted:byte(walk.ptr)
+    while walk.ptr >= 1 and not walk.xp_at[target_byte] do
+        local char_start = char_start_before(extracted, walk.ptr)
+        local byte = extracted:byte(char_start)
         if byte == 0x0A or byte == 0x0D then
             -- Block separator inserted by getTextFromXPointers: no visible
             -- character corresponds to it, so it consumes no walk step.
-            walk.ptr = walk.ptr + 1
+            walk.ptr = char_start - 1
         else
-            local ok, next_xp = pcall(getNextVisibleChar, walk.document, walk.xp)
-            if not ok or not next_xp then
+            local ok, previous_xp = pcall(getPrevVisibleChar,
+                walk.document, walk.xp)
+            if not ok or not previous_xp then
                 walk.valid = false
                 return false
             end
-            walk.xp = next_xp
+            walk.xp = previous_xp
             local clen = char_len(byte)
-            if ws_len_at(extracted, walk.ptr) == 0 then
-                local char_start = walk.flat_byte + 1
-                walk.flat_byte = walk.flat_byte + clen
-                walk.xp_at[char_start] = walk.xp
+            if ws_len_at(extracted, char_start) == 0 then
+                walk.flat_byte = walk.flat_byte - clen
+                walk.xp_at[walk.flat_byte + 1] = walk.xp
             end
-            walk.ptr = walk.ptr + clen
+            walk.ptr = char_start - 1
         end
     end
     if not walk.xp_at[target_byte] then
@@ -240,6 +256,18 @@ function ExternalAnnotations.advance_chapter_walk(walk, target_byte)
         return false
     end
     return true
+end
+
+local function mapped_quote_matches(document, result, quote)
+    if type(document.getTextFromXPointers) ~= "function" then return true end
+    local ok, actual = pcall(document.getTextFromXPointers, document,
+        result.start, result["end"])
+    if type(document.clearSelection) == "function" then
+        pcall(document.clearSelection, document)
+    end
+    return ok and type(actual) == "string"
+        and ExternalAnnotations.flatten_text(actual)
+            == ExternalAnnotations.flatten_text(quote)
 end
 
 -- ---------------------------------------------------------------------------
@@ -411,7 +439,7 @@ function ExternalAnnotations.locate(document, chapters, options)
         local flat, extracted
         local indexed = range and range.start_xpointer and range.end_xpointer
             and type(document.getTextFromXPointers) == "function"
-            and type(document.getNextVisibleChar) == "function"
+            and type(document.getPrevVisibleChar) == "function"
         if indexed then
             local ok, text = pcall(document.getTextFromXPointers, document,
                 range.start_xpointer, range.end_xpointer)
@@ -429,7 +457,7 @@ function ExternalAnnotations.locate(document, chapters, options)
 
         local walk = indexed and flat
             and ExternalAnnotations.new_chapter_walk(
-                document, extracted, range.start_xpointer) or nil
+                document, extracted, range.end_xpointer) or nil
         local search_origin = range and range.start_xpointer or global_cursor_xp
         local cursor_byte = 0
 
@@ -447,17 +475,17 @@ function ExternalAnnotations.locate(document, chapters, options)
                 local o0, o1 = ExternalAnnotations.find_in_flat(flat, quote, cursor_byte)
                 if o0 then
                     cursor_byte = o1
-                    -- The character after the quote only needs an XPointer
-                    -- when the quote does not end exactly at the chapter end.
-                    local target = o1 <= #flat and o1 or o0
-                    if ExternalAnnotations.advance_chapter_walk(walk, target) then
-                        search_origin = o1 <= #flat and walk.xp_at[o1]
-                            or (range and range.end_xpointer) or walk.xp_at[o0]
-                        return {
+                    if ExternalAnnotations.advance_chapter_walk(walk, o0)
+                        and ExternalAnnotations.advance_chapter_walk(walk, o1) then
+                        local mapped = {
                             start = walk.xp_at[o0],
-                            ["end"] = o1 <= #flat and walk.xp_at[o1]
-                                or (range and range.end_xpointer) or walk.xp_at[o0],
-                        }, false, "chapter_text", 1
+                            ["end"] = walk.xp_at[o1],
+                        }
+                        if mapped_quote_matches(document, mapped, quote) then
+                            search_origin = mapped["end"]
+                            return mapped, false, "chapter_text", 1
+                        end
+                        walk.valid = false
                     end
                     -- Walk diverged from the extracted text: fall through to
                     -- the whole-book path; the walk stays invalid.

@@ -338,8 +338,18 @@ function M:_onXPointerOverlayTap(ges)
     if is_page_turn_edge(self, ges.pos) then return false end
     local record = overlay:hitTest(ges.pos)
     if not record then return false end
-    local items = record.items
-    if type(items) ~= "table" or #items == 0 then
+    local source_items = record.items
+    local items = {}
+    if type(source_items) == "table" then
+        for index, item in ipairs(source_items) do
+            local copy = {}
+            for key, value in pairs(type(item) == "table" and item or {}) do
+                copy[key] = value
+            end
+            items[index] = copy
+        end
+    end
+    if #items == 0 then
         items = {
             {
                 abstract = record.text,
@@ -348,6 +358,10 @@ function M:_onXPointerOverlayTap(ges)
                 likes_count = 0,
             },
         }
+    elseif type(record.text) == "string" and record.text ~= "" then
+        -- The review abstract can include nearby context and does not always
+        -- equal the exact sentence represented by the tapped local underline.
+        items[1].abstract = record.text
     end
     require("weread.ui.thought_popup").show(ThoughtPopupConfig.build(self, items))
     return true
