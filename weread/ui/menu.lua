@@ -553,7 +553,7 @@ function M:getSettingsMenuItems()
                                 },
                                 {
                                     text_func = function()
-                                        local height = tonumber(self.settings:get("thought_popup").height_ratio) or 0.62
+                                        local height = tonumber(self.settings:get("thought_popup").height_ratio) or 0.70
                                         return T(_("Height: %1%"), math.floor(height * 100 + 0.5))
                                     end,
                                     keep_menu_open = true,
@@ -583,9 +583,9 @@ function M:getSettingsMenuItems()
                                 },
                                 {
                                     text_func = function()
-                                        local contrast = tonumber(self.settings:get("thought_popup").contrast) or 0
-                                        if contrast == 0 then
-                                            return _("Font contrast: Default")
+                                        local contrast = tonumber(self.settings:get("thought_popup").contrast) or 9
+                                        if contrast == 9 then
+                                            return _("Font contrast: Pure black (default)")
                                         end
                                         return T(_("Font contrast: %1"),
                                             (contrast > 0 and "+" or "") .. tostring(contrast))
@@ -797,7 +797,7 @@ end
 -- Let the user set the thought popup height as a percentage of the screen.
 function M:showThoughtPopupHeightPicker(touchmenu_instance)
     local SpinWidget = require("ui/widget/spinwidget")
-    local current = math.floor((tonumber(self.settings:get("thought_popup").height_ratio) or 0.62) * 100)
+    local current = math.floor((tonumber(self.settings:get("thought_popup").height_ratio) or 0.70) * 100)
     local spin = SpinWidget:new{
         value = current,
         value_min = 20,
@@ -865,7 +865,7 @@ The thought popup font adjusts to the font size you've set for the document, but
         else
             spin_widget = SpinWidget:new{
                 width = math.floor(Screen:getWidth() * 0.75),
-                value = tonumber(thought_popup.font_size_relative) or -2,
+                value = tonumber(thought_popup.font_size_relative) or 0,
                 value_min = -10,
                 value_max = 5,
                 precision = "%+d",
@@ -875,7 +875,7 @@ The thought popup font adjusts to the font size you've set for the document, but
 The thought popup font adjusts to the font size you've set for the document.
 You can specify here how much smaller or larger it should be relative to the document font size.
 A negative value will make it smaller, while a positive one will make it larger.
-The recommended value is -2.]]),
+The default value is 0, which matches the document font size.]]),
                 callback = function(spin)
                     local tp = self.settings:get("thought_popup")
                     tp.font_size_relative = spin.value
@@ -899,10 +899,10 @@ The recommended value is -2.]]),
 end
 
 -- Set the thought popup text contrast: positive values darken the text,
--- negative values lighten it (0 = the default light gray shades).
+-- negative values lighten it (+9 = the default pure black rendering).
 function M:showThoughtPopupContrastPicker(touchmenu_instance)
     local SpinWidget = require("ui/widget/spinwidget")
-    local current = tonumber(self.settings:get("thought_popup").contrast) or 0
+    local current = tonumber(self.settings:get("thought_popup").contrast) or 9
     local spin = SpinWidget:new{
         value = current,
         value_min = -3,
@@ -911,7 +911,7 @@ function M:showThoughtPopupContrastPicker(touchmenu_instance)
         ok_text = _("Set contrast"),
         title_text = _("Thought popup font contrast"),
         info_text = _([[
-The thought popup text is rendered in light gray shades. Increase the contrast to darken the text (the maximum renders pure black), decrease it to lighten it.]]),
+The thought popup text is pure black by default (maximum contrast). Lower the contrast to render it in lighter gray shades.]]),
         callback = function(spin_widget)
             local thought_popup = self.settings:get("thought_popup")
             thought_popup.contrast = spin_widget.value

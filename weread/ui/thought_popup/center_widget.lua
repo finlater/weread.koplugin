@@ -50,10 +50,10 @@ local CenterThoughtPopupWidget = InputContainer:extend{
         top = Screen:scaleBySize(10),
         bottom = Screen:scaleBySize(10),
     },
-    height_ratio = 0.35,
+    height_ratio = 0.70,
     width_ratio = 0.8,
-    contrast = 0,
-    tap_to_page = false,
+    contrast = 9,
+    tap_to_page = true,
     close_callback = nil,
     dialog = nil,
     page_index = 1,
@@ -67,7 +67,7 @@ local CenterThoughtPopupWidget = InputContainer:extend{
 }
 
 function CenterThoughtPopupWidget:init()
-    self.height_ratio = math.max(0.1, math.min(0.9, self.height_ratio or 0.35))
+    self.height_ratio = math.max(0.1, math.min(0.9, self.height_ratio or 0.70))
     self.width_ratio = math.max(0.4, math.min(1.0, self.width_ratio or 0.8))
     self.width = math.floor(Screen:getWidth() * self.width_ratio)
     self.height = math.floor(Screen:getHeight() * self.height_ratio)
@@ -140,7 +140,7 @@ function CenterThoughtPopupWidget:_reopen(opts)
     if opts.tap_to_page ~= nil then self.tap_to_page = opts.tap_to_page end
     if opts.dialog then self.dialog = opts.dialog end
     self.close_callback = opts.close_callback
-    self.height_ratio = math.max(0.1, math.min(0.9, self.height_ratio or 0.35))
+    self.height_ratio = math.max(0.1, math.min(0.9, self.height_ratio or 0.70))
     self.width_ratio = math.max(0.4, math.min(1.0, self.width_ratio or 0.8))
     self.width = math.floor(Screen:getWidth() * self.width_ratio)
     self.height = math.floor(Screen:getHeight() * self.height_ratio)

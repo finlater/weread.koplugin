@@ -16,7 +16,7 @@ local function layoutParams(plugin, popup_settings)
     if font_size then
         font_size_scaled = Screen:scaleBySize(font_size)
     else
-        local relative = tonumber(popup_settings.font_size_relative) or -2
+        local relative = tonumber(popup_settings.font_size_relative) or 0
         local doc_font_size = (document.configurable and document.configurable.font_size) or 18
         font_size_scaled = Screen:scaleBySize(doc_font_size) + relative
     end
@@ -38,10 +38,10 @@ function M.build(plugin, pages, extra)
     local layout = layoutParams(plugin, popup_settings)
     local opts = {
         pages = pages,
-        height_ratio = tonumber(popup_settings.height_ratio) or 0.62,
+        height_ratio = tonumber(popup_settings.height_ratio) or 0.70,
         position = popup_settings.position or "center",
         width_ratio = tonumber(popup_settings.width_ratio) or 0.8,
-        contrast = tonumber(popup_settings.contrast) or 0,
+        contrast = tonumber(popup_settings.contrast) or 9,
         tap_to_page = popup_settings.tap_to_page == true,
         dialog = plugin.dialog,
         doc_font_name = layout.doc_font_name,

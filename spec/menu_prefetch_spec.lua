@@ -64,9 +64,11 @@ local cache = {
 local shelf = { sort_order = "time_desc" }
 local flush_count = 0
 local thought_popup = {
-    height_ratio = 0.62,
-    font_size_relative = -2,
-    position = "bottom",
+    height_ratio = 0.70,
+    font_size_relative = 0,
+    position = "center",
+    width_ratio = 0.8,
+    contrast = 9,
 }
 local available_version
 local host = {
@@ -321,13 +323,13 @@ expect(popup_items[2] and type(popup_items[2].text_func) == "function"
 expect(popup_items[3] and type(popup_items[3].text_func) == "function"
         and popup_items[3].text_func() == "Width: %1%",
     "thought popup width entry shows the current percentage")
-expect(popup_items[3] and not popup_items[3].enabled_func(),
-    "thought popup width is disabled while the position is bottom")
+expect(popup_items[3] and popup_items[3].enabled_func(),
+    "thought popup width is enabled for the default centered position")
 expect(popup_items[4] and popup_items[4].text == "Font size",
     "thought popup font size entry is present")
 expect(popup_items[5] and popup_items[5].text_func()
-        == "Font contrast: Default",
-    "thought popup font contrast entry shows the default state")
+        == "Font contrast: Pure black (default)",
+    "thought popup font contrast entry shows the pure-black default")
 expect(popup_items[6] and popup_items[6].text == "Tap left/right to turn pages"
         and not popup_items[6].checked_func(),
     "tap-to-page entry is present and off by default")

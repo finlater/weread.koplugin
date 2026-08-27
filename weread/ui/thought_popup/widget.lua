@@ -46,8 +46,8 @@ local ThoughtPopupWidget = InputContainer:extend{
         top = Screen:scaleBySize(10),
         bottom = Screen:scaleBySize(10),
     },
-    height_ratio = 0.35,
-    contrast = 0,
+    height_ratio = 0.70,
+    contrast = 9,
     tap_to_page = false,
     close_callback = nil,
     dialog = nil,
@@ -59,7 +59,7 @@ local ThoughtPopupWidget = InputContainer:extend{
 }
 
 function ThoughtPopupWidget:init()
-    self.height_ratio = math.max(0.1, math.min(0.9, self.height_ratio or 0.35))
+    self.height_ratio = math.max(0.1, math.min(0.9, self.height_ratio or 0.70))
     self.width = Screen:getWidth()
     self.height = math.floor(Screen:getHeight() * self.height_ratio)
 
@@ -125,7 +125,7 @@ function ThoughtPopupWidget:_reopen(opts)
     if opts.tap_to_page ~= nil then self.tap_to_page = opts.tap_to_page end
     if opts.dialog then self.dialog = opts.dialog end
     self.close_callback = opts.close_callback
-    self.height_ratio = math.max(0.1, math.min(0.9, self.height_ratio or 0.35))
+    self.height_ratio = math.max(0.1, math.min(0.9, self.height_ratio or 0.70))
     self.height = math.floor(Screen:getHeight() * self.height_ratio)
 
     self._pages:setContent(self.items, self.doc_font_name, self.doc_font_size,
