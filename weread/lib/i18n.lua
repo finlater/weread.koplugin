@@ -155,6 +155,7 @@ local zh = {
     ["Book images"] = "书籍图片",
     ["Public account article images"] = "公众号文章图片",
     ["Hide footnote text"] = "隐藏脚注文本",
+    ["To view hidden footnotes, enable \"Show footnotes in popup\" in KOReader Settings → Links. Otherwise footnote content will not be visible. Hide footnote text?"] = "隐藏脚注文本后，需要在 KOReader 的“设置 → 链接”中勾选“以弹框方式显示脚注”，否则将无法正常看到脚注内容。是否隐藏脚注文本？",
     ["Prefetch underlines and thoughts"] = "预下载划线和想法",
     ["Chapter prefetch"] = "章节预下载",
     ["Automatically prefetch next chapter"] = "自动预下载下一章",

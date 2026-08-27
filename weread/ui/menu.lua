@@ -387,13 +387,24 @@ function M:getSettingsMenuItems()
                             _("Hide footnote text"),
                             function(touchmenu_instance)
                                 local cache = self.settings:get("cache")
-                                cache.book_footnotes_in_popup =
-                                    not (cache.book_footnotes_in_popup == true)
-                                self.settings:set("cache", cache)
-                                self.settings:flush()
-                                if touchmenu_instance then
-                                    touchmenu_instance:updateItems()
+                                local function apply(enabled)
+                                    cache.book_footnotes_in_popup = enabled
+                                    self.settings:set("cache", cache)
+                                    self.settings:flush()
+                                    if touchmenu_instance then
+                                        touchmenu_instance:updateItems()
+                                    end
                                 end
+                                if cache.book_footnotes_in_popup == true then
+                                    apply(false)
+                                    return
+                                end
+                                UIManager:show(ConfirmBox:new{
+                                    text = _("To view hidden footnotes, enable \"Show footnotes in popup\" in KOReader Settings → Links. Otherwise footnote content will not be visible. Hide footnote text?"),
+                                    ok_text = _("Enable"),
+                                    cancel_text = _("Cancel"),
+                                    ok_callback = function() apply(true) end,
+                                })
                             end),
                     },
                     {

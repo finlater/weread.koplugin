@@ -281,9 +281,13 @@ expect(footnote_popup and not footnote_popup.checked_func(),
 footnote_popup.callback({
     updateItems = function() menu_update_count = menu_update_count + 1 end,
 })
-expect(cache.book_footnotes_in_popup == true
-        and footnote_popup.checked_func(),
-    "book footnote popup preference was enabled and persisted")
+expect(cache.book_footnotes_in_popup == false
+        and shown_widget
+        and shown_widget.text:find("Settings → Links", 1, true),
+    "enabling hidden footnotes should first explain the KOReader popup setting")
+shown_widget.ok_callback()
+expect(cache.book_footnotes_in_popup == true and footnote_popup.checked_func(),
+    "book footnotes were hidden only after confirmation")
 
 local prefetch_items = prefetch and prefetch.sub_item_table_func() or {}
 expect(#prefetch_items == 3, "prefetch submenu contains exactly three settings")
