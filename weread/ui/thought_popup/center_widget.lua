@@ -19,6 +19,7 @@ local ButtonTable = require("ui/widget/buttontable")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
 local FrameContainer = require("ui/widget/container/framecontainer")
+local Font = require("ui/font")
 local Geom = require("ui/geometry")
 local GestureRange = require("ui/gesturerange")
 local InputContainer = require("ui/widget/container/inputcontainer")
@@ -123,7 +124,7 @@ function CenterThoughtPopupWidget:init()
 end
 
 function CenterThoughtPopupWidget:onShow()
-    UIManager:setDirty(self.dialog, function()
+    UIManager:setDirty(self, function()
         return "partial", self.container.dimen
     end)
 end
@@ -166,6 +167,7 @@ function CenterThoughtPopupWidget:_buildButtons()
         {
             text = "‹ " .. _("Previous"),
             id = "prev_page",
+            vsync = true,
             callback = function()
                 popup:changePage(-1)
             end,
@@ -178,6 +180,7 @@ function CenterThoughtPopupWidget:_buildButtons()
         {
             text = _("Next") .. " ›",
             id = "next_page",
+            vsync = true,
             callback = function()
                 popup:changePage(1)
             end,
@@ -197,6 +200,8 @@ function CenterThoughtPopupWidget:_buildLayout()
         align = "left",
         with_bottom_line = true,
         title = self:_title(),
+        title_multilines = true,
+        title_face = Font:getFace("x_smalltfont", 18),
         close_callback = function()
             self:onClose()
         end,
@@ -279,9 +284,7 @@ function CenterThoughtPopupWidget:changePage(delta)
     if next_index == self.page_index then return end
     self.page_index = next_index
     self:_syncButtons()
-    if self.dialog then
-        UIManager:setDirty(self.dialog, "partial", self.container.dimen)
-    end
+    UIManager:setDirty(self, "partial", self.container.dimen)
 end
 
 --- Keep the Previous/Next enabled states and the N / M indicator current.
@@ -306,7 +309,7 @@ function CenterThoughtPopupWidget:_syncButtons()
 end
 
 function CenterThoughtPopupWidget:onCloseWidget()
-    UIManager:setDirty(self.dialog, function()
+    UIManager:setDirty(self, function()
         return "partial", self.container.dimen
     end)
     if self.close_callback then

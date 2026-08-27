@@ -196,8 +196,10 @@ function PageRenderer:paginate()
 
     for _, block in ipairs(blocks) do
         if block.kind == "paragraph" then
+            y = y + math.floor(base_size * (block.spacing_before or 0) + 0.5)
             addTextPiece(block.variant, block.text, block.fg, text_w, 0,
                 block.variant == "meta")
+            y = y + math.floor(base_size * (block.spacing_after or 0) + 0.5)
         end
     end
 

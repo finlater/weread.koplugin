@@ -70,7 +70,7 @@ overlay:paintTo({}, 0, 0)
 expect(#overlay.visible == 0, "disabled overlay retained stale hit boxes")
 expect(box_calls == 2, "disabled overlay performed document work")
 
-local input_options, listed_items, saved_document, confirm_options
+local input_options, listed_items, saved_document, confirm_options, shown_popup
 package.preload["ui/uimanager"] = function()
     return {
         close = function() end,
@@ -87,6 +87,14 @@ package.preload["ui/widget/inputdialog"] = function()
         options.getInputText = function() return "测试书" end
         return options
     end }
+end
+package.preload["device"] = function()
+    return {
+        screen = {
+            getWidth = function() return 600 end,
+            scaleBySize = function(_, value) return value end,
+        },
+    }
 end
 package.preload["weread.lib.content"] = function() return {} end
 package.preload["weread.lib.external_annotations"] = function()
@@ -107,6 +115,9 @@ package.preload["weread.lib.plugin_util"] = function()
         end,
     }
 end
+package.preload["weread.ui.thought_popup"] = function()
+    return { show = function(options) shown_popup = options end }
+end
 local Controller = require("weread.ui.xpointer_overlay_controller")
 local invalidations = 0
 local host = {
@@ -123,6 +134,55 @@ expect(invalidations == 1,
 Controller.onDocumentRerendered(host)
 expect(invalidations == 2,
     "DocumentRerendered did not retain the layout invalidation fallback")
+
+local popup_host = {
+    ui = {
+        font = { font_face = "Book Font" },
+        document = {
+            configurable = { font_size = 24 },
+            getPageMargins = function()
+                return { left = 11, right = 12, top = 13, bottom = 14 }
+            end,
+        },
+    },
+    settings = {
+        get = function(_self, key)
+            if key == "cache" then
+                return { ignore_edge_thought_taps = false }
+            end
+            return {
+                height_ratio = 0.75,
+                position = "bottom",
+                width_ratio = 0.9,
+                contrast = 3,
+                tap_to_page = true,
+                font_size_relative = -2,
+            }
+        end,
+    },
+    _xpointer_overlay = {
+        enabled = true,
+        hitTest = function()
+            return {
+                items = {
+                    { abstract = "quote", author = "alice", content = "body" },
+                },
+            }
+        end,
+    },
+}
+for name, method in pairs(Controller) do popup_host[name] = method end
+expect(popup_host:_onXPointerOverlayTap({ pos = { x = 100, y = 100 } }) == true,
+    "local-book thought tap was not consumed")
+expect(shown_popup and shown_popup.position == "bottom"
+        and shown_popup.height_ratio == 0.75
+        and shown_popup.width_ratio == 0.9
+        and shown_popup.contrast == 3
+        and shown_popup.tap_to_page == true,
+    "local-book popup did not reuse the configured popup options")
+expect(shown_popup.doc_font_name == "Book Font"
+        and shown_popup.doc_margins.left == 11,
+    "local-book popup did not reuse the document typography")
 
 local bind_host = {
     ui = { document = { file = "/books/test.epub" } },

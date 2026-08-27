@@ -110,7 +110,7 @@ function ThoughtPopupWidget:init()
 end
 
 function ThoughtPopupWidget:onShow()
-    UIManager:setDirty(self.dialog, function()
+    UIManager:setDirty(self, function()
         return "partial", self.container.dimen
     end)
 end
@@ -160,7 +160,7 @@ function ThoughtPopupWidget:_buildLayout()
         scrollbar_w = item_width,
         margin_left = self.doc_margins.left,
         text_w = text_w,
-        dialog = self.dialog,
+        dialog = self,
         tap_to_page = self.tap_to_page,
         boundaries = self._pages.boundaries,
         page_bb_getter = function(page_idx)
@@ -196,7 +196,7 @@ function ThoughtPopupWidget:_buildLayout()
 end
 
 function ThoughtPopupWidget:onCloseWidget()
-    UIManager:setDirty(self.dialog, function()
+    UIManager:setDirty(self, function()
         return "partial", self.container.dimen
     end)
     if self.close_callback then

@@ -6,6 +6,7 @@ local Event = require("ui/event")
 local logger = require("weread.lib.logger")
 local ThoughtDB = require("weread.lib.thought_db")
 local ThoughtPopup = require("weread.ui.thought_popup")
+local ThoughtPopupConfig = require("weread.ui.thought_popup.popup_config")
 local time = require("ui/time")
 local UIManager = require("ui/uimanager")
 
@@ -313,22 +314,8 @@ function M:_showThoughtPopup(pages, link, session_gen, tap_started)
     end
 
     local popup_started = time.now()
-    local ok_params, params = pcall(function()
-        return self:_thoughtPopupLayoutParams()
-    end)
-    params = ok_params and params or nil
     local ok, popup = pcall(function()
-        return ThoughtPopup.show({
-            pages = pages,
-            height_ratio = tonumber(self.settings:get("thought_popup").height_ratio) or 0.62,
-            position = self.settings:get("thought_popup").position or "center",
-            width_ratio = tonumber(self.settings:get("thought_popup").width_ratio) or 0.8,
-            contrast = tonumber(self.settings:get("thought_popup").contrast) or 0,
-            tap_to_page = self.settings:get("thought_popup").tap_to_page == true,
-            dialog = self.dialog,
-            doc_font_name = params and params.doc_font_name,
-            doc_font_size = params and params.doc_font_size,
-            doc_margins = params and params.doc_margins,
+        return ThoughtPopup.show(ThoughtPopupConfig.build(self, pages, {
             close_callback = function()
                 self._thought_popup_open = nil
                 self._current_thought_popup = nil
@@ -338,7 +325,7 @@ function M:_showThoughtPopup(pages, link, session_gen, tap_started)
                     UIManager:setDirty(self.dialog, "ui")
                 end
             end,
-        })
+        }))
     end)
     thought_perf("popup_show", popup_started, "ok=", tostring(ok),
         "pages=", tostring(#pages))
@@ -355,43 +342,6 @@ function M:_showThoughtPopup(pages, link, session_gen, tap_started)
     if tap_started then
         thought_perf("tap_to_popup_return", tap_started, "pages=", tostring(#pages))
     end
-end
-
--- Reader font/layout preferences for the thought popup so it matches the book
--- text. Returns nil when unavailable; every access is guarded and callers fall
--- back to the popup's built-in defaults.
-function M:_thoughtPopupLayoutParams()
-    if not self.ui or not self.ui.document then
-        return nil
-    end
-    local document = self.ui.document
-    local Screen = require("device").screen
-
-    local font_face = self.ui.font and self.ui.font.font_face
-    if not font_face then
-        font_face = G_reader_settings:readSetting("cre_font")
-    end
-
-    local thought_popup = self.settings:get("thought_popup")
-    local font_size = thought_popup.font_size
-    local font_size_scaled
-    if font_size then
-        font_size_scaled = Screen:scaleBySize(font_size)
-    else
-        local relative = tonumber(thought_popup.font_size_relative) or -2
-        local doc_font_size = (document.configurable and document.configurable.font_size) or 18
-        font_size_scaled = Screen:scaleBySize(doc_font_size) + relative
-    end
-
-    local ok, margins = pcall(function()
-        return document:getPageMargins()
-    end)
-
-    return {
-        doc_font_name = font_face,
-        doc_font_size = font_size_scaled,
-        doc_margins = ok and margins or nil,
-    }
 end
 
 -- Recursively pull a thought anchor href out of a KOReader link object.

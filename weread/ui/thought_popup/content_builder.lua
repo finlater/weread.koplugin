@@ -172,7 +172,7 @@ function ContentBuilder.build(items, opts)
         }
     end
 
-    for _, item in ipairs(items) do
+    for item_index, item in ipairs(items) do
         local meta = "▸ " .. tostring(item.author or "匿名")
         local likes = tonumber(item.likes_count) or 0
         if likes > 0 then
@@ -183,6 +183,8 @@ function ContentBuilder.build(items, opts)
             variant = "meta",
             text = meta,
             fg = adjustedGray(9, opts.contrast),
+            spacing_before = item_index > 1 and 0.45 or nil,
+            spacing_after = 0.18,
         }
 
         local content = trimText(item.content or "")

@@ -36,7 +36,7 @@ local FaceFactory = {
 FaceFactory.VARIANTS = {
     content = 0.9,  -- thought body
     quote   = 0.9,  -- quoted abstract (italic, gray)
-    meta    = 0.765, -- author line (0.85em * 0.9)
+    meta    = 0.9,  -- author line; keep it as readable as the thought body
 }
 
 function FaceFactory:init()
