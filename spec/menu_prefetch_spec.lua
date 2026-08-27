@@ -58,6 +58,7 @@ end
 
 local cache = {
     auto_prefetch_next_chapter = false,
+    book_footnotes_in_popup = false,
     download_underlines_and_thoughts = false,
     show_prefetch_notifications = true,
 }
@@ -269,10 +270,20 @@ expect(cache_items[1] and cache_items[1].keep_menu_open == true
     "cache dialogs keep the settings menu open")
 local download_items = download_settings and download_settings.sub_item_table_func()
 local prefetch
+local footnote_popup
 for _, item in ipairs(download_items or {}) do
     if item.text == "Chapter prefetch" then prefetch = item end
+    if item.text == "Show book footnotes in popup" then footnote_popup = item end
 end
 expect(prefetch ~= nil, "download settings contain a prefetch submenu")
+expect(footnote_popup and not footnote_popup.checked_func(),
+    "book footnotes default to in-page display")
+footnote_popup.callback({
+    updateItems = function() menu_update_count = menu_update_count + 1 end,
+})
+expect(cache.book_footnotes_in_popup == true
+        and footnote_popup.checked_func(),
+    "book footnote popup preference was enabled and persisted")
 
 local prefetch_items = prefetch and prefetch.sub_item_table_func() or {}
 expect(#prefetch_items == 3, "prefetch submenu contains exactly three settings")

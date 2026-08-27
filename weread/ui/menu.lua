@@ -376,6 +376,27 @@ function M:getSettingsMenuItems()
                         end),
                     },
                     {
+                        text = _("Show book footnotes in popup"),
+                        keep_menu_open = true,
+                        check_callback_updates_menu = true,
+                        checked_func = function()
+                            return self.settings:get("cache").book_footnotes_in_popup
+                                == true
+                        end,
+                        callback = self:safeCallback(
+                            _("Show book footnotes in popup"),
+                            function(touchmenu_instance)
+                                local cache = self.settings:get("cache")
+                                cache.book_footnotes_in_popup =
+                                    not (cache.book_footnotes_in_popup == true)
+                                self.settings:set("cache", cache)
+                                self.settings:flush()
+                                if touchmenu_instance then
+                                    touchmenu_instance:updateItems()
+                                end
+                            end),
+                    },
+                    {
                         text = _("Chapter prefetch"),
                         sub_item_table_func = function()
                             return {

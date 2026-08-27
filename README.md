@@ -109,6 +109,7 @@ koreader/plugins/weread.koplugin/
 │   ├── 下载设置
 │   │   ├── 书籍图片（默认开启）
 │   │   ├── 公众号文章图片（默认关闭）
+│   │   ├── 书籍脚注使用弹窗显示（默认关闭；仅影响新下载书籍）
 │   │   └── 章节预下载
 │   │       ├── 自动预下载下一章（默认关闭，开启时会确认网络卡顿风险）
 │   │       ├── 预下载划线和想法（默认关闭，总开关关闭时不可操作）
@@ -159,4 +160,3 @@ Copyright © 2026 finlater and contributors.
 |------|-----------------------------------------------------|
 | [kindlebtcontroller.koplugin](https://github.com/finlater/kindlebtcontroller.koplugin) | 蓝牙手柄/遥控器控制 Kindle —— 翻页、调节亮度、章节跳转等 20+ 操作，按键完全可自定义。 |
 | [one.koplugin](https://github.com/finlater/one.koplugin) | 在 KOReader 上离线阅读「ONE · 一个」每日更新：一图、一文、一问答。           |
-

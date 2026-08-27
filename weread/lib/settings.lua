@@ -31,6 +31,7 @@ local defaults = {
     cache = {
         download_book_images = true,
         download_mp_images = false,
+        book_footnotes_in_popup = false,
         download_underlines_and_thoughts = false,
         auto_prefetch_next_chapter = false,
         show_prefetch_notifications = true,
@@ -140,6 +141,10 @@ function Settings:new()
     end
     if cache.download_mp_images == nil then
         cache.download_mp_images = false
+        cache_changed = true
+    end
+    if cache.book_footnotes_in_popup == nil then
+        cache.book_footnotes_in_popup = false
         cache_changed = true
     end
     if cache.download_underlines_and_thoughts == nil then
