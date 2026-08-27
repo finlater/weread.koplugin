@@ -273,7 +273,7 @@ local prefetch
 local footnote_popup
 for _, item in ipairs(download_items or {}) do
     if item.text == "Chapter prefetch" then prefetch = item end
-    if item.text == "Show book footnotes in popup" then footnote_popup = item end
+    if item.text == "Hide footnote text" then footnote_popup = item end
 end
 expect(prefetch ~= nil, "download settings contain a prefetch submenu")
 expect(footnote_popup and not footnote_popup.checked_func(),

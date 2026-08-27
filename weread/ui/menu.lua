@@ -376,7 +376,7 @@ function M:getSettingsMenuItems()
                         end),
                     },
                     {
-                        text = _("Show book footnotes in popup"),
+                        text = _("Hide footnote text"),
                         keep_menu_open = true,
                         check_callback_updates_menu = true,
                         checked_func = function()
@@ -384,7 +384,7 @@ function M:getSettingsMenuItems()
                                 == true
                         end,
                         callback = self:safeCallback(
-                            _("Show book footnotes in popup"),
+                            _("Hide footnote text"),
                             function(touchmenu_instance)
                                 local cache = self.settings:get("cache")
                                 cache.book_footnotes_in_popup =
