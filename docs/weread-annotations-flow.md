@@ -69,6 +69,14 @@
 3. 用覆盖索引只查询 `review_items` 中该 range 的记录；结果按 href 做会话内缓存。
 4. 若 `show_annotations == false`，让点击继续作为普通翻页手势处理；否则消费点击，并在 `nextTick` 里显示原生弹框。
 
+### 非触屏按键设备
+
+- 阅读菜单和 Dispatcher 动作提供「本页想法」，通过 CREngine 的
+  `getPageLinks()` 收集当前页的想法链接并按划线原文列出，五向键选择后直接打开同一个原生弹框。
+- KOReader 原生的「选择上一/下一链接」动作仍可用于高亮链接；中心键跟随
+  `#wrthought-...` 时由插件拦截并打开想法，普通脚注和其他链接继续交给 KOReader。
+- 插件不永久占用方向键或翻页键，避免覆盖 Kindle 3 等设备原有的阅读与文本选择操作。
+
 ### 旧缓存自动修复
 
 如果 EPUB 中已有划线链接，但 `review_items` 查不到对应记录，说明书籍可能来自早期 HTML/单章 JSON 缓存。点击拦截同时识别旧版 `#thought_CHAPTER_START_END` 和新版 `#wrthought-BOOK-CHAPTER-START-END`：

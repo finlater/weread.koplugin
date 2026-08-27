@@ -116,6 +116,16 @@ expect(toggle_action and toggle_action.reader == true
 expect(toggle_action
         and toggle_action.title == "WeRead · Toggle underlines and thoughts",
     "annotation visibility action has a gesture-friendly title")
+local page_thoughts_action = registered.weread_current_page_thoughts
+expect(page_thoughts_action
+        and page_thoughts_action.event == "ShowCurrentPageWeReadThoughts",
+    "current-page thoughts action dispatches the matching reader event")
+expect(page_thoughts_action and page_thoughts_action.reader == true
+        and page_thoughts_action.general ~= true,
+    "current-page thoughts action is reader-only")
+expect(page_thoughts_action
+        and page_thoughts_action.title == "WeRead · Thoughts on this page",
+    "current-page thoughts action can be assigned to a hardware shortcut")
 local bookshelf_action = registered.weread_bookshelf
 expect(bookshelf_action and bookshelf_action.event == "ShowWeReadBookshelf",
     "bookshelf dispatcher action uses the matching event")

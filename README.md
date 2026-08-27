@@ -78,6 +78,7 @@ koreader/plugins/weread.koplugin/
 ├── 微信扫码登录 / 已经登录 · 账号名
 ├── 立即同步进度       （阅读微信读书缓存书籍时显示）
 ├── 书籍详情           （阅读微信读书缓存书籍时显示）
+├── 本页想法           （阅读微信读书缓存书籍时显示；按键设备可选择本页划线想法）
 ├── 显示划线和想法     （阅读书籍时显示，开关）
 ├── 本地书划线和想法   （阅读非微信读书的可重排文档时显示；不修改 EPUB/KOReader 笔记）
 │   ├── 匹配微信读书书目 / 已匹配：书名
@@ -159,4 +160,3 @@ Copyright © 2026 finlater and contributors.
 |------|-----------------------------------------------------|
 | [kindlebtcontroller.koplugin](https://github.com/finlater/kindlebtcontroller.koplugin) | 蓝牙手柄/遥控器控制 Kindle —— 翻页、调节亮度、章节跳转等 20+ 操作，按键完全可自定义。 |
 | [one.koplugin](https://github.com/finlater/one.koplugin) | 在 KOReader 上离线阅读「ONE · 一个」每日更新：一图、一文、一问答。           |
-
