@@ -7,6 +7,8 @@ ProgressSync.__index = ProgressSync
 
 local OPEN_DELAY_SECONDS = 0.6
 local RESUME_RECHECK_SECONDS = 5 * 60
+local PULL_RETRY_DELAY_SECONDS = 15
+local PULL_MAX_RETRIES = 3
 local BUSY_RETRY_SECONDS = 2
 local BUSY_RETRY_LIMIT = 10
 local SAME_THRESHOLD_PERCENT = 2
@@ -498,6 +500,26 @@ function ProgressSync:_resolve(local_position, remote, context, options)
     end
 end
 
+function ProgressSync:_schedule_pull_retry(options)
+    local attempt = (options.retry or 0) + 1
+    if attempt > PULL_MAX_RETRIES then
+        log("warn", "pull retries exhausted:",
+            "book=", tostring(self.current_book_id))
+        return false
+    end
+    local generation = self.generation
+    self.scheduler:scheduleIn(PULL_RETRY_DELAY_SECONDS, function()
+        if generation ~= self.generation then return end
+        if self.verified or self.pulling then return end
+        self:_pull({ manual = false, retry = attempt })
+    end)
+    log("info", "pull retry scheduled:",
+        "book=", tostring(self.current_book_id),
+        "attempt=", tostring(attempt),
+        "delay=", tostring(PULL_RETRY_DELAY_SECONDS))
+    return true
+end
+
 function ProgressSync:_pull(options)
     options = options or {}
     if self.pulling then return false end
@@ -519,7 +541,11 @@ function ProgressSync:_pull(options)
     end
     if not self.is_online() then
         self.state = "offline"
-        if options.manual then self.notify("offline", {}) end
+        if options.manual then
+            self.notify("offline", {})
+        else
+            self:_schedule_pull_retry(options)
+        end
         return false
     end
 
