@@ -121,6 +121,7 @@ local function fixture(remote, options)
             notifications[#notifications + 1] = { code = code, data = data }
         end,
         is_online = options.is_online,
+        now = options.now,
     }
     local function step()
         local entry = table.remove(queue, 1)
@@ -518,6 +519,65 @@ test("a queued retry verifies once the link comes back", function()
     local position, reason = f.sync:position_for_report("book")
     eq(reason, nil, "no gate reason")
     eq(position.chapter_uid, 22, "live chapter")
+end)
+
+test("automatic pull retries when the online task cannot start", function()
+    local run_options
+    local f = fixture({}, {
+        is_online = function() return true end,
+        run_online = function(_kind, _callback, options)
+            run_options = options
+            return false
+        end,
+    })
+    f.sync:on_reader_ready()
+    f.step()
+    eq(f.sync:status().state, "offline", "failed online task records offline")
+    eq(#f.queue, 1, "failed automatic online task queues one retry")
+    eq(f.queue[1].delay, PULL_RETRY_DELAY_SECONDS, "retry remains delayed")
+    eq(run_options.silent_offline, true, "automatic preflight stays silent")
+    eq(#f.notifications, 0, "automatic start failure does not notify")
+end)
+
+test("queued automatic retry does not duplicate a manual conflict", function()
+    local online = false
+    local f = fixture({
+        bookId = "book",
+        progress = 80,
+        chapterUid = 33,
+        chapterIdx = 3,
+        chapterOffset = 500,
+        updateTime = 10,
+    }, {
+        is_online = function() return online end,
+    })
+    f.sync:on_reader_ready()
+    f.step()
+    online = true
+    f.sync:sync_now()
+    eq(#f.choices, 1, "manual sync opens one conflict")
+    f.step()
+    eq(#f.choices, 1, "stale automatic retry does not reopen conflict")
+    eq(#f.queue, 0, "stale retry chain ends")
+end)
+
+test("a fresh automatic pull replaces an older retry chain", function()
+    local now = 0
+    local f = fixture({}, {
+        is_online = function() return false end,
+        now = function() return now end,
+    })
+    f.sync:on_reader_ready()
+    f.step()
+    eq(#f.queue, 1, "open queues the first retry chain")
+    f.sync:on_suspend()
+    now = 5 * 60
+    f.sync:on_resume()
+    eq(#f.queue, 2, "resume queues its replacement chain")
+    f.step()
+    eq(#f.queue, 1, "stale chain does not schedule another retry")
+    f.step()
+    eq(#f.queue, 1, "replacement chain remains active")
 end)
 
 print(string.format(
