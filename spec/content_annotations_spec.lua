@@ -43,24 +43,19 @@ local thought_html = Annotations.injectUnderlines("<p>hello</p>", {
     { range = "3-8" },
 }, { ["3-8"] = true }, "chapter/1", 'book"2')
 expect(thought_html:find("wr%-thought%-link") ~= nil
-    and thought_html:find("wr%-star") ~= nil,
-    "thought link and marker were not generated")
+    and thought_html:find("wr%-star") == nil,
+    "thought link was not generated without a marker")
 expect(thought_html:find('id="wrthought%-book_2%-chapter_1%-3%-8"') ~= nil,
     "thought anchor id was not sanitized")
 
 local trailing_whitespace = Annotations.injectUnderlines("<p>abc</p>\n  ", {
     { range = "3-12" },
 }, { ["3-12"] = true }, "chapter/11", "book")
-expect(trailing_whitespace:find('<span class="wr%-star">%*</span>', 1) ~= nil,
-    "thought star survives when range ends with whitespace")
-local star_pos = trailing_whitespace:find('<span class="wr%-star">%*</span>', 1)
-local p_close_pos = trailing_whitespace:find("</p>", 1, true)
-expect(star_pos ~= nil and p_close_pos ~= nil and star_pos < p_close_pos,
-    "thought star stays inside the paragraph before trailing whitespace")
+expect(trailing_whitespace:find("wr%-star") == nil,
+    "thought marker was not removed from trailing whitespace")
 expect(trailing_whitespace:find(
-        '<span class="wr%-underline">abc<span class="wr%-star">%*</span></span>',
-        1) ~= nil,
-    "thought star stays inside the final underline span")
+        '<span class="wr%-underline">abc</span>', 1) ~= nil,
+    "underline survives when range ends with whitespace")
 
 local unchanged = Annotations.injectUnderlines("<p>safe</p>", {
     { range = "bad" },
@@ -77,8 +72,9 @@ local annotated, css = Annotations.process("<p>hello</p>", {
 expect(annotated ~= "<p>hello</p>", "annotation process did not change HTML")
 expect(css:find(".wr%-underline") and css:find(".wr%-thought%-link"),
     "annotation CSS did not include underline and thought styles")
-expect(css:find('wr%-star::before{content:"\\2060";}', 1) ~= nil,
-    "thought star CSS includes word joiner glue")
+expect(css:find("wr%-star") == nil,
+    "thought star CSS was removed")
+
 
 local xhtml = Content.txt_to_xhtml("first & <tag>\r\n\r\nsecond")
 expect(xhtml:find("<p>first &amp; &lt;tag&gt;</p>", 1, true),

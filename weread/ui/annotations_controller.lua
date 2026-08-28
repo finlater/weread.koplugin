@@ -22,14 +22,14 @@ local M = {}
 -- Hard ceiling for the per-session thought cache, cleared on book close.
 local THOUGHT_PAGE_CACHE_MAX = 300
 
--- Runtime CSS that hides underlines and thought stars baked into cached EPUBs.
+-- Runtime CSS that hides underlines baked into cached EPUBs.
 -- Applied as an appended stylesheet (not persisted to the book sidecar) so it
 -- acts as a global display preference without mutating downloaded files.
 -- NOTE: only tweak visual/metric properties (border, padding, font-size). Never
 -- use display/white-space here — changing those marks the built DOM stale and
 -- makes ReaderRolling repeatedly prompt for a full document reload.
 local ANNOTATION_HIDE_CSS =
-    ".wr-underline{border-bottom:0 !important;padding-bottom:0 !important;} .wr-star{font-size:0 !important;} "
+    ".wr-underline{border-bottom:0 !important;padding-bottom:0 !important;} "
     .. ".wr-thought-link{pointer-events:none !important;text-decoration:none !important;color:inherit !important;}"
 
 -- Apply the initial hidden state before KOReader renders the document. Doing
@@ -346,8 +346,7 @@ end
 
 -- Recursively pull a thought anchor href out of a KOReader link object.
 -- The link's shape differs between engines and even between tap locations inside
--- the same anchor (tapping the star vs the underlined text can expose the href
--- under a different field), so scan common fields first, then a shallow crawl.
+-- the same anchor, so scan common fields first, then a shallow crawl.
 function M:_linkHref(link)
     local seen = {}
     local function extract(value, depth)
