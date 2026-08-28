@@ -28,6 +28,13 @@ expect(Footnotes.FOOTNOTES_CSS:find(
 expect(Footnotes.FOOTNOTES_CSS:find(
     "div.wr%-footnotes>hr{display:none") ~= nil,
     "the generated footnote container must not leave a visible separator")
+expect(Footnotes.get_css(false) == Footnotes.IN_PAGE_CSS,
+    "in-page footnotes should remain the default")
+expect(Footnotes.get_css(true) == Footnotes.POPUP_CSS
+        and Footnotes.POPUP_CSS:find(
+            "aside.wr%-book%-footnote{%-cr%-hint:footnote;", 1) ~= nil
+        and Footnotes.POPUP_CSS:find("visibility:hidden", 1, true) ~= nil,
+    "popup footnotes should use the previous hidden footnote flow")
 
 local source = [[
 <p>正文<a epub:type="noteref" href="#note-1"><sup>[1]</sup></a></p>

@@ -58,6 +58,7 @@ end
 
 local cache = {
     auto_prefetch_next_chapter = false,
+    book_footnotes_in_popup = false,
     download_underlines_and_thoughts = false,
     show_prefetch_notifications = true,
 }
@@ -189,11 +190,26 @@ for _, item in ipairs(main_items) do
     end
 end
 local download_items = download_settings and download_settings.sub_item_table_func()
+local menu_update_count = 0
 local prefetch
+local footnote_popup
 for _, item in ipairs(download_items or {}) do
     if item.text == "Chapter prefetch" then prefetch = item end
+    if item.text == "Hide footnote text" then footnote_popup = item end
 end
 expect(prefetch ~= nil, "download settings contain a prefetch submenu")
+expect(footnote_popup and not footnote_popup.checked_func(),
+    "book footnotes default to in-page display")
+footnote_popup.callback({
+    updateItems = function() menu_update_count = menu_update_count + 1 end,
+})
+expect(cache.book_footnotes_in_popup == false
+        and shown_widget
+        and shown_widget.text:find("Settings → Links", 1, true),
+    "enabling hidden footnotes should first explain the KOReader popup setting")
+shown_widget.ok_callback()
+expect(cache.book_footnotes_in_popup == true and footnote_popup.checked_func(),
+    "book footnotes were hidden only after confirmation")
 
 local prefetch_items = prefetch and prefetch.sub_item_table_func() or {}
 expect(#prefetch_items == 3, "prefetch submenu contains exactly three settings")
