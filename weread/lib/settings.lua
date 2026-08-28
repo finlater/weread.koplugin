@@ -76,6 +76,8 @@ local defaults = {
     },
     shelf = {
         sort_order = "time_desc",
+        paginated = true,
+        view_mode = "list",
     },
     download_dir = "",
     -- Sidecar root for thoughts.db / catalog / metadata / MP articles.
