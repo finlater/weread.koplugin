@@ -106,6 +106,15 @@ expect(values.cache.download_book_images == false
     and values.cache.show_annotations == true
     and values.cache.download_images == nil,
     "legacy cache preferences were not migrated")
+local thought_popup = settings:get("thought_popup")
+expect(thought_popup.height_ratio == 0.70
+    and thought_popup.font_size_relative == 0
+    and thought_popup.font_size == nil
+    and thought_popup.position == "center"
+    and thought_popup.width_ratio == 0.8
+    and thought_popup.contrast == 9
+    and thought_popup.tap_to_page == false,
+    "thought popup defaults were not initialized")
 expect(flush_count == 2,
     "cache and authentication migrations should each flush once")
 

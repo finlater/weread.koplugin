@@ -57,6 +57,15 @@ local defaults = {
         interval_seconds = 30,
         report_on_open = true,
     },
+    thought_popup = {
+        height_ratio = 0.70,
+        font_size_relative = 0,
+        font_size = nil,
+        position = "center",
+        width_ratio = 0.8,
+        contrast = 9,
+        tap_to_page = false,
+    },
     advanced = {
         developer_logs = false,
     },

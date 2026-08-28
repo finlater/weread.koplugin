@@ -110,9 +110,11 @@ end
 for _, name in ipairs({
     "ui/gesturerange",
     "ui/widget/button",
+    "ui/widget/container/centercontainer",
     "ui/widget/container/framecontainer",
     "ui/widget/container/inputcontainer",
     "ui/widget/container/scrollablecontainer",
+    "ui/widget/imagewidget",
     "ui/widget/horizontalgroup",
     "ui/widget/horizontalspan",
     "ui/widget/linewidget",

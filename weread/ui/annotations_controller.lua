@@ -6,6 +6,7 @@ local Event = require("ui/event")
 local logger = require("weread.lib.logger")
 local ThoughtDB = require("weread.lib.thought_db")
 local ThoughtPopup = require("weread.ui.thought_popup")
+local ThoughtPopupConfig = require("weread.ui.thought_popup.popup_config")
 local time = require("ui/time")
 local UIManager = require("ui/uimanager")
 
@@ -312,10 +313,7 @@ function M:_showThoughtPopup(pages, link, session_gen, tap_started)
 
     local popup_started = time.now()
     local ok, popup = pcall(function()
-        return ThoughtPopup.show({
-            pages = pages,
-            height_ratio = 0.62,
-            dialog = self.dialog,
+        return ThoughtPopup.show(ThoughtPopupConfig.build(self, pages, {
             close_callback = function()
                 self._thought_popup_open = nil
                 self._current_thought_popup = nil
@@ -325,7 +323,7 @@ function M:_showThoughtPopup(pages, link, session_gen, tap_started)
                     UIManager:setDirty(self.dialog, "ui")
                 end
             end,
-        })
+        }))
     end)
     thought_perf("popup_show", popup_started, "ok=", tostring(ok),
         "pages=", tostring(#pages))
