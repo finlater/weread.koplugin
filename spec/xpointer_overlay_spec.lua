@@ -242,7 +242,7 @@ local local_book_items = bind_host:getXPointerOverlayPrototypeMenuItems()
 expect(#local_book_items == 4,
     "local-book menu retained duplicate visibility or diagnostic items")
 expect(local_book_items[2].text_func() == "Sync underlines and thoughts"
-        and local_book_items[3].text == "Sync single chapter…"
+        and local_book_items[3].text == "Sync chapters…"
         and local_book_items[4].text
             == "Clear data",
     "local-book menu actions did not use unified terminology")

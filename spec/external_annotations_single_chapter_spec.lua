@@ -195,6 +195,7 @@ local client = {
 local info
 local list_captured
 local overlay_records
+local menu_update_count
 local host = {
     ui = { document = {
         file = "/books/local.epub",
@@ -215,8 +216,14 @@ local host = {
     runOnlineTask = function(_self, _label, callback) callback(); return true end,
     showInfo = function(_self, text) info = text end,
     showTransientInfo = function() end,
-    showList = function(_self, title, items, empty_text)
-        list_captured = { title = title, items = items, empty_text = empty_text }
+    showList = function(_self, title, items, empty_text, options)
+        list_captured = {
+            title = title, items = items, empty_text = empty_text, options = options,
+            updateItems = function()
+                menu_update_count = menu_update_count + 1
+            end,
+        }
+        return list_captured
     end,
 }
 local Controller = require("weread.ui.xpointer_overlay_controller")
@@ -229,6 +236,23 @@ local function run_one()
 end
 local function run_all()
     while #scheduled > 0 do run_one() end
+end
+
+-- The picker now lists chapters with a per-page download action at index 1,
+-- so catalog chapter N sits at item index N + 1.
+local function chapter_item(catalog_index)
+    return list_captured.items[catalog_index + 1]
+end
+local function download_action()
+    return list_captured.items[1]
+end
+-- Toggle the given chapters on (call each item's callback once) then invoke the
+-- download action to start the sync.
+local function sync_chapters(...)
+    for _i, catalog_index in ipairs({ ... }) do
+        chapter_item(catalog_index).callback()
+    end
+    download_action().callback()
 end
 
 local function reset()
@@ -248,6 +272,7 @@ local function reset()
     list_captured = nil
     dialogs = {}
     overlay_records = nil
+    menu_update_count = 0
     host._xpointer_overlay = {
         setRecords = function(_self, records) overlay_records = records end,
     }
@@ -267,26 +292,28 @@ local function completed_chapter_payload(uid)
     }
 end
 
--- 1. A fresh single-chapter sync downloads only the selected chapter, reuses
+-- 1. A fresh multi-chapter sync downloads only the selected chapter(s), reuses
 --    the picker's catalog, and locates the result.
 reset()
 host:syncExternalAnnotationsChapter()
-expect(list_captured ~= nil and #list_captured.items == 3,
-    "chapter picker did not list the catalog")
+expect(list_captured ~= nil and #list_captured.items == 4,
+    "chapter picker did not list the download action plus the catalog")
+expect(download_action().text_func and download_action().select_enabled_func() == false,
+    "download action was enabled with nothing selected")
 expect(fetch_catalog_calls == 1,
     "chapter picker fetched the catalog more than once")
-expect(list_captured.items[1].text == "第一章 Chapter One"
-        and list_captured.items[3].text == "第三章 Chapter Three",
+expect(chapter_item(1).text_func():find("第一章 Chapter One", 1, true)
+        and chapter_item(3).text_func():find("第三章 Chapter Three", 1, true),
     "chapter picker did not show chapter numbers and titles")
-expect(list_captured.items.current == 2,
+expect(list_captured.items.current == 3,
     "chapter picker did not open near the current reading position")
-expect(list_captured.items[1].post_text == nil,
+expect(chapter_item(1).mandatory_func() == nil,
     "uncompleted chapter was marked as synced")
 
-list_captured.items[2].callback()
+sync_chapters(2)
 run_all()
 expect(#underline_calls == 1 and underline_calls[1] == 2,
-    "single-chapter sync downloaded another chapter")
+    "selected-chapter sync downloaded another chapter")
 expect(#review_calls == 2 and review_calls[1].uid == 2
         and review_calls[1].batch_index == 1
         and review_calls[2].batch_index == 2,
@@ -298,25 +325,47 @@ expect(located_chapters and #located_chapters == 1
     "final matching did not limit itself to the selected chapter")
 expect(checkpoint and checkpoint_chapter(2)
         and checkpoint_chapter(2).complete == true,
-    "successful single-chapter sync discarded its completed state")
+    "successful selected-chapter sync discarded its completed state")
 expect(document_value.records and #document_value.records == 1,
-    "successful single-chapter sync did not save projected records")
+    "successful selected-chapter sync did not save projected records")
 expect(overlay_records and #overlay_records == 1,
-    "single-chapter sync did not refresh the live overlay")
+    "selected-chapter sync did not refresh the live overlay")
 expect(info and info:find("Sync completed", 1, true),
-    "successful single-chapter sync did not report completion")
+    "successful selected-chapter sync did not report completion")
+expect(chapter_item(2).mandatory_func() == "Synced",
+    "successful sync did not immediately mark the chapter as synced")
+expect(not chapter_item(2).text_func():find("[✓]", 1, true)
+        and download_action().select_enabled_func() == false,
+    "successful sync did not clear the chapter selection")
+expect(menu_update_count >= 2,
+    "successful sync did not refresh the open chapter picker")
 expect(prevented == 1 and allowed == 1,
-    "single-chapter sync did not balance its standby guard")
+    "selected-chapter sync did not balance its standby guard")
 
 host:syncExternalAnnotationsChapter()
-expect(list_captured.items[2].post_text == "Synced",
+expect(chapter_item(2).mandatory_func() == "Synced",
     "freshly synced chapter was not marked when the picker reopened")
-list_captured.items[2].callback()
+sync_chapters(2)
 run_all()
 expect(#underline_calls == 1 and #review_calls == 2,
     "re-selecting a freshly synced chapter repeated network requests")
 
--- 2. The picker marks checkpointed chapters as synced, and a single-chapter
+-- Selecting several chapters downloads all of them in catalog order.
+reset()
+host:syncExternalAnnotationsChapter()
+sync_chapters(1, 3)
+run_all()
+expect(#underline_calls == 2 and underline_calls[1] == 1
+        and underline_calls[2] == 3,
+    "multi-chapter sync did not download each selected chapter in order")
+expect(located_chapters and #located_chapters == 2
+        and located_chapters[1].chapter_uid == "1"
+        and located_chapters[2].chapter_uid == "3",
+    "multi-chapter sync did not locate every selected chapter")
+expect(document_value.records and #document_value.records == 2,
+    "multi-chapter sync did not save all selected chapter records")
+
+-- 2. The picker marks checkpointed chapters as synced, and a selected-chapter
 --    sync keeps them in the final matching without re-downloading them.
 reset()
 checkpoint = {
@@ -328,21 +377,21 @@ checkpoint = {
     chapters = { completed_chapter_payload(1) },
 }
 host:syncExternalAnnotationsChapter()
-expect(list_captured.items[1].post_text == "Synced",
+expect(chapter_item(1).mandatory_func() == "Synced",
     "completed chapter was not marked as synced")
-expect(list_captured.items[2].post_text == nil,
+expect(chapter_item(2).mandatory_func() == nil,
     "uncompleted chapter was marked as synced")
 
-list_captured.items[3].callback()
+sync_chapters(3)
 run_all()
 expect(#underline_calls == 1 and underline_calls[1] == 3,
-    "single-chapter sync re-downloaded a checkpointed chapter")
+    "selected-chapter sync re-downloaded a checkpointed chapter")
 expect(fetch_catalog_calls == 1,
-    "resumed single-chapter sync re-fetched the catalog")
+    "resumed selected-chapter sync re-fetched the catalog")
 expect(located_chapters and #located_chapters == 2,
     "final matching did not include the checkpointed chapter")
 expect(document_value.records and #document_value.records == 2,
-    "resumed single-chapter sync dropped the checkpointed chapter records")
+    "resumed selected-chapter sync dropped the checkpointed chapter records")
 expect(overlay_records and #overlay_records == 2,
     "live overlay did not retain checkpointed chapter records")
 
@@ -358,7 +407,7 @@ checkpoint = {
     chapters = { completed_chapter_payload(1) },
 }
 host:syncExternalAnnotationsChapter()
-list_captured.items[1].callback()
+sync_chapters(1)
 run_all()
 expect(#underline_calls == 0 and #review_calls == 0,
     "completed chapter was re-downloaded")
@@ -371,7 +420,7 @@ expect(checkpoint ~= nil and document_value.records
 expect(prevented == 1 and allowed == 1,
     "no-network re-sync did not balance its standby guard")
 
--- 4. A single-chapter sync after a completed full sync (records present, no
+-- 4. A selected-chapter sync after a completed full sync (records present, no
 --    checkpoint) keeps the other chapters' projected records.
 reset()
 document_value.records = {
@@ -379,15 +428,15 @@ document_value.records = {
     { pos0 = "x0", pos1 = "x1", chapter_uid = "2" },
 }
 host:syncExternalAnnotationsChapter()
-list_captured.items[3].callback()
+sync_chapters(3)
 run_all()
 expect(#underline_calls == 1 and underline_calls[1] == 3,
-    "post-full-sync single-chapter sync downloaded another chapter")
+    "post-full-sync selected-chapter sync downloaded another chapter")
 expect(located_chapters and #located_chapters == 1
         and located_chapters[1].chapter_uid == "3",
-    "post-full-sync single-chapter sync did not limit its download")
+    "post-full-sync selected-chapter sync did not limit its download")
 expect(document_value.records and #document_value.records == 3,
-    "single-chapter sync dropped previously synced chapter records")
+    "selected-chapter sync dropped previously synced chapter records")
 
 -- 5. Local TOC titles win over WeRead's whole-book chapterIdx. This mirrors
 --    volume two of Lord of Mysteries, where chapterIdx 239 is chapter 24.
@@ -406,16 +455,16 @@ host.ui.document.getToc = function()
     return toc_volume_two
 end
 host:syncExternalAnnotationsChapter()
-expect(list_captured.items[1].text == "第二十四章 序列2",
+expect(chapter_item(1).text_func():find("第二十四章 序列2", 1, true),
     "chapter picker used whole-book chapterIdx instead of the local TOC title")
-list_captured.items[1].callback()
+sync_chapters(1)
 run_all()
 local range_239 = located_options and located_options.chapter_ranges
     and located_options.chapter_ranges["239"] or nil
 expect(range_239 ~= nil
         and range_239.start_xpointer == "/body/DocFragment[3]/p[1]"
         and range_239.end_xpointer == "/body/DocFragment[4]/p[1]",
-    "single-chapter sync did not bound the selected chapter by its local TOC XPointers")
+    "selected-chapter sync did not bound the selected chapter by its local TOC XPointers")
 expect(located_options.chapter_titles["239"] == "序列2"
         and located_options.chapter_local_titles["239"] == "第二十四章 序列2",
     "perf titles did not carry the WeRead and local TOC chapter names")
@@ -437,9 +486,9 @@ host.ui.document.getToc = function()
     }
 end
 host:syncExternalAnnotationsChapter()
-expect(list_captured.items[1].text == "第三章 梅丽莎",
+expect(chapter_item(1).text_func():find("第三章 梅丽莎", 1, true),
     "update-suffix chapter title did not match its local TOC entry")
-list_captured.items[1].callback()
+sync_chapters(1)
 run_all()
 local range_suffixed = located_options and located_options.chapter_ranges
     and located_options.chapter_ranges["7"] or nil
@@ -447,8 +496,8 @@ expect(range_suffixed ~= nil and range_suffixed.start_xpointer == "/d/3"
         and range_suffixed.end_xpointer == "/d/4",
     "suffixed chapter was not bounded by its local TOC XPointers")
 
--- 7. A single-chapter pick does not re-locate checkpointed chapters whose
---    records were already saved; only the picked chapter is matched again.
+-- 7. A selected-chapter pick does not re-locate checkpointed chapters whose
+--    records were already saved; only the selected chapters are matched again.
 reset()
 catalog_chapters[1] = {
     chapterUid = 1, chapterIdx = 1, title = "Chapter One", wordCount = 100,
@@ -478,14 +527,14 @@ document_value.records = {
     { pos0 = "x0", pos1 = "x1", chapter_uid = "1" },
 }
 host:syncExternalAnnotationsChapter()
-list_captured.items[3].callback()
+sync_chapters(3)
 run_all()
 expect(#underline_calls == 1 and underline_calls[1] == 3,
-    "single-chapter sync downloaded the wrong chapter")
+    "selected-chapter sync downloaded the wrong chapter")
 expect(located_chapters and #located_chapters == 1
         and located_chapters[1].chapter_uid == "3",
-    "single-chapter sync re-located a checkpointed chapter that already has records")
+    "selected-chapter sync re-located a checkpointed chapter that already has records")
 expect(document_value.records and #document_value.records == 2,
-    "single-chapter sync dropped the saved records of another chapter")
+    "selected-chapter sync dropped the saved records of another chapter")
 
 print(("external_annotations_single_chapter_spec: %d checks"):format(checks))

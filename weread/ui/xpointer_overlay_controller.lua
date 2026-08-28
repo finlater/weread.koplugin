@@ -371,6 +371,16 @@ local function current_entry(plugin)
     return plugin.external_annotations_db:getDocument(current_file(plugin))
 end
 
+-- User-configured rows per menu page (used to leave one slot for the per-page
+-- download action, mirroring weread.ui.library).
+local function list_items_per_page()
+    local perpage = 14
+    if G_reader_settings and G_reader_settings.readSetting then
+        perpage = tonumber(G_reader_settings:readSetting("items_per_page")) or perpage
+    end
+    return math.max(4, perpage)
+end
+
 function M:bindExternalAnnotationsBook(touchmenu_instance)
     if not self:requireLogin(true, true) then return end
     local path = current_file(self)
@@ -440,11 +450,12 @@ function M:syncExternalAnnotations()
     self:startExternalAnnotationSync{}
 end
 
--- Full-book or single-chapter annotation sync. opts.only_uid limits the
--- download to one catalog chapter (already-completed chapters stay in the
--- checkpoint and are re-located locally without network requests); passing
--- opts.source_catalog skips the chapterInfos fetch, so the single-chapter
--- picker does not trigger a second request when the sync starts.
+-- Full-book or selected-chapter annotation sync. opts.only_uids (a set of
+-- catalog uids, or a single opts.only_uid string) limits the download to the
+-- selected chapters (already-completed chapters stay in the checkpoint and are
+-- re-located locally without network requests); passing opts.source_catalog
+-- skips the chapterInfos fetch, so the chapter picker does not trigger a second
+-- request when the sync starts.
 function M:startExternalAnnotationSync(opts)
     opts = opts or {}
     local path = current_file(self)
@@ -468,10 +479,12 @@ function M:startExternalAnnotationSync(opts)
         binding = binding,
         cancelled = false,
         only_uid = opts.only_uid,
+        only_uids = opts.only_uids,
         source_catalog = opts.source_catalog,
         local_ranges = opts.local_ranges,
         chapter_titles = opts.chapter_titles,
         chapter_local_titles = opts.chapter_local_titles,
+        on_complete = opts.on_complete,
     }
     local cancel_request
     local progress
@@ -566,14 +579,26 @@ function M:startExternalAnnotationSync(opts)
             and request.entry.records or {}) do
             saved_uids[tostring(record.chapter_uid or "")] = true
         end
+        local function uid_selected(uid)
+            if request.only_uids then return request.only_uids[uid] == true end
+            if request.only_uid then return uid == request.only_uid end
+            return true
+        end
         local chapters = {}
+        local synced_uids = {}
         for _, chapter in ipairs(request.catalog) do
             local uid = tostring(chapter.chapterUid or chapter.chapterId)
             local downloaded = request.completed[uid]
-            if downloaded and #(downloaded.underlines or {}) > 0 then
-                if not request.only_uid or uid == request.only_uid
-                    or not saved_uids[uid] then
+            if downloaded then
+                local selected = uid_selected(uid)
+                -- A successful empty response is still authoritative: replace
+                -- this chapter's old projected records even though there is
+                -- nothing to pass to the local underline locator.
+                if selected then synced_uids[uid] = true end
+                if #(downloaded.underlines or {}) > 0
+                    and (selected or not saved_uids[uid]) then
                     chapters[#chapters + 1] = downloaded
+                    synced_uids[uid] = true
                 end
             end
         end
@@ -591,10 +616,6 @@ function M:startExternalAnnotationSync(opts)
         end
         -- Keep projected records outside this run, including records created
         -- before the current chapter checkpoint existed.
-        local synced_uids = {}
-        for _i, chapter in ipairs(chapters) do
-            synced_uids[chapter.chapter_uid] = true
-        end
         local merged = {}
         for _i, record in ipairs(type(request.entry.records) == "table"
             and request.entry.records or {}) do
@@ -613,7 +634,7 @@ function M:startExternalAnnotationSync(opts)
             request.path, request.entry)
         local save_ms = elapsed_ms(save_started)
         if not saved then error(save_err) end
-        if not request.only_uid then
+        if not request.only_uid and not request.only_uids then
             local cleared, clear_err = self.external_annotations_db:clearSyncCheckpoint(
                 request.path)
             if not cleared then error(clear_err) end
@@ -623,6 +644,13 @@ function M:startExternalAnnotationSync(opts)
         UIManager:setDirty(self.dialog, "ui")
         local overlay_ms = elapsed_ms(overlay_started)
         finish_request()
+        if type(request.on_complete) == "function" then
+            local callback_ok, callback_err = pcall(request.on_complete, synced_uids)
+            if not callback_ok then
+                logger.warn("external annotation sync completion callback failed:",
+                    tostring(callback_err))
+            end
+        end
         perf("book_id=", tostring(binding.book_id), "stage=sync_finish",
             "chapters=", tostring(#chapters),
             "located=", tostring(stats.located), "total=", tostring(stats.total),
@@ -721,16 +749,15 @@ function M:startExternalAnnotationSync(opts)
             end
             return false
         end
-        if request.only_uid then
-            for chapter_index, chapter in ipairs(request.catalog) do
-                if tostring(chapter.chapterUid or chapter.chapterId) == request.only_uid then
-                    consider(chapter_index, chapter)
-                    break
-                end
-            end
-        else
-            for chapter_index, chapter in ipairs(request.catalog) do
-                if consider(chapter_index, chapter) then break end
+        local function uid_selected(uid)
+            if request.only_uids then return request.only_uids[uid] == true end
+            if request.only_uid then return uid == request.only_uid end
+            return true
+        end
+        for chapter_index, chapter in ipairs(request.catalog) do
+            local uid = tostring(chapter.chapterUid or chapter.chapterId)
+            if uid_selected(uid) and consider(chapter_index, chapter) then
+                break
             end
         end
         if not selected_chapter then
@@ -866,11 +893,11 @@ function M:startExternalAnnotationSync(opts)
     if not started then finish_request() end
 end
 
--- On-demand single-chapter sync: lets the user pick one WeRead chapter whose
--- underlines and thoughts are downloaded instead of the whole book at once,
--- which keeps per-session request counts low enough to stay under WeRead's
--- rate limits. Chapters already checkpointed as complete are marked and are
--- never re-downloaded.
+-- On-demand multi-chapter sync: lets the user pick any set of WeRead chapters
+-- whose underlines and thoughts are downloaded instead of the whole book at
+-- once, which keeps per-session request counts low enough to stay under
+-- WeRead's rate limits. Chapters already checkpointed as complete are marked
+-- and are never re-downloaded.
 function M:syncExternalAnnotationsChapter()
     local path = current_file(self)
     local entry = current_entry(self)
@@ -895,7 +922,7 @@ function M:syncExternalAnnotationsChapter()
             return
         end
         -- Mark chapters already checkpointed as complete so the user can
-        -- drive the sync chapter by chapter over time without re-downloading.
+        -- drive the sync a few chapters at a time without re-downloading.
         local completed = {}
         local signature_parts = { tostring(binding.book_id) }
         for _index, chapter in ipairs(catalog) do
@@ -916,7 +943,7 @@ function M:syncExternalAnnotationsChapter()
                 end
             end
         end
-        local items = {}
+
         local match_started = os.clock()
         local local_matches = local_catalog_matches(self.ui.document, catalog, binding.book_id)
         local chapter_ranges = local_ranges(catalog, local_matches)
@@ -930,27 +957,103 @@ function M:syncExternalAnnotationsChapter()
             chapter_titles[uid] = tostring(chapter.title or "")
             local match = local_matches[index]
             if match and match.title then chapter_local_titles[uid] = match.title end
-            items[#items + 1] = {
-                text = match and match.title or chapter.title or uid,
-                post_text = completed[uid] and _("Synced") or nil,
-                callback = function()
-                    self:startExternalAnnotationSync{
-                        source_catalog = catalog,
-                        only_uid = uid,
-                        local_ranges = chapter_ranges,
-                        chapter_titles = chapter_titles,
-                        chapter_local_titles = chapter_local_titles,
-                    }
-                end,
-            }
         end
         perf("book_id=", tostring(binding.book_id), "stage=chapter_picker",
             "catalog=", tostring(#catalog),
             "matched=", tostring(matched_count),
             "match_ms=", string.format("%.1f", elapsed_ms(match_started)))
-        items.current = chapter_index_for_fraction(
+
+        -- Multi-select list with a per-page download action, mirroring the
+        -- chapter-cache picker so the user can batch a few chapters at a time.
+        local selected = {}
+        local menu
+        local function selectedUids()
+            local result = {}
+            for _index, chapter in ipairs(catalog) do
+                local api_uid = chapter.chapterUid or chapter.chapterId
+                local uid = tostring(api_uid)
+                if selected[uid] then result[#result + 1] = uid end
+            end
+            return result
+        end
+        local function selectedCount()
+            local count = 0
+            for _uid in pairs(selected) do count = count + 1 end
+            return count
+        end
+        local function startSelectedSync()
+            local uids = selectedUids()
+            if #uids == 0 then return end
+            local only_uids = {}
+            for _i, uid in ipairs(uids) do only_uids[uid] = true end
+            self:startExternalAnnotationSync{
+                source_catalog = catalog,
+                only_uids = only_uids,
+                local_ranges = chapter_ranges,
+                chapter_titles = chapter_titles,
+                chapter_local_titles = chapter_local_titles,
+                on_complete = function(synced_uids)
+                    for uid in pairs(synced_uids or only_uids) do
+                        completed[uid] = true
+                        selected[uid] = nil
+                    end
+                    if menu then menu:updateItems() end
+                end,
+            }
+        end
+
+        local items = {}
+        local perpage = list_items_per_page()
+        local chapters_per_page = math.max(1, perpage - 1)
+        local function appendDownloadAction()
+            items[#items + 1] = {
+                text_func = function()
+                    return T(_("[Download] Selected chapters (%1)"),
+                        tostring(selectedCount()))
+                end,
+                bold = true,
+                select_enabled_func = function() return selectedCount() > 0 end,
+                separator = true,
+                callback = startSelectedSync,
+            }
+        end
+        for page_start = 1, #catalog, chapters_per_page do
+            appendDownloadAction()
+            local page_end = math.min(#catalog, page_start + chapters_per_page - 1)
+            for chapter_index = page_start, page_end do
+                local chapter = catalog[chapter_index]
+                local api_uid = chapter.chapterUid or chapter.chapterId
+                local uid = tostring(api_uid)
+                local match = local_matches[chapter_index]
+                items[#items + 1] = {
+                    text_func = function()
+                        local marker = selected[uid] and "[✓] " or "[  ] "
+                        return marker .. (match and match.title or chapter.title or uid)
+                    end,
+                    mandatory_func = function()
+                        return completed[uid] and _("Synced") or nil
+                    end,
+                    callback = function()
+                        if selected[uid] then
+                            selected[uid] = nil
+                        else
+                            selected[uid] = true
+                        end
+                        if menu then menu:updateItems() end
+                    end,
+                }
+            end
+        end
+        -- Position near the current reading chapter; account for the download
+        -- action prepended to each page (item = chapter + action rows before it).
+        local current = chapter_index_for_fraction(
             catalog, current_reading_fraction(self))
-        self:showList(_("Select chapter to sync"), items, _("No chapters to sync."))
+        if current then
+            items.current = current
+                + math.floor((current - 1) / chapters_per_page) + 1
+        end
+        menu = self:showList(_("Select chapters to sync"), items,
+            _("No chapters to sync."), { items_per_page = perpage })
     end)
 end
 
@@ -999,7 +1102,7 @@ function M:getXPointerOverlayPrototypeMenuItems()
             callback = function() self:syncExternalAnnotations() end,
         },
         {
-            text = _("Sync single chapter…"),
+            text = _("Sync chapters…"),
             enabled_func = function()
                 local entry = current_entry(self)
                 return entry and entry.binding ~= nil

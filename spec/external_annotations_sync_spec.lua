@@ -55,8 +55,14 @@ package.preload["weread.lib.external_annotations"] = function()
                 expect(review.content == chapter.chapter_uid .. "-thought-1",
                     "raw thought payload was changed before final matching")
             end
-            return { { pos0 = "xp0", pos1 = "xp1" } },
-                { located = #chapters, total = #chapters }
+            local records = {}
+            if chapters[1] then
+                records[1] = {
+                    pos0 = "xp0", pos1 = "xp1",
+                    chapter_uid = chapters[1].chapter_uid,
+                }
+            end
+            return records, { located = #chapters, total = #chapters }
         end,
     }
 end
@@ -163,14 +169,19 @@ local database = {
 
 local underline_calls = {}
 local review_calls = {}
+local remote_underlines_empty = false
 local client = {
     get_chapter_underlines = function(_self, _book_id, uid)
         underline_calls[#underline_calls + 1] = uid
+        if remote_underlines_empty then
+            return true, { underlines = {} }
+        end
         return true, { underlines = {
             { range = tostring(uid) .. "-range", markText = tostring(uid) },
         } }
     end,
-    build_chapter_review_batches = function()
+    build_chapter_review_batches = function(_self, ranges)
+        if #ranges == 0 then return {} end
         return { { batch_index = 1 }, { batch_index = 2 } }
     end,
     get_chapter_reviews_batch = function(_self, _book_id, uid, batch)
@@ -260,7 +271,21 @@ expect(checkpoint and #checkpoint.chapters == 3,
     "zero-match sync cleared its resumable checkpoint")
 expect(info and info:find("interrupted", 1, true),
     "zero-match sync was incorrectly reported as successful")
-expect(prevented == 3 and allowed == 3,
+
+-- A fresh successful sync with no remote underlines must clear records from
+-- the previous sync without sending empty chapters through the locator.
+checkpoint = nil
+force_zero_matches = false
+remote_underlines_empty = true
+host:syncExternalAnnotations()
+run_all()
+expect(located_chapters and #located_chapters == 0,
+    "empty remote chapters were sent to the local locator")
+expect(document_value.records and #document_value.records == 0,
+    "empty remote sync retained stale local underline records")
+expect(checkpoint == nil,
+    "successful empty remote sync retained its temporary checkpoint")
+expect(prevented == 4 and allowed == 4,
     "annotation sync did not balance its standby guards")
 
 print(("external_annotations_sync_spec: %d checks"):format(checks))
