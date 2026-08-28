@@ -7,6 +7,7 @@ local ProgressSync = require("weread.lib.progress_sync")
 
 local failures, checks = 0, 0
 local current_test
+local PULL_RETRY_DELAY_SECONDS = 15
 
 local function eq(got, want, label)
     checks = checks + 1
@@ -90,9 +91,11 @@ local function fixture(remote, options)
         is_cookie_configured = function() return true end,
     }
     local queue = {}
+    local delays = {}
     local scheduler = {
-        scheduleIn = function(_self, _delay, callback)
+        scheduleIn = function(_self, delay, callback)
             queue[#queue + 1] = callback
+            delays[#delays + 1] = delay
         end,
     }
     local choices = {}
@@ -161,12 +164,19 @@ local function fixture(remote, options)
         now = options.now,
         subprocess = options.subprocess or false,
     }
+    local function step()
+        assert(#queue > 0, "scheduler queue is empty")
+        local callback = table.remove(queue, 1)
+        local delay = table.remove(delays, 1)
+        callback()
+        return delay
+    end
     local function drain()
         local count = 0
         while #queue > 0 do
             count = count + 1
             assert(count < 20, "scheduler did not quiesce")
-            table.remove(queue, 1)()
+            step()
         end
     end
     return {
@@ -177,6 +187,9 @@ local function fixture(remote, options)
         uploads = uploads,
         jumps = jumps,
         notifications = notifications,
+        queue = queue,
+        delays = delays,
+        step = step,
         drain = drain,
     }
 end
@@ -221,6 +234,62 @@ test("automatic progress pull runs in a subprocess when available", function()
     f.drain()
     eq(online_tasks, 0, "UI-thread online wrapper is bypassed")
     eq(f.sync:status().verified, true, "subprocess result verifies session")
+end)
+
+test("offline automatic pull schedules a delayed retry", function()
+    local f = fixture({}, {
+        is_online = function() return false end,
+    })
+    f.sync:on_reader_ready()
+    eq(f.step(), 0.6, "reader open keeps its existing delay")
+    eq(f.sync:status().state, "offline", "automatic pull records offline")
+    eq(#f.queue, 1, "offline automatic pull queues one retry")
+    eq(f.delays[1], PULL_RETRY_DELAY_SECONDS, "retry waits for the link")
+    eq(#f.notifications, 0, "automatic retry stays silent")
+end)
+
+test("offline manual sync never schedules a retry", function()
+    local f = fixture({}, {
+        is_online = function() return false end,
+    })
+    eq(f.sync:sync_now(), false, "offline manual sync does not start")
+    eq(#f.queue, 0, "manual path leaves the queue empty")
+    eq(#f.notifications, 1, "manual offline notifies once")
+    eq(f.notifications[1].code, "offline", "offline message is explicit")
+end)
+
+test("automatic pull retries stop at the attempt limit", function()
+    local f = fixture({}, {
+        is_online = function() return false end,
+    })
+    f.sync:on_reader_ready()
+    f.step()
+    eq(#f.queue, 1, "first retry queued")
+    f.step()
+    eq(#f.queue, 1, "second retry queued")
+    f.step()
+    eq(#f.queue, 1, "third retry queued")
+    f.step()
+    eq(#f.queue, 0, "retries stop at the limit")
+    eq(f.sync:status().verified, false, "exhausted retries stay gated")
+end)
+
+test("automatic online task failure remains silent and retries", function()
+    local run_options
+    local f = fixture({}, {
+        is_online = function() return true end,
+        run_online = function(_kind, _callback, options)
+            run_options = options
+            return false
+        end,
+    })
+    f.sync:on_reader_ready()
+    f.step()
+    eq(f.sync:status().state, "offline", "failed online task records offline")
+    eq(#f.queue, 1, "failed automatic online task queues one retry")
+    eq(f.delays[1], PULL_RETRY_DELAY_SECONDS, "retry remains delayed")
+    eq(run_options.silent_offline, true, "automatic preflight stays silent")
+    eq(#f.notifications, 0, "automatic start failure does not notify")
 end)
 
 test("nearby progress within two percent is treated as aligned", function()

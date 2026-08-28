@@ -18,6 +18,8 @@ ProgressSync.__index = ProgressSync
 
 local OPEN_DELAY_SECONDS = 0.6
 local RESUME_RECHECK_SECONDS = 5 * 60
+local PULL_RETRY_DELAY_SECONDS = 15
+local PULL_MAX_RETRIES = 3
 local BUSY_RETRY_SECONDS = 2
 local BUSY_RETRY_LIMIT = 10
 local SAME_THRESHOLD_PERCENT = 2
@@ -117,6 +119,7 @@ function ProgressSync:new(options)
             or options.subprocess,
         state = "idle",
         generation = 0,
+        pull_retry_token = 0,
         dirty = false,
         verified = false,
     }
@@ -798,9 +801,42 @@ function ProgressSync:_complete_pull(generation, local_position, context,
     self:_resolve(local_position, remote, context, options)
 end
 
+function ProgressSync:_schedule_pull_retry(options, retry_token)
+    local attempt = (options.retry or 0) + 1
+    if attempt > PULL_MAX_RETRIES then
+        log("warn", "automatic pull retries exhausted:",
+            "book=", tostring(self.current_book_id))
+        return false
+    end
+    local generation = self.generation
+    self.scheduler:scheduleIn(PULL_RETRY_DELAY_SECONDS, function()
+        if generation ~= self.generation then return end
+        if retry_token ~= self.pull_retry_token then return end
+        if self.verified or self.pulling then return end
+        if self.state == "awaiting_choice" then return end
+        self:_pull{
+            manual = false,
+            retry = attempt,
+            retry_token = retry_token,
+        }
+    end)
+    log("info", "automatic pull retry scheduled:",
+        "book=", tostring(self.current_book_id),
+        "attempt=", tostring(attempt),
+        "delay=", tostring(PULL_RETRY_DELAY_SECONDS))
+    return true
+end
+
 function ProgressSync:_pull(options)
     options = options or {}
     if self.pulling then return false end
+    local retry_token = options.retry_token
+    if retry_token == nil then
+        self.pull_retry_token = self.pull_retry_token + 1
+        retry_token = self.pull_retry_token
+    elseif retry_token ~= self.pull_retry_token then
+        return false
+    end
     local local_position, reason, context = self:capture_local()
     if not local_position then
         if not (options.manual == true
@@ -819,7 +855,11 @@ function ProgressSync:_pull(options)
     end
     if not self.is_online() then
         self.state = "offline"
-        if options.manual then self.notify("offline", {}) end
+        if options.manual then
+            self.notify("offline", {})
+        else
+            self:_schedule_pull_retry(options, retry_token)
+        end
         return false
     end
 
@@ -895,12 +935,18 @@ function ProgressSync:_pull(options)
     if self.subprocess and local_position then
         started = start_fetch()
     else
-        started = self.run_online("progress_pull", prepare)
+        started = self.run_online("progress_pull", prepare, {
+            silent_offline = options.manual ~= true,
+        })
     end
     if not started then
         self.pulling = false
         self.state = "offline"
-        if options.manual then self.notify("offline", {}) end
+        if options.manual then
+            self.notify("offline", {})
+        else
+            self:_schedule_pull_retry(options, retry_token)
+        end
     end
     return started == true
 end

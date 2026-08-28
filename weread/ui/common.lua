@@ -121,9 +121,11 @@ function M:showOffline(label)
     self:showInfo(T(_("%1 failed:\n%2"), label, _("No network connection. Please connect Wi-Fi and try again.")))
 end
 
-function M:runOnlineTask(label, callback, delay)
+function M:runOnlineTask(label, callback, delay, options)
     if not self:isNetworkOnline() then
-        self:showOffline(label)
+        if not (options and options.silent_offline) then
+            self:showOffline(label)
+        end
         return false
     end
     UIManager:scheduleIn(delay or 0.1, function()
