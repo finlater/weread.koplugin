@@ -2,36 +2,10 @@ local Crypto = require("weread.lib.crypto")
 local ReaderState = require("weread.lib.reader_state")
 local WeRead = require("weread.lib.protocol")
 local Thoughts = require("weread.lib.thoughts")
-local bit = require("bit")
 local logger = require("weread.lib.logger")
 
 local Content = {}
-
 local b64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-
-local function base64_encode(data)
-    local out = {}
-    local len = #data
-    for i = 1, len, 3 do
-        local a = data:byte(i)
-        local b = i + 1 <= len and data:byte(i + 1) or 0
-        local c = i + 2 <= len and data:byte(i + 2) or 0
-        local n = a * 65536 + b * 256 + c
-        table.insert(out, b64chars:sub(bit.rshift(n, 18) % 64 + 1, bit.rshift(n, 18) % 64 + 1))
-        table.insert(out, b64chars:sub(bit.rshift(n, 12) % 64 + 1, bit.rshift(n, 12) % 64 + 1))
-        if i + 1 <= len then
-            table.insert(out, b64chars:sub(bit.rshift(n, 6) % 64 + 1, bit.rshift(n, 6) % 64 + 1))
-        else
-            table.insert(out, "=")
-        end
-        if i + 2 <= len then
-            table.insert(out, b64chars:sub(n % 64 + 1, n % 64 + 1))
-        else
-            table.insert(out, "=")
-        end
-    end
-    return table.concat(out)
-end
 
 local function basename_safe(value)
     value = tostring(value or ""):gsub("[^%w%._-]", "_")
@@ -1720,51 +1694,6 @@ local function strip_blank_mp_blocks(html)
     end
     html = html:gsub("\n%s*\n%s*\n+", "\n\n")
     return html
-end
-
-function Content.download_mp_images(client, body_html, progress, embed_base64)
-    local assets = {}
-    local used_names = {}
-    local img_total = 0
-    body_html:gsub('src=(["\'])(.-)%1', function(quote, src)
-        if src:match("mmbiz%.qpic%.cn") or src:match("mmbiz%.qlogo%.cn") then
-            img_total = img_total + 1
-        end
-    end)
-    local index = 0
-    local body = body_html:gsub('src=(["\'])(.-)%1', function(quote, src)
-        if not src:match("mmbiz%.qpic%.cn") and not src:match("mmbiz%.qlogo%.cn") then
-            return "src=" .. quote .. src .. quote
-        end
-        index = index + 1
-        if progress then
-            progress(index, img_total)
-        end
-        local url = src
-        if url:match("^//") then
-            url = "https:" .. url
-        end
-        local ok, data = pcall(function()
-            return client:get_binary(url, { referer = "https://weread.qq.com/" })
-        end)
-        if not ok or not data or #data == 0 then
-            return "src=" .. quote .. src .. quote
-        end
-        local ext, mt = media_type_for(data)
-        if embed_base64 then
-            local b64 = base64_encode(data)
-            return "src=" .. quote .. "data:" .. mt .. ";base64," .. b64 .. quote
-        end
-        local fname = unique_asset_name(used_names, "img" .. tostring(index), ext)
-        local href = "images/" .. fname
-        table.insert(assets, {
-            href = href,
-            media_type = mt,
-            data = data,
-        })
-        return "src=" .. quote .. "../" .. href .. quote
-    end)
-    return body, assets
 end
 
 function Content.mp_article_path(settings, book, article)

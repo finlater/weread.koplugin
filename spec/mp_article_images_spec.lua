@@ -74,8 +74,13 @@ expect(#progress == 2 and progress[1][1] == 1 and progress[1][2] == 2
     "MP image progress did not count unique URLs")
 
 local relative = ".weread-mp-review_1-assets/img-0001.png"
-local _first, references = rewritten:gsub(relative, "")
-expect(references == 2,
+local first_reference = rewritten:find(relative, 1, true)
+local second_reference = first_reference
+    and rewritten:find(relative, first_reference + #relative, true)
+local third_reference = second_reference
+    and rewritten:find(relative, second_reference + #relative, true)
+expect(first_reference ~= nil and second_reference ~= nil
+        and third_reference == nil,
     "duplicate MP image references did not share a local file")
 expect(not rewritten:match("data:image") and not rewritten:match(";base64,"),
     "MP image was still embedded as a base64 data URL")

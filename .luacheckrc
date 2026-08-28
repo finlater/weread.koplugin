@@ -23,7 +23,6 @@ files["weread/lib/client.lua"] = {
 files["weread/lib/content.lua"] = {
     ignore = {
         "211/normalize_void_elements",
-        "431/bit",
     },
 }
 
