@@ -142,6 +142,9 @@ function M.cleanup()
         pooled:_freeContentCaches()
     end
     _pool = {}
+    pcall(function()
+        FaceFactory:clearCache()
+    end)
 end
 
 return M

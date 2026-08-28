@@ -67,4 +67,40 @@ expect(books["123"].chapters == nil,
     "legacy in-record chapter list was not removed")
 expect(writes == 2, "migrated settings were not saved and flushed")
 
+local function stub(name, value)
+    package.preload[name] = function() return value or {} end
+end
+stub("ui/bidi", { dirpath = function(path) return path end })
+stub("dispatcher", { registerAction = function() end })
+stub("ffi/util", { template = function(text) return text end })
+local widget = { new = function(_self, fields) return fields end }
+stub("ui/widget/buttondialog", widget)
+stub("ui/widget/confirmbox", widget)
+stub("ui/widget/infomessage", widget)
+stub("ui/uimanager", {})
+stub("weread.lib.logger", { info = function() end })
+stub("weread.ui.thought_popup", {})
+stub("weread.lib.protocol", {})
+stub("weread.lib.plugin_util", {
+    tr = function(text) return text end,
+    T = function(text) return text end,
+})
+stub("weread.lib.updater", {
+    new = function() return {} end,
+    proxy_label = function() return "" end,
+})
+package.loaded["weread.ui.menu"] = nil
+package.loaded["weread.ui.update"] = nil
+local Menu = require("weread.ui.menu")
+local Update = require("weread.ui.update")
+local composed = {}
+local composed_ok, composed_err = pcall(function()
+    Mixin.apply(composed, { Menu, Update })
+end)
+expect(composed_ok, "menu and update mixins must not collide: " .. tostring(composed_err))
+expect(type(composed.getUpdateMenuItems) == "function",
+    "fork updater menu items were not installed")
+expect(composed.getUpdateMenuItems ~= Menu.getUpdateMenuItems,
+    "upstream leftover updater menu must not replace the fork updater")
+
 print(("plugin_composition_spec: %d checks"):format(checks))

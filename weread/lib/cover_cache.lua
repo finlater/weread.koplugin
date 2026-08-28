@@ -151,7 +151,9 @@ function CoverCache:prune(max_bytes)
     if not lfs.attributes(self.dir, "mode") then return 0 end
     local files, total = {}, 0
     for name in lfs.dir(self.dir) do
-        if name ~= "." and name ~= ".." and not name:match("%.part$") then
+        if name ~= "." and name ~= ".."
+            and not name:find(".part.", 1, true)
+            and not name:match("%.part$") then
             local path = self.dir .. "/" .. name
             local attributes = lfs.attributes(path)
             if attributes and attributes.mode == "file" then

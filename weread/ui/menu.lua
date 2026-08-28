@@ -634,7 +634,7 @@ function M:getSettingsMenuItems()
                                 },
                                 {
                                     text_func = function()
-                                        local height = tonumber(self.settings:get("thought_popup").height_ratio) or 0.62
+                                        local height = tonumber(self.settings:get("thought_popup").height_ratio) or 0.70
                                         return T(_("Height: %1%"), math.floor(height * 100 + 0.5))
                                     end,
                                     keep_menu_open = true,
@@ -760,148 +760,10 @@ function M:getSettingsMenuItems()
 end
 
 
--- Open the local WeRead collection.
--- From FileManager: open in place. From the reader: leave the book first and
--- open via FileManager — showing the collection on top of ReaderUI leaves the
--- document underneath, so navigating up/closing the shelf drops back into it.
-function M:showWereadCollection()
-    local COLLECTION_NAME = "weread"
-    local FileManager = require("apps/filemanager/filemanager")
-    local ReadCollection = require("readcollection")
-
-    if not ReadCollection.coll then
-        ReadCollection:_read()
-    end
-    if not ReadCollection.coll[COLLECTION_NAME] then
-        ReadCollection:addCollection(COLLECTION_NAME)
-        ReadCollection:write({ [COLLECTION_NAME] = true })
-    end
-
-    local fm = FileManager.instance
-    if fm and fm.collections then
-        fm.collections:onShowColl(COLLECTION_NAME)
-        return
-    end
-    if self.ui and self.ui.document and self.ui.showFileManager then
-        local file = self.ui.document.file
-        self.ui:onClose()
-        self.ui:showFileManager(file)
-        UIManager:scheduleIn(0.1, function()
-            local fm2 = FileManager.instance
-            if fm2 and fm2.collections then
-                fm2.collections:onShowColl(COLLECTION_NAME)
-            end
-        end)
-        return
-    end
-    if self.ui and self.ui.collections then
-        self.ui.collections:onShowColl(COLLECTION_NAME)
-    end
-end
-
-function M:showAbout()
-    UIManager:show(InfoMessage:new{
-        text = T(_("WeRead Plugin v%1\n\nDisclaimer: This project is for personal learning and technical research only, not for commercial use. All consequences arising from the use of this project (including but not limited to account bans, data loss, etc.) are borne by the user. The project author assumes no responsibility. Please comply with WeRead's user agreement and applicable laws and regulations.\n\nhttps://github.com/finlater/weread.koplugin"), self.version),
-    })
-end
-
-function M:getAboutMenuItems()
-    local items = {
-        {
-            text = T(_("Version %1"), self.version),
-            keep_menu_open = true,
-            callback = function()
-                self:showAbout()
-            end,
-        },
-        {
-            text = T(_("Author: %1"), "finlater"),
-            keep_menu_open = true,
-            callback = function()
-                UIManager:show(InfoMessage:new{
-                    text = "finlater\n\nhttps://github.com/finlater",
-                })
-            end,
-        },
-    }
-    for _, item in ipairs(self:getUpdateMenuItems()) do
-        items[#items + 1] = item
-    end
-    return items
-end
-
-function M:getUpdateMenuItems()
-    local items = {}
-    local available = self.updater:available_version()
-    if available then
-        table.insert(items, {
-            text = T(_("Update to v%1"), available),
-            keep_menu_open = true,
-            callback = self:safeCallback(_("Update plugin"), function()
-                self.updater:show_cached_update()
-            end),
-        })
-    else
-        table.insert(items, {
-            text = _("Check for updates"),
-            keep_menu_open = true,
-            callback = self:safeCallback(_("Check for updates"), function()
-                self.updater:check(true)
-            end),
-        })
-    end
-    table.insert(items, {
-        text = _("Automatically check once a day"),
-        keep_menu_open = true,
-        check_callback_updates_menu = true,
-        checked_func = function()
-            return self.settings:get("update").auto_check == true
-        end,
-        callback = self:safeCallback(_("Automatically check once a day"),
-            function(touchmenu_instance)
-                local update = self.settings:get("update")
-                update.auto_check = not (update.auto_check == true)
-                self.settings:set("update", update)
-                self.settings:flush()
-                if update.auto_check then self.updater:schedule_auto_check() end
-                if touchmenu_instance then touchmenu_instance:updateItems() end
-            end),
-    })
-    table.insert(items, {
-        text = _("Prefer proxy for updates"),
-        keep_menu_open = true,
-        check_callback_updates_menu = true,
-        checked_func = function()
-            return self.settings:get("update").prefer_proxy == true
-        end,
-        callback = self:safeCallback(_("Prefer proxy for updates"),
-            function(touchmenu_instance)
-                local update = self.settings:get("update")
-                local function apply(enabled)
-                    update.prefer_proxy = enabled
-                    self.settings:set("update", update)
-                    self.settings:flush()
-                    if touchmenu_instance then touchmenu_instance:updateItems() end
-                end
-                if update.prefer_proxy == true then
-                    apply(false)
-                    return
-                end
-                UIManager:show(ConfirmBox:new{
-                    text = _("Update proxies are third-party services. They can see update requests and may be unavailable without notice. Release packages will still be verified before installation. Prefer proxies?"),
-                    ok_text = _("Enable"),
-                    cancel_text = _("Cancel"),
-                    ok_callback = function() apply(true) end,
-                })
-            end),
-    })
-    return items
-end
-
 -- Let the user set the thought popup height as a percentage of the screen.
 function M:showThoughtPopupHeightPicker(touchmenu_instance)
     local SpinWidget = require("ui/widget/spinwidget")
-    local current = math.floor((tonumber(self.settings:get("thought_popup").height_ratio) or 0.62) * 100)
+    local current = math.floor((tonumber(self.settings:get("thought_popup").height_ratio) or 0.70) * 100)
     local spin = SpinWidget:new{
         value = current,
         value_min = 20,
@@ -940,7 +802,7 @@ function M:showThoughtPopupFontSizePicker()
             spin_widget = SpinWidget:new{
                 width = math.floor(Screen:getWidth() * 0.75),
                 value = tonumber(thought_popup.font_size)
-                        or Screen:scaleBySize((self.ui
+                        or ((self.ui
                             and self.ui.document
                             and self.ui.document.configurable
                             and self.ui.document.configurable.font_size) or 18),

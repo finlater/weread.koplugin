@@ -183,6 +183,7 @@ function M:onCloseDocument()
     self._current_weread_file = nil
     self._current_weread_book_id = nil
     self:_teardownThoughtInterception()
+    require("weread.ui.thought_popup").cleanup()
     self:_teardownXPointerOverlayPrototype()
     self:_removeReaderHighlightTapGuard()
 

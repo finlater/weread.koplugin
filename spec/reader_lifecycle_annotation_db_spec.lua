@@ -14,6 +14,15 @@ end
 package.preload["weread.lib.protocol"] = function()
     return {}
 end
+local thought_popup_cleanup = 0
+package.preload["weread.ui.thought_popup"] = function()
+    return {
+        closeVisible = function() end,
+        cleanup = function()
+            thought_popup_cleanup = thought_popup_cleanup + 1
+        end,
+    }
+end
 package.preload["ui/uimanager"] = function()
     return {
         scheduleIn = function(_self, _delay, callback)
@@ -86,6 +95,15 @@ end
 
 expect(thought_db_opens == 0,
     "reader ready does not initialize the thought database")
+
+host.progress_sync.on_close_document = function() end
+host.downloader = { cancelPrefetch = function() end }
+host._teardownXPointerOverlayPrototype = function() end
+host._removeReaderHighlightTapGuard = function() end
+host.read_report.on_close_document = function() end
+host:onCloseDocument()
+expect(thought_popup_cleanup == 1,
+    "closing a document must release pooled thought popup caches")
 
 print(string.format(
     "reader_lifecycle_annotation_db_spec: %d checks, %d failure(s)",

@@ -111,8 +111,13 @@ expect(cache:store({ cover = "https://cdn.example/tiny" }, "\255\216\255") == ni
     "truncated image header was cached")
 
 modified[jpeg_path], modified[png_path] = 1, 2
+local part_path = cache.dir .. "/in-flight.thumb.part.png"
+files[part_path] = string.rep("p", 4096)
+modified[part_path] = 0
 local removed = cache:prune(#files[png_path])
 expect(removed == 1 and files[jpeg_path] == nil and files[png_path] ~= nil,
     "cover cache did not evict the oldest file at its size limit")
+expect(files[part_path] ~= nil,
+    "in-flight cover part files must not be treated as cache entries")
 
 print(("cover_cache_spec: %d checks"):format(checks))

@@ -109,6 +109,14 @@ function M:onWeReadAccountChanged()
     self.shelf_books = nil
     self.shelf_search_keyword = nil
     self.shelf_view_pages = nil
+    self.shelf_cover_pending = nil
+    self.shelf_cover_generation = (self.shelf_cover_generation or 0) + 1
+    local job = self.shelf_cover_job
+    self.shelf_cover_job = nil
+    if job and job.pid and self.shelf_cover_subprocess
+        and type(self.shelf_cover_subprocess.terminate) == "function" then
+        pcall(self.shelf_cover_subprocess.terminate, job.pid)
+    end
 end
 
 function M:applyShelfSnapshot(all_books)

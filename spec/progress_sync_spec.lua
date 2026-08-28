@@ -274,6 +274,43 @@ test("automatic pull retries stop at the attempt limit", function()
     eq(f.sync:status().verified, false, "exhausted retries stay gated")
 end)
 
+test("automatic remote pull failure retries silently", function()
+    local f = fixture({}, {
+        remote_provider = function()
+            error("weread link is not ready")
+        end,
+    })
+    f.sync:on_reader_ready()
+    eq(f.step(), 0.6, "reader open keeps its existing delay")
+    eq(f.sync:status().verified, false, "failed remote pull stays gated")
+    eq(#f.queue, 1, "remote pull failure queues one retry")
+    eq(f.delays[1], PULL_RETRY_DELAY_SECONDS, "remote failure waits before retry")
+    eq(#f.notifications, 0, "automatic remote failure stays silent")
+end)
+
+test("a stale in-flight pull does not block the next document", function()
+    local f = fixture({
+        bookId = "book",
+        progress = 25,
+        chapterUid = 22,
+        chapterIdx = 2,
+        chapterOffset = 150,
+        updateTime = 10,
+    })
+    f.sync.pulling = true
+    f.sync:on_reader_ready()
+    f.drain()
+    eq(f.sync:status().verified, true, "new document pull is not blocked by a stale lock")
+end)
+
+test("stale pull completion does not clear the current pulling lock", function()
+    local f = fixture({})
+    f.sync.generation = 2
+    f.sync.pulling = true
+    f.sync:_complete_pull(1, { book_id = "old" }, { book_id = "old" }, {}, nil, "stale")
+    eq(f.sync.pulling, true, "stale completion leaves the current lock")
+end)
+
 test("automatic online task failure remains silent and retries", function()
     local run_options
     local f = fixture({}, {

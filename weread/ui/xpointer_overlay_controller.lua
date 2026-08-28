@@ -7,6 +7,7 @@ local External = require("weread.lib.external_annotations")
 local logger = require("weread.lib.logger")
 local StandbyGuard = require("weread.lib.standby_guard")
 local Overlay = require("weread.ui.xpointer_overlay")
+local ThoughtPopupConfig = require("weread.ui.thought_popup.popup_config")
 local PluginUtil = require("weread.lib.plugin_util")
 
 local _ = PluginUtil.tr
@@ -131,7 +132,7 @@ function M:_onXPointerOverlayTap(ges)
             },
         }
     end
-    require("weread.ui.thought_popup").show{ pages = items }
+    require("weread.ui.thought_popup").show(ThoughtPopupConfig.build(self, items))
     return true
 end
 

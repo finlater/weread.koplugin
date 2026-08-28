@@ -219,4 +219,19 @@ host:fetchVisibleShelfCovers(unsafe_view, {
 expect(#cover_requests == requests_before_unsafe_url,
     "cover loader accepted a non-HTTPS cover source")
 
+local terminated = 0
+host.shelf_cover_subprocess = {
+    terminate = function() terminated = terminated + 1 end,
+}
+host.shelf_cover_generation = 4
+host.shelf_cover_job = { pid = 99 }
+host.shelf_cover_pending = { view = unsafe_view, books = {}, options = {} }
+host:onWeReadAccountChanged()
+expect(host.shelf_view_pages == nil, "account change must reset shelf pages")
+expect(host.shelf_cover_job == nil, "account change must drop the cover job")
+expect(host.shelf_cover_pending == nil, "account change must drop pending cover work")
+expect(terminated == 1, "account change must terminate the cover subprocess")
+expect(host.shelf_cover_generation == 5,
+    "account change must invalidate in-flight cover generations")
+
 print(("bookshelf_pagination_spec: %d checks"):format(checks))

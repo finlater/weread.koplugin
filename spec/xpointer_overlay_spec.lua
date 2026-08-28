@@ -107,6 +107,25 @@ package.preload["weread.lib.plugin_util"] = function()
         end,
     }
 end
+local shown_opts
+package.preload["weread.ui.thought_popup"] = function()
+    return {
+        show = function(opts)
+            shown_opts = opts
+            return opts
+        end,
+        closeVisible = function() end,
+        cleanup = function() end,
+    }
+end
+package.preload["device"] = function()
+    return {
+        screen = {
+            getWidth = function() return 600 end,
+            scaleBySize = function(_self, value) return value end,
+        },
+    }
+end
 local Controller = require("weread.ui.xpointer_overlay_controller")
 local invalidations = 0
 local host = {
@@ -180,5 +199,44 @@ local_book_items[3].callback({
 })
 expect(saved_document == nil and menu_updates == 1,
     "clearing local-book data did not refresh the open menu immediately")
+
+local tap_host = {
+    ui = { document = { configurable = { font_size = 18 } } },
+    dialog = {},
+    settings = {
+        get = function(_self, key, default)
+            if key == "cache" then
+                return { ignore_edge_thought_taps = true, edge_tap_ratio = 0.20 }
+            end
+            if key == "thought_popup" then
+                return {
+                    position = "center",
+                    height_ratio = 0.70,
+                    width_ratio = 0.8,
+                    contrast = 9,
+                    tap_to_page = false,
+                }
+            end
+            return default or {}
+        end,
+    },
+    _xpointer_overlay = {
+        enabled = true,
+        hitTest = function()
+            return {
+                text = "quote",
+                items = {
+                    { abstract = "quote", author = "ann", content = "hello", likes_count = 1 },
+                },
+            }
+        end,
+    },
+}
+for name, method in pairs(Controller) do tap_host[name] = method end
+tap_host:_onXPointerOverlayTap({ pos = { x = 300, y = 120 } })
+expect(shown_opts and shown_opts.pages and shown_opts.pages[1].content == "hello",
+    "local-book overlay did not open the thought popup")
+expect(shown_opts and shown_opts.position == "center" and shown_opts.height_ratio == 0.70,
+    "local-book overlay did not use the shared thought popup settings")
 
 print(("xpointer_overlay_spec: %d checks"):format(checks))

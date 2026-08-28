@@ -771,7 +771,9 @@ end
 
 function ProgressSync:_complete_pull(generation, local_position, context,
         options, remote, pull_error)
-    self.pulling = false
+    if generation == self.generation then
+        self.pulling = false
+    end
     if generation ~= self.generation
         or tostring(self.detect_book() or "") ~= context.book_id then
         return
@@ -789,6 +791,8 @@ function ProgressSync:_complete_pull(generation, local_position, context,
         })
         if options.manual then
             self.notify("pull_failed", { error = tostring(pull_error) })
+        elseif not options.resume_recheck then
+            self:_schedule_pull_retry(options, options.retry_token or self.pull_retry_token)
         end
         return
     end
@@ -1007,6 +1011,7 @@ function ProgressSync:on_reader_ready()
     self.document_context = nil
     self.verified = false
     self.dirty = false
+    self.pulling = false
     self.resume_recheck_pending = false
     self.state = "waiting"
 
@@ -1066,6 +1071,7 @@ function ProgressSync:on_close_document()
     self.local_position = nil
     self.remote_position = nil
     self.document_context = nil
+    self.pulling = false
     self.resume_recheck_pending = false
 end
 

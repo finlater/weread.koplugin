@@ -229,7 +229,7 @@ function M:_teardownThoughtInterception()
         self._thought_interception_setup = nil
     end
     self:_removeLinkFilter()
-    ThoughtPopup.closeVisible()
+    ThoughtPopup.cleanup()
     if self._thought_refresh_request then
         local progress_dialog = self._thought_refresh_request.progress_dialog
         self._thought_refresh_request = nil
