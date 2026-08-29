@@ -446,6 +446,10 @@ end
 
 local function xml_escape(value)
     value = tostring(value or "")
+    -- XML 1.0 permits tabs, newlines, and carriage returns from the C0 range,
+    -- but rejects the remaining control characters. Book metadata comes from
+    -- remote APIs, so remove those bytes before embedding it in the OPF.
+    value = value:gsub("[%z\1-\8\11\12\14-\31]", "")
     value = value:gsub("&", "&amp;")
     value = value:gsub("<", "&lt;")
     value = value:gsub(">", "&gt;")
@@ -789,6 +793,11 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
     local book_title = book.title or "WeRead"
     local path = dir .. "/" .. filename_safe(book_title .. " - " .. (suffix or "book")) .. ".epub"
     local author = book.author or "WeRead"
+    local description_meta = ""
+    local description = xml_escape(book.intro)
+    if description ~= "" then
+        description_meta = "\n<dc:description>" .. description .. "</dc:description>"
+    end
     local manifest_items = {
         [[<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>]],
         [[<item id="toc" href="toc.ncx" media-type="application/x-dtbncx+xml"/>]],
@@ -851,7 +860,7 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
 <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
 <dc:identifier id="bookid">weread-]] .. xml_escape(book_id) .. [[-]] .. xml_escape(suffix or "book") .. [[</dc:identifier>
 <dc:title>]] .. xml_escape(book_title) .. [[</dc:title>
-<dc:creator>]] .. xml_escape(author) .. [[</dc:creator>
+<dc:creator>]] .. xml_escape(author) .. [[</dc:creator>]] .. description_meta .. [[
 <dc:publisher>WeRead</dc:publisher>
 <dc:source>]] .. xml_escape(WeRead.reader_url(book_id)) .. [[</dc:source>
 <dc:language>zh-CN</dc:language>
