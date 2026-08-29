@@ -14,6 +14,7 @@ local HorizontalSpan = require("ui/widget/horizontalspan")
 local ImageWidget = require("ui/widget/imagewidget")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local LineWidget = require("ui/widget/linewidget")
+local OverlapGroup = require("ui/widget/overlapgroup")
 local ScrollableContainer = require("ui/widget/container/scrollablecontainer")
 local Size = require("ui/size")
 local TextWidget = require("ui/widget/textwidget")
@@ -21,12 +22,31 @@ local TitleBar = require("ui/widget/titlebar")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
+local Widget = require("ui/widget/widget")
 local Screen = Device.screen
 local FocusNav = require("weread.ui.focus_nav")
 local I18n = require("weread.lib.i18n")
 local T = require("ffi/util").template
 
 local function _(text) return I18n.tr(text) end
+
+local CachedCorner = Widget:extend{
+    size = 0,
+}
+
+function CachedCorner:init()
+    self.size = math.max(1, math.floor(tonumber(self.size) or 1))
+    self.dimen = Geom:new{ w = self.size, h = self.size }
+end
+
+function CachedCorner:paintTo(bb, x, y)
+    -- A compact, solid dog-ear in the upper-right corner. Drawing it one
+    -- scanline at a time keeps the marker dependency-free and crisp on e-ink.
+    for row = 0, self.size - 1 do
+        local width = self.size - row
+        bb:paintRect(x + row, y + row, width, 1, Blitbuffer.COLOR_BLACK)
+    end
+end
 
 local ShelfRow = InputContainer:extend{
     text = "",
@@ -104,7 +124,7 @@ local CoverCell = InputContainer:extend{
     height = nil,
     cover_path = nil,
     cover_loading = false,
-    status = "",
+    cached = false,
     callback = nil,
     show_parent = nil,
 }
@@ -151,7 +171,7 @@ function CoverCell:init()
         }
         self._has_cover = false
     end
-    local cover = CenterContainer:new{
+    local cover_frame = CenterContainer:new{
         dimen = Geom:new{ w = cover_width, h = cover_height },
         FrameContainer:new{
             width = cover_width,
@@ -166,31 +186,43 @@ function CoverCell:init()
             },
         },
     }
+    local cover_layers = {
+        dimen = Geom:new{ w = cover_width, h = cover_height },
+        cover_frame,
+    }
+    self._has_cached_corner = self.cached == true
+    if self._has_cached_corner then
+        local corner_size = math.max(1, math.min(
+            cover_width,
+            cover_height,
+            Screen:scaleBySize(16)
+        ))
+        local corner = CachedCorner:new{ size = corner_size }
+        corner.overlap_offset = { cover_width - corner_size, 0 }
+        cover_layers[#cover_layers + 1] = corner
+        self._cached_corner_size = corner_size
+    end
+    local cover = OverlapGroup:new(cover_layers)
     local title = self.book.title or self.book.bookId or self.book.book_id or _("Untitled")
     local title_widget = TextWidget:new{
         text = title,
         face = Font:getFace("cfont", 18),
         max_width = cover_width,
     }
-    local status_widget = TextWidget:new{
-        text = self.status or "",
-        face = Font:getFace("cfont", 14),
-        max_width = cover_width,
-    }
     self.frame = FrameContainer:new{
-        width = self.width,
-        height = self.height,
         bordersize = 0,
         radius = 0,
         margin = 0,
-        padding = padding,
+        padding = 0,
         background = Blitbuffer.COLOR_WHITE,
         show_parent = self.show_parent,
-        VerticalGroup:new{
-            align = "center",
-            cover,
-            title_widget,
-            status_widget,
+        CenterContainer:new{
+            dimen = Geom:new{ w = self.width, h = self.height },
+            VerticalGroup:new{
+                align = "center",
+                cover,
+                title_widget,
+            },
         },
     }
     self[1] = self.frame
@@ -355,6 +387,24 @@ function LibraryView:itemStatus(book)
     return status
 end
 
+function LibraryView:preparePagination()
+    local source = self.mode == "public_account"
+        and (self.accounts or {}) or (self.books or {})
+    self.page_size = math.max(1, math.floor(tonumber(self.page_size) or 10))
+    if self.cover_mode and self.mode == "books" then
+        local columns = math.max(1, math.floor(tonumber(self.cover_columns) or 3))
+        local rows = math.max(1, math.floor(tonumber(self.cover_rows) or 2))
+        self.page_size = columns * rows
+    end
+    if self.paged then
+        self.page_count = math.max(1, math.ceil(#source / self.page_size))
+        self.page = math.max(
+            1,
+            math.min(math.floor(tonumber(self.page) or 1), self.page_count)
+        )
+    end
+end
+
 function LibraryView:content()
     local source = self.mode == "public_account"
         and (self.accounts or {}) or (self.books or {})
@@ -364,14 +414,6 @@ function LibraryView:content()
     }
     self._item_rows = {}
     self._focus_item_rows = {}
-    self.page_size = math.max(1, math.floor(tonumber(self.page_size) or 10))
-    if self.paged then
-        self.page_count = math.max(1, math.ceil(#source / self.page_size))
-        self.page = math.max(
-            1,
-            math.min(math.floor(tonumber(self.page) or 1), self.page_count)
-        )
-    end
     if #source == 0 then
         table.insert(content, VerticalSpan:new{ width = Size.padding.large })
         table.insert(content, TextWidget:new{
@@ -389,29 +431,36 @@ function LibraryView:content()
     end
     if self.cover_mode and self.mode == "books" then
         local columns = math.max(1, math.floor(tonumber(self.cover_columns) or 3))
-        local cell_width = math.floor(self.screen_w / columns)
-        local cell_height = math.max(
+        local rows = math.max(1, math.floor(tonumber(self.cover_rows) or 2))
+        local cell_width = math.floor(self.content_width / columns)
+        local cell_height = math.floor(math.max(
             1,
             tonumber(self.cover_cell_height) or math.floor(self.screen_h * 0.28)
-        )
+        ))
+        local grid_height = math.max(cell_height, tonumber(self.cover_content_height)
+            or cell_height * rows)
         local grid_row
         for index = first, last do
             local book = source[index]
             local column = ((index - first) % columns) + 1
+            local row = math.floor((index - first) / columns) + 1
             if column == 1 then
                 grid_row = {}
                 self._focus_item_rows[#self._focus_item_rows + 1] = grid_row
                 table.insert(content, HorizontalGroup:new(grid_row))
             end
-            local width = column == columns and self.screen_w - cell_width * (columns - 1)
+            local width = column == columns
+                and self.content_width - cell_width * (columns - 1)
                 or cell_width
+            local height = row == rows and grid_height - cell_height * (rows - 1)
+                or cell_height
             local cover_cell = CoverCell:new{
                 book = book,
-                status = self:itemStatus(book),
+                cached = book._cached == true,
                 cover_path = self.cover_paths and self.cover_paths[book] or nil,
                 cover_loading = self.cover_loading and self.cover_loading[book] == true,
                 width = width,
-                height = cell_height,
+                height = math.max(1, height),
                 show_parent = self,
                 callback = function()
                     if self.on_select then self.on_select(book, self.mode) end
@@ -505,13 +554,17 @@ function LibraryView:init()
     }
     local tabs = self:tabBar()
     local actions = self:actionBar()
-    -- Build the content first: pagination computes the clamped page count and
-    -- creates only the current page's rows.
-    local content = self:content()
+    self:preparePagination()
     local page_bar = self:pageBar()
-    local scroll_h = self.screen_h - self.title_bar:getHeight()
+    local scroll_h = math.max(1, self.screen_h - self.title_bar:getHeight()
         - tabs:getSize().h - actions:getSize().h
-        - (page_bar and page_bar:getSize().h or 0)
+        - (page_bar and page_bar:getSize().h or 0))
+    if self.cover_mode and self.mode == "books" then
+        local rows = math.max(1, math.floor(tonumber(self.cover_rows) or 2))
+        self.cover_content_height = scroll_h
+        self.cover_cell_height = math.max(1, math.floor(scroll_h / rows))
+    end
+    local content = self:content()
     local scroll = ScrollableContainer:new{
         dimen = Geom:new{ w = self.screen_w, h = scroll_h },
         show_parent = self,
