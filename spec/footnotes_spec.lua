@@ -6,6 +6,17 @@ local function expect(condition, message)
     if not condition then error(message or ("check " .. checks .. " failed")) end
 end
 
+-- Plain-find occurrence counter: keeps literal data out of Lua patterns.
+local function count_occurrences(haystack, needle)
+    local count, pos = 0, 1
+    while true do
+        local at = haystack:find(needle, pos, true)
+        if not at then return count end
+        count = count + 1
+        pos = at + #needle
+    end
+end
+
 package.preload["logger"] = function()
     return {
         info = function() end,
@@ -177,5 +188,118 @@ local invalid = transformed:gsub('id="wrfn%-101%-1"', 'id="removed"')
 local valid, validation_error = Footnotes.validate(invalid)
 expect(valid == false and tostring(validation_error):find("missing", 1, true),
     "missing generated target was not rejected")
+
+-- Regression: a chapter-root wrapper block spanning nearly the whole chapter
+-- used to index every descendant anchor with the entire flattened chapter
+-- (both dual-language variants concatenated) as the note text.
+local padding_unit = "這是用來模擬整章長度的填充正文段落。"
+local padding = padding_unit:rep(260)
+local poisoned_html = [[
+<html><body><div id="root">
+<h2 class="wr-traditional">第一章</h2><h2 class="wr-simplified">第一章</h2>
+<p class="wr-traditional">這是正文內容。<a href="#fn_1">1</a></p>
+<p class="wr-simplified">这是正文内容。</p>
+<p class="wr-traditional">]] .. padding .. [[</p>
+<a id="fn_1"></a><p>譯註：這是真正的注釋。</p>
+</div></body></html>
+]]
+local poisoned_scan = Footnotes.scan_chapter(poisoned_html, chapter)
+expect(poisoned_scan.definitions["fn_1"] ~= nil,
+    "real footnote definition was lost to root-block poisoning")
+expect(poisoned_scan.definitions["fn_1"].text == "譯註：這是真正的注釋。",
+    "chapter-root wrapper poisoned the footnote definition text")
+local poisoned_body, poisoned_stats = Footnotes.transform_chapter(
+    poisoned_html, poisoned_scan,
+    Footnotes.build_book_index({ ["101"] = poisoned_scan }, { chapter }))
+expect(poisoned_stats.converted == 1 and poisoned_stats.unresolved == 0,
+    "poisoned-chapter footnote was not converted")
+expect(select(2, poisoned_body:gsub('class="wr%-book%-footnote"', "")) == 1,
+    "root-block poisoning generated spurious footnote asides")
+local poisoned_notes = poisoned_body:match('<div class="wr%-footnotes">.*')
+expect(poisoned_notes and poisoned_notes:find("譯註：這是真正的注釋。", 1, true),
+    "converted note did not embed the true footnote text")
+expect(poisoned_notes and not poisoned_notes:find(padding_unit, 1, true),
+    "generated footnote embedded flattened chapter padding")
+expect(count_occurrences(poisoned_body, padding) == 1,
+    "generated footnotes duplicated chapter body padding")
+
+-- Shortest-wins: when an oversized-but-legitimate ancestor capture is recorded
+-- first, the smaller direct capture must replace it.
+local filler = "補充背景說明文字。"
+local wrapped_html = "<aside>"
+    .. filler:rep(30) .. '<p id="short-note">真注釋</p>' .. filler:rep(30)
+    .. "</aside>"
+local wrapped_scan = Footnotes.scan_chapter(wrapped_html, chapter)
+expect(wrapped_scan.definitions["short-note"] ~= nil,
+    "wrapped short note definition was not indexed")
+expect(wrapped_scan.definitions["short-note"].text == "真注釋",
+    "larger ancestor capture was not replaced by the shorter direct capture")
+
+-- A long but legitimate note below the size cap must survive intact.
+local long_text = string.rep("這是一條很長但完全真實的注釋內容。", 100)
+local long_scan = Footnotes.scan_chapter(
+    '<p id="long-note">' .. long_text .. "</p>", chapter)
+expect(long_scan.definitions["long-note"] ~= nil,
+    "long legitimate note definition was dropped")
+expect(long_scan.definitions["long-note"].text == long_text,
+    "long legitimate note text was truncated or altered")
+
+-- Regression: a backlink arrow inside an element sharing the note target's id
+-- used to poison the definition, since shortest-wins favored its 3-byte glyph.
+local arrow_html = [[<li id="fn_9">這是完整的注釋正文內容。<a id="fn_9" href="#ref_9">↩</a></li>]]
+local arrow_doc = [[<p>正文<a class="noteref" href="#fn_9"><sup>[9]</sup></a></p>]] .. arrow_html
+local arrow_scan = Footnotes.scan_chapter(arrow_doc, chapter)
+expect(arrow_scan.definitions["fn_9"] ~= nil,
+    "backlink arrow eliminated the footnote definition entirely")
+-- The stored text is the enclosing li capture; strip_tags leaves the trailing
+-- return glyph in place, but the definition must never collapse to it.
+expect(arrow_scan.definitions["fn_9"].text == "這是完整的注釋正文內容。 ↩",
+    "backlink arrow was stored as the footnote definition text")
+local arrow_body, arrow_stats = Footnotes.transform_chapter(
+    arrow_doc, arrow_scan,
+    Footnotes.build_book_index({ ["101"] = arrow_scan }, { chapter }))
+expect(arrow_stats.converted == 1 and arrow_stats.unresolved == 0,
+    "note sharing its id with a backlink arrow was not converted")
+expect(Footnotes.validate(arrow_body) == true,
+    "arrow-poisoned chapter generated invalid footnote markup")
+local arrow_aside = arrow_body:match(
+    'class="wr%-book%-footnote".-<a href="#wrfnref%-101%-1"[^>]*>%[9%]</a>(.-)</p>')
+expect(arrow_aside and arrow_aside:find("這是完整的注釋正文內容。", 1, true),
+    "generated aside did not embed the full footnote text")
+expect(arrow_aside and arrow_aside:match("^%s*↩%s*$") == nil,
+    "generated aside collapsed to the bare backlink arrow")
+
+-- Regression: notes written only in kana, hangul, Cyrillic or astral-plane CJK
+-- were treated as pure symbols, since the old check only knew %w and the CJK
+-- UTF-8 lead bytes 0xE4-0xE9. Any real text codepoint must keep the candidate.
+local scripts_html = '<p id="kana-note">これは日本語の脚注です。</p>'
+    .. '<p id="hangul-note">한국어 각주입니다.</p>'
+    .. '<p id="cyrillic-note">Это сноска на русском языке.</p>'
+    .. '<p id="extb-note">𠀀𠀁 rare CJK extension footnote.</p>'
+    .. '<p id="mixed-note">①これは注釈本体。</p>'
+local scripts_scan = Footnotes.scan_chapter(scripts_html, chapter)
+for _, anchor in ipairs({ "kana-note", "hangul-note", "cyrillic-note",
+    "extb-note", "mixed-note" }) do
+    expect(scripts_scan.definitions[anchor] ~= nil,
+        "non-ASCII script footnote was mistaken for a pure symbol: " .. anchor)
+end
+expect(scripts_scan.definitions["kana-note"].text == "これは日本語の脚注です。",
+    "kana-only footnote text was not stored verbatim")
+expect(scripts_scan.definitions["mixed-note"].text == "①これは注釈本体。",
+    "marker-plus-text footnote text was not stored verbatim")
+
+-- Symbol-only candidates (backlink arrows and their variation selectors,
+-- enclosed numbers, CJK/Latin-1 punctuation) must still be rejected outright.
+local glyph_html = '<p id="glyph-arrow">↩</p><p id="glyph-arrow-vs">↩️</p>'
+    .. '<p id="glyph-left">←</p><p id="glyph-hook">⤴</p>'
+    .. '<p id="glyph-enclosed">①</p><p id="glyph-cjk-punct">。</p>'
+    .. '<p id="glyph-latin1">«»</p><p id="glyph-dash">……</p>'
+local glyph_scan = Footnotes.scan_chapter(glyph_html, chapter)
+for _, anchor in ipairs({ "glyph-arrow", "glyph-arrow-vs", "glyph-left",
+    "glyph-hook", "glyph-enclosed", "glyph-cjk-punct", "glyph-latin1",
+    "glyph-dash" }) do
+    expect(glyph_scan.definitions[anchor] == nil,
+        "symbol-only candidate was stored as note text: " .. anchor)
+end
 
 print(("footnotes_spec: %d checks"):format(checks))

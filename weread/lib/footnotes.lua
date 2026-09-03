@@ -109,6 +109,55 @@ local function is_trivial_note(value)
         or is_symbol_marker(text)
 end
 
+-- Decode the UTF-8 codepoint starting at byte i; returns the codepoint (nil
+-- for a malformed sequence) and the number of bytes consumed.
+local function utf8_codepoint(text, i)
+    local b = text:byte(i)
+    if b < 0x80 then return b, 1 end
+    local cp, len
+    if b >= 0xC2 and b < 0xE0 then cp, len = b - 0xC0, 2
+    elseif b >= 0xE0 and b < 0xF0 then cp, len = b - 0xE0, 3
+    elseif b >= 0xF0 and b < 0xF5 then cp, len = b - 0xF0, 4
+    else return nil, 1 end
+    for j = 1, len - 1 do
+        local cb = text:byte(i + j)
+        if not cb or cb < 0x80 or cb > 0xBF then return nil, j end
+        cp = cp * 64 + (cb - 0x80)
+    end
+    return cp, len
+end
+
+-- Backlink glyphs (↩ ↑ ← ⤴) are pure symbols, yet an element carrying one may
+-- share the note target's id; such a capture can never be a definition.
+-- Enumerating "known" text scripts instead (the old %w + CJK lead-byte check)
+-- silently dropped notes written only in kana, hangul, Cyrillic or any other
+-- non-ASCII script, so reject a candidate only when EVERY codepoint it holds
+-- is a symbol or punctuation: arrows, dingbats and enclosed numbers
+-- (U+2000-U+2FFF), CJK punctuation (U+3000-U+303F), Latin-1 symbols
+-- (U+0080-U+00BF), variation selectors and the BOM. Any other codepoint
+-- (Latin letters, kana, hangul, CJK, emoji …) counts as note text.
+local function is_symbol_only(text)
+    local i, n = 1, #text
+    while i <= n do
+        local cp, len = utf8_codepoint(text, i)
+        if not cp then
+            i = i + (len or 1)
+        elseif cp < 128 then
+            if text:sub(i, i):match("%w") then return false end
+            i = i + 1
+        elseif (cp >= 0x80 and cp <= 0xBF)
+            or (cp >= 0x2000 and cp <= 0x2FFF)
+            or (cp >= 0x3000 and cp <= 0x303F)
+            or (cp >= 0xFE00 and cp <= 0xFE0F)
+            or cp == 0xFEFF then
+            i = i + len
+        else
+            return false
+        end
+    end
+    return true
+end
+
 local function normalize_path(value)
     value = decode_entities(value):gsub("\\", "/")
     value = value:match("^%s*(.-)%s*$") or ""
@@ -218,10 +267,27 @@ end
 
 local BLOCK_TAGS = { "aside", "li", "p", "div", "section", "blockquote", "dd", "td" }
 
+-- Cap on cleaned note text length in bytes (#text counts bytes, so this is
+-- ~2000 CJK chars); genuine notes are far smaller, whole-chapter captures are
+-- far larger.
+local MAX_NOTE_TEXT_BYTES = 6000
+
 local function remember_definition(definitions, anchor, inner)
-    if not anchor or anchor == "" or definitions[anchor] then return end
+    if not anchor or anchor == "" then return end
     local text = clean_note_text(inner)
-    if text ~= "" and not is_trivial_note(text) then
+    if text == "" or is_trivial_note(text) then return end
+    if is_symbol_only(text) then return end
+    -- Ancestor blocks spanning most of the chapter poison the definition;
+    -- reject oversized candidates outright instead of storing them.
+    if #text > MAX_NOTE_TEXT_BYTES then
+        logger.warn("dropping oversized note candidate:",
+            "anchor=", tostring(anchor), "bytes=", tostring(#text))
+        return
+    end
+    local current = definitions[anchor]
+    -- The true note content is the smallest region describing the anchor,
+    -- so keep whichever candidate has the shortest cleaned text.
+    if not current or #text < #current.text then
         definitions[anchor] = { text = text }
     end
 end
