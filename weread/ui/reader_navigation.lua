@@ -68,7 +68,7 @@ function M:showEndOfBookDialog(book_id)
         enable_next_chapter = next_chapter ~= nil,
         enable_book_details = book ~= nil,
         enable_sync_progress = is_regular_weread_book,
-        annotations_visible = self.settings:get("cache", {}).show_annotations ~= false,
+        annotations_visible = self:_annotationsVisibleForCurrentDocument(),
     }, {
         on_bookshelf = function()
             self:showBookshelf()
