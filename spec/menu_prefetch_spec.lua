@@ -73,7 +73,7 @@ local thought_popup = {
     contrast = 9,
 }
 local available_version
-local annotations_visible = false
+local cache = { show_annotations = false }
 local host = {
     ui = {},
     _xpointerOverlayPrototypeAvailable = function() return true end,
@@ -269,10 +269,10 @@ for _, item in ipairs(weread_reader_items) do
     if item.text == "Show underlines and thoughts" then visibility_item = item end
 end
 expect(visibility_item and not visibility_item.checked_func(),
-    "unmatched document does not show the visibility item as checked")
-annotations_visible = true
+    "hidden annotation preference should show an unchecked item")
+cache.show_annotations = true
 expect(visibility_item and visibility_item.checked_func(),
-    "matched visible document shows the visibility item as checked")
+    "shown annotation preference should show a checked item")
 
 host.detectWeReadBook = function() return "mp-book" end
 local mp_reader_items = host:getMainMenuItems()

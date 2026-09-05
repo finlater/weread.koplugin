@@ -133,6 +133,36 @@ function M:_annotationsVisibleForCurrentDocument()
     return context ~= nil and self:_annotationSummary(context).chapters > 0
 end
 
+function M:_annotationChapterIndex(context, point)
+    local document = self.ui and self.ui.document
+    if not document or not point or type(document.compareXPointers) ~= "function" then
+        return nil
+    end
+
+    local latest_index, latest_start
+    for index, chapter in ipairs(context.chapters or {}) do
+        local range = context.ranges
+            and context.ranges[Chapters.uid(chapter)]
+        local start_xpointer = range and range.start_xpointer
+        if start_xpointer then
+            local ok_start, start_cmp = pcall(document.compareXPointers,
+                document, start_xpointer, point)
+            if ok_start and (start_cmp == 0 or start_cmp == 1) then
+                if not latest_start then
+                    latest_index, latest_start = index, start_xpointer
+                else
+                    local ok_order, order = pcall(document.compareXPointers,
+                        document, latest_start, start_xpointer)
+                    if ok_order and order == 1 then
+                        latest_index, latest_start = index, start_xpointer
+                    end
+                end
+            end
+        end
+    end
+    return latest_index
+end
+
 function M:_refreshAnnotationOverlay()
     local context, overlay = self._annotation_context, self._xpointer_overlay
     if not context or not overlay or #context.chapters == 0 then return end
@@ -145,17 +175,7 @@ function M:_refreshAnnotationOverlay()
     local document = self.ui.document
     local current = document:getXPointer()
     local function chapter_at(point)
-        if not point or not document.compareXPointers then return 1 end
-        local low, high, result = 1, #context.chapters, 1
-        while low <= high do
-            local middle = math.floor((low + high) / 2)
-            local range = context.ranges[Chapters.uid(context.chapters[middle])]
-            local cmp = range and range.start_xpointer
-                and document:compareXPointers(range.start_xpointer, point)
-            if cmp == 0 or cmp == 1 then result, low = middle, middle + 1
-            else high = middle - 1 end
-        end
-        return result
+        return self:_annotationChapterIndex(context, point) or 1
     end
     local active = chapter_at(current)
     local last = active
@@ -546,6 +566,12 @@ function M:chooseAnnotationChapters()
             if menu then UIManager:close(menu) end
             self:startUnifiedAnnotationSync({ chapters = chapters, offline = not self:isNetworkConnected() })
         end
+        local current_index
+        local document = self.ui and self.ui.document
+        if document and type(document.getXPointer) == "function" then
+            local ok, point = pcall(document.getXPointer, document)
+            if ok then current_index = self:_annotationChapterIndex(context, point) end
+        end
         -- Keep the action reachable on every page, including keyboard devices.
         local per_page = 8
         for index, chapter in ipairs(context.chapters) do
@@ -560,13 +586,19 @@ function M:chooseAnnotationChapters()
             local status = context.statuses[context.store:projectionKey(context.document_key, uid)]
             items[#items + 1] = { text_func = function()
                 return (selected[uid] and "[✓] " or "[  ] ") .. title
-            end, mandatory_func = function() return status and _("Matched") or nil end,
+            end, bold = current_index == index,
+                mandatory_func = function() return status and _("Matched") or nil end,
                 callback = function()
                     selected[uid] = not selected[uid]
                     if menu then menu:updateItems() end
                 end }
         end
-        menu = self:showList(_("Choose chapters to match"), items, nil, { items_per_page = per_page })
+        local initial_page = current_index
+            and math.floor((current_index - 1) / (per_page - 1)) + 1 or 1
+        menu = self:showList(_("Choose chapters to match"), items, nil, {
+            items_per_page = per_page,
+            initial_page = initial_page,
+        })
     end
     local context = self:_prepareAnnotationContext(false)
     if context and #context.chapters > 0 then return show() end

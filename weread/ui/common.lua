@@ -166,6 +166,14 @@ function M:showList(title, items, empty_text, options)
         subtitle = options.subtitle,
     }
     UIManager:show(menu)
+    if options.initial_page and options.initial_page > 1
+        and type(menu.onGotoPage) == "function" then
+        UIManager:scheduleIn(0.1, function()
+            if menu and type(menu.onGotoPage) == "function" then
+                menu:onGotoPage(options.initial_page)
+            end
+        end)
+    end
     return menu
 end
 

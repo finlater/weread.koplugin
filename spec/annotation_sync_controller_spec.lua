@@ -137,14 +137,37 @@ drain()
 assert(calls == 2)
 -- Multi-select keeps source catalog order, including noncontiguous choices.
 context.chapters = { { chapterUid = "1" }, { chapterUid = "2" }, { chapterUid = "3" } }
-local picker, chosen
-host.showList = function(_self, _title, items) picker = items; return { updateItems = function() end } end
+local picker, chosen, picker_options
+host.showList = function(_self, _title, items, _empty, options)
+    picker, picker_options = items, options
+    return { updateItems = function() end }
+end
 host.startUnifiedAnnotationSync = function(_self, options) chosen = options.chapters end
 host:chooseAnnotationChapters()
 picker[4].callback(); picker[2].callback(); picker[1].callback()
 assert(#chosen == 2 and chosen[1].chapterUid == "1" and chosen[2].chapterUid == "3")
+-- The picker opens on the page containing the current local XPointer range.
+-- This deliberately uses uneven local chapter positions and unrelated remote
+-- UIDs so remote/local chapter-number offsets cannot affect the result.
+context.chapters, context.ranges = {}, {}
+local starts = { 0, 8, 19, 33, 48, 65, 79, 91, 103, 1000, 1300, 1600, 1900, 2200, 2500 }
+for index, start in ipairs(starts) do
+    local uid = tostring(100 + index)
+    context.chapters[index] = { chapterUid = uid }
+    context.ranges[uid] = { start_xpointer = tostring(start) }
+end
+host.ui.document.getXPointer = function() return "1120" end
+host.ui.document.compareXPointers = function(_self, a, b)
+    a, b = tonumber(a), tonumber(b)
+    return a == b and 0 or a < b and 1 or -1
+end
+host:chooseAnnotationChapters()
+assert(picker_options.initial_page == 2,
+    "chapter picker did not open on the current local chapter page")
 -- Clearing is the explicit refresh path: shared annotations and every file's
 -- coordinates are removed, while cached chapter text remains reusable.
+context.chapters = { { chapterUid = "1" }, { chapterUid = "2" }, { chapterUid = "3" } }
+context.ranges = {}
 store:put("book", "original", "1", { spans = {} }, "1")
 store:put("book", "projection", "other:1", { records = {} }, "1")
 host:clearUnifiedAnnotationProjections()
