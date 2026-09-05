@@ -71,11 +71,14 @@ expect(host:onShowWeReadReadingStatistics() and action_stats_opened,
 local stats_opened = false
 local context_books = {}
 local annotations_toggled = false
+local annotation_cache = { show_annotations = true }
 local context_host = {
     ui = { document = { file = "/books/local.epub" } },
     settings = {
         get = function(_self, key, default)
-            return key == "books" and context_books or default
+            if key == "books" then return context_books end
+            if key == "cache" then return annotation_cache end
+            return default
         end,
     },
     showTransientInfo = function(_self, text, timeout)
@@ -98,8 +101,13 @@ expect(dialog_options.show_chapter_nav and dialog_options.show_next_chapter
         and dialog_options.enable_next_chapter == false
         and dialog_options.enable_book_details == false
         and dialog_options.enable_sync_progress == false
+        and dialog_options.annotations_visible == true,
+    "quick menu reflects the global annotation visibility preference")
+annotation_cache.show_annotations = false
+expect(context_host:showEndOfBookDialog(nil)
         and dialog_options.annotations_visible == false,
-    "context-dependent actions are visible but disabled for local documents")
+    "quick menu hides annotations when the global preference is disabled")
+annotation_cache.show_annotations = true
 dialog_callbacks.on_chapter_list()
 expect(notice and notice.timeout == 1,
     "context-dependent action explains why it is unavailable")

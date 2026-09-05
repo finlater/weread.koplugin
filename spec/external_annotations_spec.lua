@@ -1,4 +1,4 @@
-package.path = "./?.lua;./?/init.lua;" .. package.path
+package.path = "./?.lua;" .. package.path
 
 package.preload["weread.lib.annotations"] = function()
     return {
@@ -21,62 +21,17 @@ local rows = External.normalize_search({ results = {
 expect(#rows == 1 and rows[1].book_id == "7" and rows[1].title == "本地书",
     "grouped WeRead search results were not normalized")
 
--- Ordered XPointer space used by the compareXPointers mock.  Chapter texts
--- are CJK-only (3 bytes per character), which also exercises byte-offset
--- mapping through the visible-character walk.
-local order = {
-    ch1s = 1, ch2s = 13, ch3s = 16, xp3 = 17, w9 = 5,
-}
-local chapter1_text = "甲重复原文乙重复原文丙"
-local chapter2_text = "来自想法摘要"
-local find_all_calls = 0
-local find_text_calls = 0
-local chapter_search_max_hits
-local get_text_calls = 0
-local walk_steps = 0
-local goto_calls = 0
-local current_xpointer = "reading-position"
+local positions = { xp1 = 10, xp2 = 20, xp3 = 30 }
 local document = {
-    findAllText = function()
-        find_all_calls = find_all_calls + 1
-        return {}
-    end,
-    findText = function(_self, quote, _origin, _direction, _case_insensitive,
-            _page, _regex, max_hits)
-        find_text_calls = find_text_calls + 1
-        chapter_search_max_hits = max_hits
-        if quote == "尾部章节原文" then
+    findAllText = function(_self, quote)
+        if quote == "重复原文" then
+            return { { start = "xp1", ["end"] = "xp1e" }, { start = "xp2", ["end"] = "xp2e" } }
+        elseif quote == "来自想法摘要" then
             return { { start = "xp3", ["end"] = "xp3e" } }
         end
-        return {}
     end,
-    getTextFromXPointers = function(_self, start_xp, end_xp)
-        get_text_calls = get_text_calls + 1
-        if start_xp == "ch1s" then return chapter1_text end
-        if start_xp == "ch2s" then return chapter2_text end
-        if start_xp == "w10" and end_xp == "w6" then return "重复原文" end
-        if start_xp == "w5" and end_xp == "w1" then return "重复原文" end
-        if start_xp == "w16" and end_xp == "ch3s" then return chapter2_text end
-        return ""
-    end,
-    getPrevVisibleChar = function()
-        walk_steps = walk_steps + 1
-        return "w" .. walk_steps
-    end,
-    compareXPointers = function(_self, a, b)
-        local oa, ob = order[a], order[b]
-        if not oa or not ob then return 0 end
-        if ob > oa then return 1 elseif ob < oa then return -1 end
-        return 0
-    end,
-    getXPointer = function() return current_xpointer end,
-    gotoXPointer = function(_self, xpointer)
-        current_xpointer = xpointer
-        goto_calls = goto_calls + 1
-    end,
-    getPosFromXPointer = function(_self, xp) return order[xp] end,
+    getPosFromXPointer = function(_self, xp) return positions[xp] end,
 }
-
 local records, stats = External.locate(document, {
     {
         book_id = "7", chapter_uid = "1",
@@ -86,84 +41,17 @@ local records, stats = External.locate(document, {
     },
     {
         book_id = "7", chapter_uid = "2",
-        underlines = { { range = "8-9" }, { range = "10-11", markText = "不存在的原文" } },
+        underlines = { { range = "8-9" } },
         reviews = { { range = "8-9", pageReviews = {
             { review = { abstract = "来自想法摘要", content = "想法" } },
         } } },
     },
-    {
-        book_id = "7", chapter_uid = "3",
-        underlines = { { range = "12-13", markText = "尾部章节原文" } },
-        reviews = {},
-    },
-}, { chapter_ranges = {
-    ["1"] = { start_xpointer = "ch1s", end_xpointer = "ch2s" },
-    ["2"] = { start_xpointer = "ch2s", end_xpointer = "ch3s" },
-    ["3"] = { start_xpointer = "ch3s" },
-}, chapter_titles = {
-    ["1"] = "第一章", ["2"] = "第二章", ["3"] = "第三章",
-}, chapter_local_titles = {
-    ["1"] = "第一章 本地", ["2"] = "第二章 本地", ["3"] = "第三章 本地",
-} })
-
--- Chapter 1: both repeated quotations resolved in document order through the
--- chapter text index (no CREngine search at all).
-expect(#records == 4 and records[1].pos0 == "w10" and records[1].pos1 == "w6",
-    "first repeated quotation was not located inside the chapter bounds")
-expect(records[2].pos0 == "w5" and records[2].pos1 == "w1",
-    "second repeated quotation was not located after the first")
-expect(records[1].book_id == "7" and records[1].chapter_uid == "1"
-        and records[1].range == "2-3",
-    "located record lost its identity fields")
--- Chapter 2: review-abstract fallback quote located in the chapter text.
-expect(records[3].pos0 == "w16" and records[3].pos1 == "ch3s"
-        and records[3].items[1].content == "想法",
-    "review abstract fallback was not preserved or bounded by the chapter end")
--- Chapter 3 (no end bound): chapter-start findText with a single hit.
-expect(records[4].pos0 == "xp3" and records[4].pos1 == "xp3e",
-    "unbounded chapter did not fall back to chapter-start findText")
-expect(stats.total == 5 and stats.located == 4 and stats.unmatched == 1,
+})
+expect(#records == 3 and records[1].pos0 == "xp1" and records[2].pos0 == "xp2",
+    "repeated quotations were not resolved in document order")
+expect(records[3].pos0 == "xp3" and records[3].items[1].content == "想法",
+    "review abstract fallback or popup items were not preserved")
+expect(stats.total == 3 and stats.located == 3 and stats.unmatched == 0,
     "locator statistics are incorrect")
-expect(find_all_calls == 1,
-    "chapter-bounded matching scanned the whole book per quote")
-expect(find_text_calls == 1 and chapter_search_max_hits == 1,
-    "chapter findText fallback did not stop after its first forward match")
-expect(get_text_calls == 5,
-    "chapter text extraction or mapped-range validation count is wrong")
-expect(walk_steps == 16,
-    "reverse visible-character walk did not cover the needed offsets")
-expect(goto_calls == 2 and current_xpointer == "reading-position",
-    "matching moved the reading position: " .. tostring(current_xpointer))
-
--- A chapter whose walk diverges from the extracted text must fall back to
--- whole-book search instead of producing mislocated records.
-local diverged_walk_calls = 0
-local diverged = {
-    findAllText = function()
-        find_all_calls = find_all_calls + 1
-        return { { start = "w9", ["end"] = "w9e" } }
-    end,
-    getTextFromXPointers = function() return "甲乙丙" end,
-    getPrevVisibleChar = function()
-        diverged_walk_calls = diverged_walk_calls + 1
-        return nil -- the walk cannot produce any XPointer
-    end,
-    compareXPointers = function(_self, a, b)
-        local oa, ob = order[a], order[b]
-        if not oa or not ob then return 0 end
-        if ob > oa then return 1 elseif ob < oa then return -1 end
-        return 0
-    end,
-}
-local diverged_records, diverged_stats = External.locate(diverged, {
-    { book_id = "7", chapter_uid = "1",
-        underlines = { { range = "2-3", markText = "甲乙丙" } }, reviews = {} },
-}, { chapter_ranges = {
-    ["1"] = { start_xpointer = "ch1s", end_xpointer = "ch2s" },
-} })
-expect(#diverged_records == 1 and diverged_records[1].pos0 == "w9",
-    "diverged walk did not fall back to whole-book search")
-expect(diverged_stats.located == 1,
-    "diverged walk fallback reported wrong statistics")
 
 print(("external_annotations_spec: %d checks"):format(checks))

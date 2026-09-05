@@ -62,6 +62,7 @@ local cache = {
     download_underlines_and_thoughts = false,
     prefetch_annotations = false,
     show_prefetch_notifications = true,
+    show_annotations = false,
 }
 local shelf = { sort_order = "time_desc" }
 local flush_count = 0
@@ -73,7 +74,7 @@ local thought_popup = {
     contrast = 9,
 }
 local available_version
-local cache = { show_annotations = false }
+local annotations_visible = false
 local host = {
     ui = {},
     _xpointerOverlayPrototypeAvailable = function() return true end,
