@@ -572,6 +572,7 @@ function M:scanLocalCache(root, allowed, dry_run)
     if not dry_run then
         self.settings:set("books", books)
         self.settings:flush()
+        pcall(Content.backfill_weread_tags)
     end
     return added, updated
 end

@@ -983,6 +983,7 @@ function Downloader:_step(dl)
                     ReadCollection:write({ [COLLECTION_NAME] = true })
                 end
             end)
+            pcall(Content.apply_weread_tag, path)
         end
         if #dl.failed > 0 then
             logger.warn(
