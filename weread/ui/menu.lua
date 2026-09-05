@@ -154,16 +154,16 @@ function M:getMainMenuItems()
         reader_items[#reader_items + 1] = {
             text = _("Show underlines and thoughts"),
             checked_func = function()
-                return self.settings:get("cache").show_annotations ~= false
+                return self:_annotationsVisibleForCurrentDocument()
             end,
             keep_menu_open = true,
             callback = self:safeCallback(_("Show underlines and thoughts"), function()
                 self:toggleAnnotationVisibility()
             end),
         }
-        if book_id == nil then
+        if self:_xpointerOverlayPrototypeAvailable() then
             reader_items[#reader_items + 1] = {
-                text = _("Local-book underlines and thoughts"),
+                text = _("Underlines and thoughts management"),
                 enabled_func = function()
                     return self:_xpointerOverlayPrototypeAvailable()
                 end,
@@ -468,34 +468,26 @@ function M:getSettingsMenuItems()
                                             == true
                                     end,
                                     checked_func = function()
-                                        return self.settings:get("cache").download_underlines_and_thoughts
+                                        return self:isAnnotationPrefetchEnabled()
                                     end,
                                     callback = self:safeCallback(
                                         _("Prefetch underlines and thoughts"),
                                         function(touchmenu_instance)
-                                            local cache = self.settings:get("cache")
-                                            if cache.download_underlines_and_thoughts then
-                                                cache.download_underlines_and_thoughts = false
-                                                self.settings:set("cache", cache)
-                                                self.settings:flush()
-                                                logger.info(
-                                                    "underlines/thoughts download setting changed:",
-                                                    "enabled=", "false")
-                                                touchmenu_instance:updateItems()
+                                            local function apply(enabled)
+                                                self:setAnnotationPrefetchEnabled(enabled)
+                                                if touchmenu_instance then
+                                                    touchmenu_instance:updateItems()
+                                                end
+                                            end
+                                            if self:isAnnotationPrefetchEnabled() then
+                                                apply(false)
                                                 return
                                             end
                                             UIManager:show(ConfirmBox:new{
                                                 text = _("Prefetching underlines and thoughts adds extra requests and may significantly increase prefetch time. Continue?"),
                                                 ok_text = _("Confirm"),
-                                                ok_callback = self:safeCallback(_("Confirm"), function()
-                                                    cache.download_underlines_and_thoughts = true
-                                                    self.settings:set("cache", cache)
-                                                    self.settings:flush()
-                                                    logger.info(
-                                                        "underlines/thoughts download setting changed:",
-                                                        "enabled=", "true")
-                                                    touchmenu_instance:updateItems()
-                                                end),
+                                                ok_callback = self:safeCallback(
+                                                    _("Confirm"), function() apply(true) end),
                                                 cancel_text = _("Cancel"),
                                             })
                                         end),

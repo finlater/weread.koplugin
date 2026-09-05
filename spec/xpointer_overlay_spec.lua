@@ -25,16 +25,15 @@ local document = {
     end,
 }
 local draw_calls = 0
-local view = {
-    view_mode = "page",
-    drawHighlightRect = function(_self, _bb, _x, _y, rect, drawer)
-        draw_calls = draw_calls + 1
-        expect(rect.w == 80, "renderer drew a non-visible record")
-        expect(drawer == "underscore", "prototype did not use underline style")
-    end,
-}
+local view = { view_mode = "page" }
+local buffer = { paintRect = function(_self, x, y, w, h, color)
+    draw_calls = draw_calls + 1
+    expect(x >= 10 and x < 90 and y == 33, "dash is outside text baseline")
+    expect(w <= 4 and h == 1 and color == "light-gray", "wrong dash style")
+end }
 local tick = 0
 local overlay = Overlay:new{
+    style = { width = 1, dash = 4, gap = 3, color = "light-gray" },
     records = {
         { id = "before", pos0 = "before0", pos1 = "before1" },
         { id = "visible", pos0 = "visible0", pos1 = "visible1" },
@@ -45,9 +44,9 @@ local overlay = Overlay:new{
 overlay.ui = { document = document, dimen = { h = 300 } }
 overlay.view = view
 
-overlay:paintTo({}, 0, 0)
+overlay:paintTo(buffer, 0, 0)
 expect(box_calls == 1, "only the visible candidate should request screen boxes")
-expect(draw_calls == 1, "visible underline was not drawn")
+expect(draw_calls == 12, "visible underline was not drawn as short dashes")
 expect(overlay.last_metrics.candidates == 1 and overlay.last_metrics.boxes == 1,
     "paint metrics do not describe the visible page")
 expect(overlay.last_metrics.cache_hit == false, "first paint unexpectedly hit cache")
@@ -57,16 +56,16 @@ expect(hit and hit.id == "visible", "tap did not resolve the visible overlay rec
 expect(overlay:hitTest({ x = 200, y = 200 }) == nil,
     "tap outside the underline unexpectedly hit")
 
-overlay:paintTo({}, 0, 0)
+overlay:paintTo(buffer, 0, 0)
 expect(box_calls == 1, "page cache did not avoid repeated XPointer projection")
 expect(overlay.last_metrics.cache_hit == true, "second paint did not report cache hit")
 
 overlay:resetLayout()
-overlay:paintTo({}, 0, 0)
+overlay:paintTo(buffer, 0, 0)
 expect(box_calls == 2, "layout reset did not invalidate screen box cache")
 
 overlay:setEnabled(false)
-overlay:paintTo({}, 0, 0)
+overlay:paintTo(buffer, 0, 0)
 expect(#overlay.visible == 0, "disabled overlay retained stale hit boxes")
 expect(box_calls == 2, "disabled overlay performed document work")
 
@@ -223,22 +222,14 @@ expect(sync_calls == 0,
 confirm_options.ok_callback()
 expect(sync_calls == 1,
     "confirming the match did not start annotation sync")
+local Unified = require("weread.ui.annotation_sync_controller")
+for name, method in pairs(Unified) do bind_host[name] = method end
 local local_book_items = bind_host:getXPointerOverlayPrototypeMenuItems()
-expect(#local_book_items == 3,
-    "local-book menu retained duplicate visibility or diagnostic items")
-expect(local_book_items[2].text_func() == "Sync underlines and thoughts"
-        and local_book_items[3].text
-            == "Clear data",
-    "local-book menu actions did not use unified terminology")
-saved_document.stats = { located = 242, total = 379 }
-expect(bind_host:getXPointerOverlayPrototypeMenuItems()[2].text_func()
-        == "Sync underlines and thoughts · 242 matched",
-    "local-book sync menu did not show the last matched count")
-local menu_updates = 0
-local_book_items[3].callback({
-    updateItems = function() menu_updates = menu_updates + 1 end,
-})
-expect(saved_document == nil and menu_updates == 1,
-    "clearing local-book data did not refresh the open menu immediately")
+expect(#local_book_items == 4, "unified annotation management is not concise")
+expect(local_book_items[1].text == "Linked WeRead book: 测试书"
+    and local_book_items[2].text == "Continue matching"
+    and local_book_items[3].text == "Choose chapters to match"
+    and local_book_items[4].text == "Clear underlines and thoughts",
+    "management did not distinguish resume from clearing file coordinates")
 
 print(("xpointer_overlay_spec: %d checks"):format(checks))

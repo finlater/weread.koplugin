@@ -33,6 +33,7 @@ local defaults = {
         download_mp_images = false,
         book_footnotes_in_popup = false,
         download_underlines_and_thoughts = false,
+        prefetch_annotations = false,
         auto_prefetch_next_chapter = false,
         show_prefetch_notifications = true,
         show_annotations = true,
@@ -149,6 +150,12 @@ function Settings:new()
     end
     if cache.download_underlines_and_thoughts == nil then
         cache.download_underlines_and_thoughts = false
+        cache_changed = true
+    end
+    if cache.prefetch_annotations == nil then
+        -- Annotation prefetch now stores reusable source data instead of
+        -- embedding marks in downloaded EPUBs, so it starts as a new opt-in.
+        cache.prefetch_annotations = false
         cache_changed = true
     end
     if cache.auto_prefetch_next_chapter == nil then

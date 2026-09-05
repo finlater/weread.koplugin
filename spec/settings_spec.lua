@@ -116,6 +116,8 @@ expect(values.config_loaded == nil, "legacy setting was not removed")
 expect(values.cache.download_book_images == false
     and values.cache.download_mp_images == false
     and values.cache.book_footnotes_in_popup == false
+    and values.cache.download_underlines_and_thoughts == false
+    and values.cache.prefetch_annotations == false
     and values.cache.auto_prefetch_next_chapter == false
     and values.cache.show_prefetch_notifications == true
     and values.cache.show_annotations == true

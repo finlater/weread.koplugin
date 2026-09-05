@@ -60,6 +60,7 @@ local cache = {
     auto_prefetch_next_chapter = false,
     book_footnotes_in_popup = false,
     download_underlines_and_thoughts = false,
+    prefetch_annotations = false,
     show_prefetch_notifications = true,
 }
 local shelf = { sort_order = "time_desc" }
@@ -72,8 +73,11 @@ local thought_popup = {
     contrast = 9,
 }
 local available_version
+local annotations_visible = false
 local host = {
     ui = {},
+    _xpointerOverlayPrototypeAvailable = function() return true end,
+    _annotationsVisibleForCurrentDocument = function() return annotations_visible end,
     version = "test",
     settings = {
         get = function(_self, key, default)
@@ -89,6 +93,13 @@ local host = {
     },
     downloader = { cancelPrefetch = function() end },
     updater = { available_version = function() return available_version end },
+    isAnnotationPrefetchEnabled = function()
+        return cache.prefetch_annotations == true
+    end,
+    setAnnotationPrefetchEnabled = function(_self, enabled)
+        cache.prefetch_annotations = enabled == true
+        return true
+    end,
     safeCallback = function(_self, _label, callback) return callback end,
 }
 for key, value in pairs(Menu) do host[key] = value end
@@ -117,6 +128,8 @@ expect(toggle_action and toggle_action.reader == true
 expect(toggle_action
         and toggle_action.title == "WeRead · Toggle underlines and thoughts",
     "annotation visibility action has a gesture-friendly title")
+expect(registered.weread_current_page_thoughts == nil,
+    "current-page thoughts is no longer exposed as a separate shortcut action")
 local bookshelf_action = registered.weread_bookshelf
 expect(bookshelf_action and bookshelf_action.event == "ShowWeReadBookshelf",
     "bookshelf dispatcher action uses the matching event")
@@ -242,21 +255,30 @@ host.detectWeReadBook = function() return nil end
 local local_reader_items = host:getMainMenuItems()
 expect(not menu_has(local_reader_items, "Sync progress now")
         and not menu_has(local_reader_items, "Book details")
-        and menu_has(local_reader_items, "Local-book underlines and thoughts"),
+        and menu_has(local_reader_items, "Underlines and thoughts management"),
     "local document menu retained WeRead-only book actions")
 
 host.detectWeReadBook = function() return "book-1" end
 local weread_reader_items = host:getMainMenuItems()
 expect(menu_has(weread_reader_items, "Sync progress now")
         and menu_has(weread_reader_items, "Book details")
-        and not menu_has(weread_reader_items, "Local-book underlines and thoughts"),
+        and menu_has(weread_reader_items, "Underlines and thoughts management"),
     "WeRead book menu retained the local-book annotation submenu")
+local visibility_item
+for _, item in ipairs(weread_reader_items) do
+    if item.text == "Show underlines and thoughts" then visibility_item = item end
+end
+expect(visibility_item and not visibility_item.checked_func(),
+    "unmatched document does not show the visibility item as checked")
+annotations_visible = true
+expect(visibility_item and visibility_item.checked_func(),
+    "matched visible document shows the visibility item as checked")
 
 host.detectWeReadBook = function() return "mp-book" end
 local mp_reader_items = host:getMainMenuItems()
 expect(not menu_has(mp_reader_items, "Sync progress now")
         and menu_has(mp_reader_items, "Book details")
-        and not menu_has(mp_reader_items, "Local-book underlines and thoughts"),
+        and menu_has(mp_reader_items, "Underlines and thoughts management"),
     "public-account menu exposed unsupported progress or local-book actions")
 local download_settings
 local cache_management
@@ -290,12 +312,15 @@ expect(cache.book_footnotes_in_popup == true and footnote_popup.checked_func(),
     "book footnotes were hidden only after confirmation")
 
 local prefetch_items = prefetch and prefetch.sub_item_table_func() or {}
-expect(#prefetch_items == 3, "prefetch submenu contains exactly three settings")
+expect(#prefetch_items == 3, "chapter prefetch contains its two related preferences")
 expect(prefetch_items[1] and prefetch_items[1].text
         == "Automatically prefetch next chapter",
     "automatic prefetch is the parent switch")
 expect(prefetch_items[2] and not prefetch_items[2].enabled_func(),
-    "annotation setting is disabled while automatic prefetch is off")
+    "annotation prefetch is disabled while automatic prefetch is off")
+expect(prefetch_items[2] and prefetch_items[2].text
+        == "Prefetch underlines and thoughts",
+    "annotation prefetch uses the short label")
 expect(prefetch_items[3] and not prefetch_items[3].enabled_func(),
     "notification setting is disabled while automatic prefetch is off")
 
@@ -311,8 +336,16 @@ shown_widget.ok_callback()
 expect(cache.auto_prefetch_next_chapter == true and menu_updates == 1,
     "automatic prefetch is enabled only after confirmation")
 
-expect(prefetch_items[2].enabled_func(),
-    "annotation setting is enabled while automatic prefetch is on")
+expect(prefetch_items[2].enabled_func() and not prefetch_items[2].checked_func(),
+    "annotation prefetch is available and defaults to off")
+prefetch_items[2].callback({
+    updateItems = function() menu_updates = menu_updates + 1 end,
+})
+expect(shown_widget.text:find("adds extra requests", 1, true),
+    "enabling annotation prefetch explains the extra work")
+shown_widget.ok_callback()
+expect(cache.prefetch_annotations == true and menu_updates == 2,
+    "annotation prefetch is enabled and refreshes the menu")
 expect(prefetch_items[3].enabled_func(),
     "notification setting is enabled while automatic prefetch is on")
 

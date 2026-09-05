@@ -25,6 +25,7 @@ function Overlay:new(opts)
     opts = opts or {}
     return setmetatable({
         records = opts.records or {},
+        style = opts.style,
         enabled = opts.enabled ~= false,
         cache = {},
         visible = {},
@@ -60,15 +61,43 @@ function Overlay:resetLayout()
     self:invalidate()
 end
 
-local function draw_boxes(overlay, bb, x, y, boxes)
-    overlay.visible = {}
+local function draw_boxes(overlay, bb, _x, _y, boxes)
+    overlay.visible = boxes
+    local style = overlay.style
+    if not style then
+        local Device = require("device")
+        local BB = require("ffi/blitbuffer")
+        style = { width = math.max(1, Device.screen:scaleBySize(1)),
+            dash = Device.screen:scaleBySize(4), gap = Device.screen:scaleBySize(3),
+            color = BB.Color8(0x99) }
+        if overlay.ui.document.render_color and bb.paintRectRGB32 then
+            style.rgb = true
+            style.color = BB.ColorRGB32(0xD0, 0x80, 0x60, 0xFF)
+            if Device.screen.night_mode then style.color = style.color:invert() end
+        end
+    end
+    -- Merge overlapping line spans before painting, so intersections never
+    -- darken. Keep the original text rectangles as generous hit targets.
+    local lines = {}
     for _, entry in ipairs(boxes) do
-        overlay.visible[#overlay.visible + 1] = entry
-        -- Reuse KOReader's native underline renderer in ReaderView's existing
-        -- paint pass, without requesting an additional e-ink refresh.
-        overlay.view:drawHighlightRect(
-            bb, x, y, entry.rect, "underscore", nil, false
-        )
+        local rect = entry.rect
+        lines[#lines + 1] = { x = rect.x, right = rect.x + rect.w,
+            y = rect.y + rect.h - 1 }
+    end
+    table.sort(lines, function(a, b) return a.y == b.y and a.x < b.x or a.y < b.y end)
+    local merged = {}
+    for _, line in ipairs(lines) do
+        local last = merged[#merged]
+        if last and last.y == line.y and line.x <= last.right then
+            last.right = math.max(last.right, line.right)
+        else merged[#merged + 1] = line end
+    end
+    for _, line in ipairs(merged) do
+        for left = line.x, line.right - 1, style.dash + style.gap do
+            local width = math.min(style.dash, line.right - left)
+            if style.rgb then bb:paintRectRGB32(left, line.y, width, style.width, style.color)
+            else bb:paintRect(left, line.y, width, style.width, style.color) end
+        end
     end
 end
 
@@ -92,8 +121,19 @@ function Overlay:_computeVisible()
     local visible = {}
     local candidates = 0
 
+    local page_start, page_end
+    if document.getPageXPointer and document.compareXPointers and document.getCurrentPage then
+        local page = document:getCurrentPage()
+        page_start = document:getPageXPointer(page)
+        local next_page = page + math.max(1, visible_pages)
+        if not document.getPageCount or next_page <= document:getPageCount() then
+            page_end = document:getPageXPointer(next_page)
+        end
+    end
     for _, record in ipairs(self.records) do
         if type(record) == "table" and record.pos0 and record.pos1 then
+            if page_start and document:compareXPointers(record.pos1, page_start) == 1 then goto continue end
+            if page_end and document:compareXPointers(page_end, record.pos0) == 1 then goto continue end
             local ok_start, start_pos = pcall(
                 document.getPosFromXPointer, document, record.pos0
             )
@@ -119,6 +159,7 @@ function Overlay:_computeVisible()
                 end
             end
         end
+        ::continue::
     end
     return visible, candidates
 end
@@ -150,6 +191,8 @@ function Overlay:paintTo(bb, x, y)
     else
         boxes, candidates = self:_computeVisible()
         if can_cache then
+            self.cache_count = (self.cache_count or 0) + 1
+            if self.cache_count > 4 then self.cache, self.cache_count = {}, 1 end
             self.cache[cache_key] = {
                 boxes = boxes,
                 candidates = candidates,

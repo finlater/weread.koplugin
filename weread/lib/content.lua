@@ -1,7 +1,6 @@
 local Crypto = require("weread.lib.crypto")
 local ReaderState = require("weread.lib.reader_state")
 local WeRead = require("weread.lib.protocol")
-local Thoughts = require("weread.lib.thoughts")
 local bit = require("bit")
 local logger = require("weread.lib.logger")
 
@@ -782,6 +781,7 @@ function Content.save_chapter_epub(settings, book, chapter, xhtml, assets, css)
     }
     append_asset_entries(entries, assets)
     write_epub(path, entries)
+    Content.register_annotation_document(book, path, { chapter })
     return path
 end
 
@@ -908,6 +908,7 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
     table.insert(entries, { name = "OEBPS/toc.ncx", data = ncx })
     table.insert(entries, { name = "OEBPS/style.css", data = css })
     write_epub(path, entries)
+    Content.register_annotation_document(book, path, chapters)
     return path
 end
 
@@ -1342,6 +1343,7 @@ function Content.fetch_txt_as_xhtml(client, settings, book, chapter)
     local ok_t1, t1 = pcall(Content.fetch_chapter_shard, client, settings, book, chapter, "/web/book/chapter/t_1")
     if not ok_t1 then t1 = "" end
     local plain = Content.decode_content_shards(t0, t1, "")
+    Content.cache_annotation_source(settings, book, chapter, plain, true)
     return Content.txt_to_xhtml(plain)
 end
 
@@ -1478,20 +1480,38 @@ function Content.fetch_chapter_css(client, settings, book, chapter)
 end
 
 
-local function apply_chapter_annotations(client, settings, book, chapter, xhtml, css)
-    local cache = settings:get("cache", {})
-    if cache.download_underlines_and_thoughts ~= true then
-        return xhtml, css
+-- Downloads always contain clean text. Annotation data is synchronized later.
+local function apply_chapter_annotations(_client, _settings, _book, _chapter, xhtml, css)
+    return xhtml, css
+end
+
+function Content.cache_annotation_source(settings, book, chapter, xhtml, raw_text)
+    if book._content_format == "txt" and not raw_text then return end
+    local ok, err = pcall(function()
+        local Source = require("weread.lib.annotation_source")
+        require("weread.lib.annotation_store"):new(settings):put(
+            book.book_id or book.bookId, "original", tostring(chapter.chapterUid or chapter.chapterId),
+            raw_text and Source.plain(xhtml) or Source.index(xhtml),
+            tostring(chapter.chapterUid or chapter.chapterId))
+    end)
+    -- A cache failure must not turn a successful text download into a failure.
+    if not ok then logger.warn("annotation source cache:", tostring(err)) end
+end
+
+function Content.register_annotation_document(book, path, chapters)
+    local list = {}
+    for _, chapter in ipairs(chapters) do
+        list[#list + 1] = { chapterUid = chapter.chapterUid or chapter.chapterId,
+            title = chapter.title, chapterIdx = chapter.chapterIdx }
     end
-    local book_id = book.book_id or book.bookId
-    local chapter_uid = chapter and chapter.chapterUid
-    local processed, annotation_css = Thoughts.apply(client, settings, book_id, chapter_uid, xhtml)
-    return processed, Thoughts.merge_css(css, annotation_css)
+    book.annotation_documents = book.annotation_documents or {}
+    book.annotation_documents[path] = { chapters = list, clean = true }
 end
 
 function Content.fetch_chapter_epub(client, settings, book, chapter)
     local book_id = book.book_id or book.bookId
     local xhtml = Content.fetch_chapter_xhtml(client, settings, book, chapter)
+    Content.cache_annotation_source(settings, book, chapter, xhtml)
     local css = Content.fetch_chapter_css(client, settings, book, chapter)
     xhtml, css = apply_chapter_annotations(client, settings, book, chapter, xhtml, css)
     local assets = {}
@@ -1520,6 +1540,7 @@ end
 function Content.fetch_single_chapter_content(client, settings, book, chapter, state)
     state = state or {}
     local xhtml = Content.fetch_chapter_xhtml(client, settings, book, chapter)
+    Content.cache_annotation_source(settings, book, chapter, xhtml)
     if not state.css then
         state.css = Content.fetch_chapter_css(client, settings, book, chapter)
     end
@@ -1547,6 +1568,7 @@ end
 function Content.fetch_single_chapter_source(client, settings, book, chapter, state)
     state = state or {}
     local xhtml = Content.fetch_chapter_xhtml(client, settings, book, chapter)
+    Content.cache_annotation_source(settings, book, chapter, xhtml)
     if not state.css then
         state.css = Content.fetch_chapter_css(client, settings, book, chapter)
     end
@@ -1600,6 +1622,7 @@ function Content.fetch_chapters_epub(client, settings, book, chapters, options)
             options.progress(chapter_index, #chapters, chapter, "text")
         end
         local xhtml = Content.fetch_chapter_xhtml(client, settings, book, chapter)
+    Content.cache_annotation_source(settings, book, chapter, xhtml)
         if not css then
             css = Content.fetch_chapter_css(client, settings, book, chapter)
         end

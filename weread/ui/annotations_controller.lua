@@ -1,7 +1,6 @@
 -- Annotation visibility and thought-link interaction UI.
 local Annotations = require("weread.lib.annotations")
 local Content = require("weread.lib.content")
-local DownloadDialog = require("weread.ui.download_dialog")
 local Event = require("ui/event")
 local logger = require("weread.lib.logger")
 local ThoughtDB = require("weread.lib.thought_db")
@@ -12,9 +11,6 @@ local UIManager = require("ui/uimanager")
 
 local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
-local T = PluginUtil.T
-local log_error = PluginUtil.log_error
-local display_error = PluginUtil.display_error
 local thought_perf = PluginUtil.thought_perf
 
 local M = {}
@@ -39,7 +35,8 @@ function M:onReadSettings()
     if not self.ui or not self.ui.document or not self:detectWeReadBook() then
         return
     end
-    if self.settings:get("cache").show_annotations ~= false then
+    if self.settings:get("cache").show_annotations ~= false
+        and not (self._usesUnifiedAnnotations and self:_usesUnifiedAnnotations()) then
         return
     end
     local typeset = self.ui.typeset
@@ -85,7 +82,7 @@ function M:applyAnnotationVisibility()
     if styletweak and type(styletweak.getCssText) == "function" then
         tweaks = styletweak:getCssText() or ""
     end
-    if not show then
+    if not show or (self._usesUnifiedAnnotations and self:_usesUnifiedAnnotations()) then
         tweaks = tweaks .. "\n" .. ANNOTATION_HIDE_CSS
     end
     local ok, err = pcall(function()
@@ -98,6 +95,11 @@ function M:applyAnnotationVisibility()
 end
 
 function M:toggleAnnotationVisibility()
+    local context = self._annotation_context
+    local summary = context and self:_annotationSummary(context)
+    if self.ensureAnnotationDisplay and (not summary or summary.chapters == 0) then
+        if self:ensureAnnotationDisplay() then return true end
+    end
     local cache = self.settings:get("cache")
     cache.show_annotations = not (cache.show_annotations ~= false)
     self.settings:set("cache", cache)
@@ -178,7 +180,8 @@ function M:_installLinkFilter()
         if not isThoughtHref(href) then
             return link
         end
-        if plugin.settings:get("cache").show_annotations == false
+        if (plugin._usesUnifiedAnnotations and plugin:_usesUnifiedAnnotations())
+            or plugin.settings:get("cache").show_annotations == false
             or isPageTurnEdgeTap(plugin, ges) then
             return nil
         end
@@ -192,7 +195,8 @@ function M:_installLinkFilter()
             -- When we want to ignore thoughts (edge zone or annotations hidden),
             -- detect the link with the *original* getter and suppress only our
             -- current or legacy thought anchors.
-            if plugin.settings:get("cache").show_annotations == false
+            if (plugin._usesUnifiedAnnotations and plugin:_usesUnifiedAnnotations())
+            or plugin.settings:get("cache").show_annotations == false
                 or isPageTurnEdgeTap(plugin, ges) then
                 local link = plugin._orig_getLinkFromGes(link_self, ges)
                 if link then
@@ -507,323 +511,10 @@ end
 -- A link from an older HTML/JSON cache may exist while the normalized SQLite
 -- rows do not. Repair the whole currently-open artifact: one chapter for a
 -- single-chapter EPUB, or every chapter for a combined full-book EPUB.
-function M:_downloadMissingThought(info, href, link, tap_started)
-    if self._thought_refresh_request then
-        return true
-    end
-    if not self:requireLogin(false, true) then
-        return true
-    end
-
-    local document = self.ui and self.ui.document
-    local books = self.settings:get("books", {})
-    local book = books[info.book_id]
-    local catalog = book and self:ensureChaptersLoaded(book)
-    if not book or type(catalog) ~= "table" or #catalog == 0 then
-        self:showInfo(_("Thought cache error. Please re-download this book with underlines and thoughts."))
-        return true
-    end
-
-    local file_path = document and document.file
-    local _current_idx, current_chapter, is_full_book =
-        self:getChapterInfoFromFile(book, file_path)
-    local chapters
-    if is_full_book then
-        chapters = {}
-        for _, chapter in ipairs(catalog) do
-            if chapter.chapterUid ~= nil then
-                chapters[#chapters + 1] = chapter
-            end
-        end
-    else
-        if not current_chapter then
-            for _, chapter in ipairs(catalog) do
-                if tostring(chapter.chapterUid) == tostring(info.chapter_uid) then
-                    current_chapter = chapter
-                    break
-                end
-            end
-        end
-        chapters = current_chapter and { current_chapter } or nil
-    end
-    if not chapters or #chapters == 0 then
-        self:showInfo(_("Thought cache error. Please re-download this book with underlines and thoughts."))
-        return true
-    end
-
-    local request = {
-        session_gen = self._reader_session_gen or 0,
-        page = document and document:getCurrentPage(),
-        href = href,
-        book_id = info.book_id,
-        target_chapter_uid = info.chapter_uid,
-        target_range = info.range,
-        chapters = chapters,
-        chapter_index = 0,
-        failed_requests = 0,
-        full_book = is_full_book,
-    }
-    self._thought_refresh_request = request
-    local progress_dialog
-    progress_dialog = DownloadDialog:new{
-        title = is_full_book
-            and _("Local thought data is missing. Downloading full-book thoughts now…")
-            or _("Local thought data is missing. Downloading chapter thoughts now…"),
-        progress_max = #chapters,
-        buttons = {
-            {
-                {
-                    text = _("Cancel"),
-                    callback = function()
-                        if self._thought_refresh_request == request then
-                            self._thought_refresh_request = nil
-                            progress_dialog:close()
-                            self:showTransientInfo(_("Download cancelled"), 2)
-                        end
-                    end,
-                },
-            },
-        },
-    }
-    request.progress_dialog = progress_dialog
-    progress_dialog:show()
-
-    local function finish_request()
-        if self._thought_refresh_request == request then
-            self._thought_refresh_request = nil
-            if request.progress_dialog then
-                request.progress_dialog:close()
-                request.progress_dialog = nil
-            end
-        end
-    end
-
-    local function request_is_current()
-        return self._thought_refresh_request == request
-            and request.session_gen == self._reader_session_gen
-            and self.ui and self.ui.document
-    end
-
-    local label = _("Download thoughts")
-    local fail_repair
-    local schedule_step
-    local finish_repair
-    local download_chapter
-    local download_batch
-
-    fail_repair = function(err)
-        if not request_is_current() then
-            finish_request()
-            return
-        end
-        finish_request()
-        logger.warn("thought repair failed:",
-            "href=", href, "error=", log_error(err or "unknown"))
-        self:showInfo(T(_("%1 failed:\n%2"), label, display_error(err or "unknown")))
-    end
-
-    schedule_step = function(callback, delay)
-        UIManager:scheduleIn(delay or 0.1, function()
-            if not request_is_current() then
-                finish_request()
-                return
-            end
-            local ok, err = xpcall(callback, debug.traceback)
-            if not ok then
-                fail_repair(err)
-            end
-        end)
-    end
-
-    finish_repair = function()
-        if not request_is_current() then
-            finish_request()
-            return
-        end
-
-        local db = self:_ensureThoughtDB(request.book_id)
-        local pages = db and ThoughtDB.getReviewItems(
-            db, request.target_chapter_uid, request.target_range
-        ) or nil
-        finish_request()
-
-        self._thought_page_cache = {}
-        self._thought_page_cache_n = 0
-        if type(pages) ~= "table" or #pages == 0 then
-            if request.failed_requests > 0 then
-                self:showInfo(_("Some thoughts could not be downloaded. Tap the underline again to retry."))
-            else
-                self._thought_page_cache[href] = false
-                self:showInfo(_("No thoughts were returned for this underline."))
-            end
-            return
-        end
-        self._thought_page_cache[href] = pages
-        self._thought_page_cache_n = 1
-
-        -- The database is fully repaired even if the reader moved elsewhere.
-        -- Only auto-open the popup while the original page is still visible.
-        if request.session_gen ~= self._reader_session_gen
-            or self.ui.document:getCurrentPage() ~= request.page then
-            return
-        end
-        self:_queueThoughtPopup(pages, link, tap_started)
-    end
-
-    download_batch = function()
-        if request.batch_index > #request.batches then
-            request.progress_dialog:setTitle(
-                T(_("Processing underlines and thoughts · chapter %1/%2"),
-                    tostring(request.chapter_index), tostring(#request.chapters))
-            )
-            request.progress_dialog:reportProgress(request.chapter_index - 0.05)
-            local db = self:_ensureThoughtDB(request.book_id)
-            if not db or not ThoughtDB.putReviews(
-                db, request.chapter.chapterUid, request.reviews
-            ) then
-                fail_repair("failed to write thought database")
-                return
-            end
-            request.progress_dialog:reportProgress(request.chapter_index)
-            schedule_step(download_chapter, 0.1)
-            return
-        end
-
-        local batch_index = request.batch_index
-        local batch_total = #request.batches
-        local fractional = request.chapter_index - 0.85
-            + 0.7 * batch_index / math.max(1, batch_total)
-        request.progress_dialog:setTitle(
-            T(_("Downloading thoughts %1/%2 · chapter %3/%4"),
-                tostring(batch_index), tostring(batch_total),
-                tostring(request.chapter_index), tostring(#request.chapters))
-        )
-        request.progress_dialog:reportProgress(fractional)
-
-        local batch_started = time.now()
-        local ok, result, err = self.client:get_chapter_reviews_batch(
-            request.book_id, request.chapter.chapterUid,
-            request.batches[batch_index]
-        )
-        thought_perf("thought_repair_batch", batch_started,
-            "chapter=", tostring(request.chapter_index) .. "/" .. tostring(#request.chapters),
-            "batch=", tostring(batch_index) .. "/" .. tostring(batch_total),
-            "ok=", tostring(ok), "retry=", tostring(request.batch_retry or 0))
-        if ok and type(result) == "table" and type(result.reviews) == "table" then
-            for _, review in ipairs(result.reviews) do
-                request.reviews[#request.reviews + 1] = review
-            end
-            request.batch_retry = 0
-            request.batch_index = request.batch_index + 1
-        else
-            request.batch_retry = (request.batch_retry or 0) + 1
-            if request.batch_retry <= 2 then
-                request.progress_dialog:setTitle(
-                    T(_("Retrying thoughts %1/%2 · attempt %3"),
-                        tostring(batch_index), tostring(batch_total),
-                        tostring(request.batch_retry))
-                )
-                schedule_step(download_batch, 0.6 * request.batch_retry)
-                return
-            end
-            request.failed_requests = request.failed_requests + 1
-            logger.warn("thought repair batch skipped after retries:",
-                "chapter_uid=", tostring(request.chapter.chapterUid),
-                "batch=", tostring(request.batch_index),
-                "error=", log_error(err or "unknown"))
-            request.batch_retry = 0
-            request.batch_index = request.batch_index + 1
-        end
-        schedule_step(download_batch, 0.3)
-    end
-
-    download_chapter = function()
-        request.chapter_index = request.chapter_index + 1
-        if request.chapter_index > #request.chapters then
-            finish_repair()
-            return
-        end
-
-        request.chapter = request.chapters[request.chapter_index]
-        request.progress_dialog:setTitle(T(_("Downloading underlines · chapter %1/%2"),
-            tostring(request.chapter_index), tostring(#request.chapters)))
-        request.progress_dialog:reportProgress(request.chapter_index - 0.85)
-
-        local underlines_started = time.now()
-        local ok, underlines, err = self.client:get_chapter_underlines(
-            request.book_id, request.chapter.chapterUid
-        )
-        thought_perf("thought_repair_underlines", underlines_started,
-            "chapter=", tostring(request.chapter_index) .. "/" .. tostring(#request.chapters),
-            "ok=", tostring(ok))
-        if not ok or type(underlines) ~= "table" then
-            request.failed_requests = request.failed_requests + 1
-            logger.warn("thought repair chapter skipped:",
-                "chapter_uid=", tostring(request.chapter.chapterUid),
-                "error=", log_error(err or "unknown"))
-            request.progress_dialog:reportProgress(request.chapter_index)
-            schedule_step(download_chapter, 0.1)
-            return
-        end
-
-        local ranges = {}
-        local seen_ranges = {}
-        for _, underline in ipairs(underlines.underlines or {}) do
-            if type(underline.range) == "string" and underline.range ~= ""
-                and not seen_ranges[underline.range] then
-                seen_ranges[underline.range] = true
-                ranges[#ranges + 1] = underline.range
-            end
-        end
-        request.reviews = {}
-        request.batches = self.client:build_chapter_review_batches(ranges)
-        request.batch_index = 1
-        request.batch_retry = 0
-        if #request.batches == 0 then
-            request.progress_dialog:setTitle(
-                T(_("Processing underlines and thoughts · chapter %1/%2"),
-                    tostring(request.chapter_index), tostring(#request.chapters))
-            )
-            request.progress_dialog:reportProgress(request.chapter_index - 0.05)
-            local db = self:_ensureThoughtDB(request.book_id)
-            if not db or not ThoughtDB.putReviews(
-                db, request.chapter.chapterUid, {}
-            ) then
-                fail_repair("failed to write thought database")
-                return
-            end
-            request.progress_dialog:reportProgress(request.chapter_index)
-            schedule_step(download_chapter, 0.1)
-        else
-            schedule_step(download_batch, 0.1)
-        end
-    end
-
-    local scheduled = self:runOnlineTask(label, function()
-        if not request_is_current() then
-            finish_request()
-            return
-        end
-        schedule_step(function()
-            if request.full_book then
-                if self._thought_db then
-                    ThoughtDB.close(self._thought_db)
-                    self._thought_db = nil
-                    self._thought_db_dir = nil
-                    self._thought_db_book_id = nil
-                end
-                local book_dir = Content.book_resolved_dir(
-                    self.settings, request.book_id, book
-                )
-                ThoughtDB.remove_db(book_dir)
-            end
-            download_chapter()
-        end, 0.1)
-    end)
-
-    if not scheduled then
-        finish_request()
-    end
+-- Legacy links remain readable, but missing data always enters the unified
+-- binding/matching flow; no second whole-book repair downloader remains.
+function M:_downloadMissingThought()
+    self:ensureAnnotationDisplay()
     return true
 end
 
@@ -865,7 +556,8 @@ function M:_onThoughtTap(ges)
     -- Annotations hidden: _installLinkFilter already made getLinkFromGes return nil
     -- for our anchors, so we normally return above before reaching here. Kept as a
     -- defensive fall-through in case the filter is not active.
-    if self.settings:get("cache").show_annotations == false then
+    if (self._usesUnifiedAnnotations and self:_usesUnifiedAnnotations())
+        or self.settings:get("cache").show_annotations == false then
         return false
     end
 

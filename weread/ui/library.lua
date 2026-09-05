@@ -1,7 +1,6 @@
 -- Bookshelf, book, chapter, public-account, and search UI flows.
 local BookReviews = require("weread.lib.book_reviews")
 local BookReviewsView = require("weread.ui.book_reviews_view")
-local ButtonDialog = require("ui/widget/buttondialog")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Content = require("weread.lib.content")
 local CoverLayout = require("weread.lib.cover_layout")
@@ -1541,52 +1540,18 @@ function M:confirmDownloadAllChapters(book)
     end)
 end
 
--- Every manual book/chapter download makes annotation fetching an explicit,
--- per-job choice. The persisted annotation flag is reserved for background
--- prefetches, so a manual choice never changes future automatic behaviour.
+-- Annotation matching is a reading action, shared by all download forms.
 function M:confirmAndDownloadChapters(book, chapters, suffix, options)
     options = options or {}
     local text = options.confirmation_text
         or T(_("Download %1 selected chapter(s)?"), tostring(#chapters))
-    if suffix == "full" then
-        text = text .. "\n" .. _(
-            "A book with many chapters may take a long time. Prefer single- or multi-chapter downloads when possible."
-        )
-    end
-    text = text .. "\n" .. _(
-        "Downloading underlines and thoughts may significantly increase download time."
-    )
-
-    local dialog
-    local function start(include_annotations)
-        UIManager:close(dialog)
-        local job_options = {}
-        for key, value in pairs(options) do job_options[key] = value end
-        job_options.include_annotations = include_annotations == true
-        self.downloader:start(book, chapters, suffix, job_options)
-    end
-    dialog = ButtonDialog:new{
-        title = text,
-        buttons = {
-            {{
-                text = _("Download text only"),
-                callback = self:safeCallback(_("Download text only"), function()
-                    start(false)
-                end),
-            }},
-            {{
-                text = _("Download with underlines and thoughts"),
-                callback = self:safeCallback(_("Download with underlines and thoughts"), function()
-                    start(true)
-                end),
-            }},
-            {{
-                text = _("Cancel"),
-                callback = function() UIManager:close(dialog) end,
-            }},
-        },
-    }
-    UIManager:show(dialog)
+    UIManager:show(ConfirmBox:new{
+        text = text,
+        ok_text = _("Download"), cancel_text = _("Cancel"),
+        ok_callback = self:safeCallback(_("Download"), function()
+            self.downloader:start(book, chapters, suffix, options)
+        end),
+    })
 end
 
 function M:pullProgressWithUI(book_id)

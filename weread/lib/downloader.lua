@@ -22,7 +22,6 @@ local DownloadDialog = require("weread.ui.download_dialog")
 local Footnotes = require("weread.lib.footnotes")
 local I18n = require("weread.lib.i18n")
 local StandbyGuard = require("weread.lib.standby_guard")
-local Thoughts = require("weread.lib.thoughts")
 local WeRead = require("weread.lib.protocol")
 
 local function _(text)
@@ -376,7 +375,7 @@ function Downloader:start(book, chapters, suffix, options)
         },
         single_chapter = options.single_chapter == true,
         separate_chapters = options.separate_chapters == true,
-        include_annotations = options.include_annotations == true,
+        include_annotations = false,
         open_on_complete = options.open_on_complete == true,
         offer_read = options.offer_read ~= false,
         silent_completion = options.silent_completion == true,
@@ -669,131 +668,6 @@ function Downloader:_finishChapter(dl)
     self:_scheduleGuarded(dl, function() self:_step(dl) end)
 end
 
-function Downloader:_applyAnnotations(dl)
-    if dl.cancelled or not dl.current or not dl.annotation then return end
-    local annotation = dl.annotation
-    local chapter = dl.current.chapter
-    local book_id = dl.book.book_id or dl.book.bookId
-    self:_setStage(dl,
-        T(_("Processing underlines and thoughts · chapter %1/%2"), tostring(dl.index), tostring(dl.total)),
-        dl.index - 0.15)
-    local started = time.now()
-    local ok, processed, annotation_css = pcall(function()
-        return Thoughts.apply_data(self.settings, book_id, chapter.chapterUid,
-            dl.current.xhtml, annotation.underlines, annotation.reviews, dl.book, {
-            rebuild_thought_db = not dl.single_chapter and dl.index == 1,
-        })
-    end)
-    self:_perf(dl, "apply_annotations", started, "ok=", tostring(ok),
-        "reviews=", tostring(#annotation.reviews))
-    if not ok then
-        self:_failChapter(dl, processed)
-        return
-    end
-    dl.current.xhtml = processed
-    dl.state.annotation_css_seen = dl.state.annotation_css_seen or {}
-    if annotation_css ~= "" and not dl.state.annotation_css_seen[annotation_css] then
-        dl.state.css = Thoughts.merge_css(dl.state.css, annotation_css)
-        dl.state.annotation_css_seen[annotation_css] = true
-    end
-    self:_finishChapter(dl)
-end
-
-function Downloader:_annotationBatch(dl)
-    if dl.cancelled then
-        self:_releaseStandby(dl)
-        self:_cleanupWorkspace(dl)
-        self:_notifyCompletion(dl, false, dl.cancel_reason or "cancelled")
-        self:_finishJob(dl)
-        if not dl.prefetch then
-            self.show_transient(_("Download cancelled"), 2)
-        end
-        return
-    end
-    local annotation = dl.annotation
-    if not annotation then
-        self:_finishChapter(dl)
-        return
-    end
-    if annotation.batch_index > #annotation.batches then
-        self:_applyAnnotations(dl)
-        return
-    end
-
-    local batch_index = annotation.batch_index
-    local batch_total = #annotation.batches
-    local fractional = dl.index - 0.85 + 0.7 * batch_index / math.max(1, batch_total)
-    self:_setStage(dl,
-        T(_("Downloading thoughts %1/%2 · chapter %3/%4"),
-            tostring(batch_index), tostring(batch_total), tostring(dl.index), tostring(dl.total)),
-        fractional)
-
-    local started = time.now()
-    local ok, result, err = self.client:get_chapter_reviews_batch(
-        dl.book.book_id or dl.book.bookId,
-        dl.current.chapter.chapterUid,
-        annotation.batches[batch_index]
-    )
-    self:_perf(dl, "thought_batch", started,
-        "batch=", tostring(batch_index) .. "/" .. tostring(batch_total),
-        "ok=", tostring(ok), "retry=", tostring(annotation.retry))
-
-    if not ok then
-        if annotation.retry < 2 then
-            annotation.retry = annotation.retry + 1
-            self:_setStage(dl,
-                T(_("Retrying thoughts %1/%2 · attempt %3"),
-                    tostring(batch_index), tostring(batch_total), tostring(annotation.retry)),
-                fractional)
-            self:_scheduleGuarded(dl, function() self:_annotationBatch(dl) end, 0.6 * annotation.retry)
-            return
-        end
-        dl.annotation_failed_batches = dl.annotation_failed_batches + 1
-        logger.warn("thought batch skipped:",
-            "batch=", tostring(batch_index) .. "/" .. tostring(batch_total),
-            "error=", log_error(err or "unknown"))
-    elseif result and type(result.reviews) == "table" then
-        for _i, review in ipairs(result.reviews) do
-            annotation.reviews[#annotation.reviews + 1] = review
-        end
-    end
-
-    annotation.batch_index = batch_index + 1
-    annotation.retry = 0
-    self:_scheduleGuarded(dl, function() self:_annotationBatch(dl) end, 0.3)
-end
-
-function Downloader:_startAnnotations(dl)
-    local chapter = dl.current.chapter
-    local book_id = dl.book.book_id or dl.book.bookId
-    self:_setStage(dl,
-        T(_("Downloading underlines · chapter %1/%2"), tostring(dl.index), tostring(dl.total)),
-        dl.index - 0.85)
-    local started = time.now()
-    local ok, underlines, ranges, err = Thoughts.fetch_underlines(
-        self.client, self.settings, book_id, chapter.chapterUid, true
-    )
-    self:_perf(dl, "underlines", started, "ok=", tostring(ok),
-        "ranges=", tostring(#(ranges or {})))
-    if not ok or type(underlines) ~= "table" then
-        logger.warn("skip chapter annotations:", log_error(err or "no data"))
-        self:_finishChapter(dl)
-        return
-    end
-    dl.annotation = {
-        underlines = underlines,
-        reviews = {},
-        batches = self.client:build_chapter_review_batches(ranges),
-        batch_index = 1,
-        retry = 0,
-    }
-    if #dl.annotation.batches == 0 then
-        self:_applyAnnotations(dl)
-    else
-        self:_scheduleGuarded(dl, function() self:_annotationBatch(dl) end, 0.1)
-    end
-end
-
 function Downloader:_step(dl)
     if dl.cancelled then
         self:_releaseStandby(dl)
@@ -903,6 +777,7 @@ function Downloader:_step(dl)
                 for key, value in pairs(dl.book) do record[key] = value end
             end
             local function apply_cache_result(target)
+                target.annotation_documents = dl.book.annotation_documents or target.annotation_documents
                 target.cached_chapters = target.cached_chapters or {}
                 if not ok then return end
                 if dl.single_chapter then
@@ -1065,11 +940,7 @@ function Downloader:_step(dl)
             "chapter_uid=", uid, "error=", log_error(scan))
     end
     dl.current = { chapter = chapter, xhtml = xhtml }
-    if dl.include_annotations then
-        self:_startAnnotations(dl)
-    else
-        self:_finishChapter(dl)
-    end
+    self:_finishChapter(dl)
 end
 
 return Downloader

@@ -85,6 +85,7 @@ local context_host = {
     showSearch = function() end,
     showReadStats = function() stats_opened = true end,
     toggleAnnotationVisibility = function() annotations_toggled = true end,
+    _annotationsVisibleForCurrentDocument = function() return false end,
 }
 for key, value in pairs(Navigation) do
     if context_host[key] == nil then context_host[key] = value end
@@ -96,7 +97,8 @@ expect(dialog_options.show_chapter_nav and dialog_options.show_next_chapter
         and dialog_options.enable_chapter_list == false
         and dialog_options.enable_next_chapter == false
         and dialog_options.enable_book_details == false
-        and dialog_options.enable_sync_progress == false,
+        and dialog_options.enable_sync_progress == false
+        and dialog_options.annotations_visible == false,
     "context-dependent actions are visible but disabled for local documents")
 dialog_callbacks.on_chapter_list()
 expect(notice and notice.timeout == 1,
