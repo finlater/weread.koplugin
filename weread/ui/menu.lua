@@ -154,7 +154,11 @@ function M:getMainMenuItems()
         reader_items[#reader_items + 1] = {
             text = _("Show underlines and thoughts"),
             checked_func = function()
-                return self:_annotationsVisibleForCurrentDocument()
+                -- The checkbox reflects the user's display preference.  Annotation
+                -- data may still be downloading (or may be unavailable for this
+                -- document), but that must not make a checked preference render
+                -- as unchecked.
+                return self.settings:get("cache", {}).show_annotations ~= false
             end,
             keep_menu_open = true,
             callback = self:safeCallback(_("Show underlines and thoughts"), function()

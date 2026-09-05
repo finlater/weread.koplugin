@@ -62,6 +62,7 @@ local cache = {
     download_underlines_and_thoughts = false,
     prefetch_annotations = false,
     show_prefetch_notifications = true,
+    show_annotations = false,
 }
 local shelf = { sort_order = "time_desc" }
 local flush_count = 0
@@ -269,10 +270,10 @@ for _, item in ipairs(weread_reader_items) do
     if item.text == "Show underlines and thoughts" then visibility_item = item end
 end
 expect(visibility_item and not visibility_item.checked_func(),
-    "unmatched document does not show the visibility item as checked")
-annotations_visible = true
+    "hidden annotation preference should show an unchecked item")
+cache.show_annotations = true
 expect(visibility_item and visibility_item.checked_func(),
-    "matched visible document shows the visibility item as checked")
+    "shown annotation preference should show a checked item")
 
 host.detectWeReadBook = function() return "mp-book" end
 local mp_reader_items = host:getMainMenuItems()

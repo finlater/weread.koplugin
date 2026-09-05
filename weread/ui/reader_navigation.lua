@@ -61,6 +61,11 @@ function M:showEndOfBookDialog(book_id)
             _("This action requires an open WeRead book."), 1)
     end
 
+    -- Keep the reader quick menu in sync with the global display preference.
+    -- Document-level matching may be incomplete while chapters are being
+    -- prepared, but the user's show/hide choice is still authoritative here.
+    local cache = self.settings:get("cache", {})
+    local annotations_visible = cache.show_annotations ~= false
     EndOfBookDialog.show({
         show_chapter_nav = true,
         show_next_chapter = true,
@@ -68,7 +73,7 @@ function M:showEndOfBookDialog(book_id)
         enable_next_chapter = next_chapter ~= nil,
         enable_book_details = book ~= nil,
         enable_sync_progress = is_regular_weread_book,
-        annotations_visible = self:_annotationsVisibleForCurrentDocument(),
+        annotations_visible = annotations_visible,
     }, {
         on_bookshelf = function()
             self:showBookshelf()
