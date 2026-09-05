@@ -35,6 +35,18 @@ local rows = {
 local records, stats = locate(rows)
 assert(#records == 3 and stats.located == 3, "overlapping or adjacent fast matches lost")
 assert(searches == 0 and positions == 0 and moves == 0, "fast path used whole-book search, layout or navigation")
+
+-- Generated footnote labels are visible in downloaded EPUBs but absent from
+-- WeRead quotes. The fast path must ignore them while retaining the correct
+-- document endpoints, and zero-width BOM characters must be removed from the
+-- remote quotation.
+text = "abc[36]def"
+records = locate({ { range = "0-6", markText = "abc\239\187\191def" } })
+assert(#records == 1 and records[1].pos0 == "0" and records[1].pos1 == "10",
+    "generated footnote label broke quote matching or XPointer mapping")
+assert(searches == 0, "footnote-normalized quote fell back to whole-book search")
+text = "abcdef"
+
 records = locate({ { range = "0-3", markText = "abc" }, { range = "0-6", markText = "abcdef" } })
 assert(#records == 2 and records[1].pos0 == records[2].pos0, "equal-start underlines lost")
 local previous = document.getPrevVisibleChar

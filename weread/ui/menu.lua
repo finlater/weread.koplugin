@@ -449,7 +449,7 @@ function M:getSettingsMenuItems()
                                             end
 
                                             UIManager:show(ConfirmBox:new{
-                                                text = _("Due to network conditions, automatic prefetching may cause a few seconds of delay when you start reading a new chapter. Enable it?"),
+                                                text = _("Automatic prefetch runs in a background process and uses extra network and storage. Enable it?"),
                                                 ok_text = _("Confirm"),
                                                 ok_callback = self:safeCallback(
                                                     _("Confirm"), function()

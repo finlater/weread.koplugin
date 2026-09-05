@@ -23,6 +23,7 @@ local Footnotes = require("weread.lib.footnotes")
 local I18n = require("weread.lib.i18n")
 local StandbyGuard = require("weread.lib.standby_guard")
 local WeRead = require("weread.lib.protocol")
+local WorkerSettings = require("weread.lib.worker_settings")
 
 local function _(text)
     return I18n.tr(text)
@@ -53,7 +54,8 @@ Downloader.__index = Downloader
 --   show_info(text), show_transient(text, timeout),
 --   refresh_ui(), refresh_shelf(),
 --   open_file(path), safe_callback(label, fn),
---   require_login(cookie, api_key), run_online_task(label, fn),  -- host framework
+--   require_login(cookie, api_key), run_online_task(label, fn),
+--   background_worker,                         -- host framework
 -- }
 function Downloader:new(o)
     o = o or {}
@@ -182,6 +184,9 @@ function Downloader:cancelPrefetch(reason)
     if not job then return cancelled_scheduled end
     job.cancelled = true
     job.cancel_reason = reason or "cancelled"
+    if job.worker_handle and self.background_worker then
+        self.background_worker:cancel(job.worker_handle, job.cancel_reason)
+    end
     local chapter = job.chapters and job.chapters[1] or {}
     logger.info("active prefetch cancelled:",
         "book_id=", tostring(job.book
@@ -238,8 +243,12 @@ function Downloader:_ensureProgressDialog(dl)
             {
                 text = _("Cancel download"),
                 callback = function()
-                    dl.cancelled = true
-                    dl.cancel_reason = dl.cancel_reason or "cancelled"
+                    if dl.prefetch then
+                        self:cancelPrefetch("cancelled")
+                    else
+                        dl.cancelled = true
+                        dl.cancel_reason = dl.cancel_reason or "cancelled"
+                    end
                     if dl.progress_dialog then
                         dl.progress_dialog:close()
                         dl.progress_dialog = nil
@@ -255,6 +264,135 @@ function Downloader:_ensureProgressDialog(dl)
     end
     self.refresh_ui()
     return progress_dialog
+end
+
+local function file_exists(path)
+    if not path then return false end
+    local handle = io.open(path, "rb")
+    if not handle then return false end
+    handle:close()
+    return true
+end
+
+function Downloader:_prefetchStage(dl, state)
+    local stage = state and state.stage
+    local title
+    if stage == "reader" then
+        title = T(_("Preparing chapter %1/%2"), "1", "1")
+    elseif stage == "source" then
+        local attempt = tonumber(state.attempt) or 1
+        if attempt > 1 then
+            title = T(_("Retrying chapter %1/%2 · attempt %3"), "1", "1",
+                tostring(attempt - 1))
+        else
+            local chapter = dl.chapters[1] or {}
+            title = T(_("Downloading chapter %1/%2: %3"), "1", "1",
+                chapter.title or tostring(chapter.chapterUid or ""))
+        end
+    elseif stage == "images" then
+        title = T(_("Downloading images · chapter %1/%2"), "1", "1")
+    elseif stage == "footnotes" then
+        title = T(_("Processing footnotes · chapter %1/%2"), "1", "1")
+    elseif stage == "epub" then
+        title = _("Building EPUB...")
+    else
+        title = T(_("Processing chapter %1/%2"), "1", "1")
+    end
+    self:_setStage(dl, title, stage == "epub" and 1 or 0)
+end
+
+function Downloader:_applyPrefetchResult(dl, result)
+    self:_releaseStandby(dl)
+    dl.worker_handle = nil
+    if dl.progress_dialog then
+        dl.progress_dialog:close()
+        dl.progress_dialog = nil
+    end
+    if self._active_job ~= dl then return end
+    if dl.cancelled then
+        self:_notifyCompletion(dl, false, dl.cancel_reason or "cancelled")
+        self:_finishJob(dl)
+        return
+    end
+    if type(result) ~= "table" or result.ok ~= true
+        or type(result.value) ~= "table" or not file_exists(result.value.path) then
+        local reason = type(result) == "table" and result.error or "worker_no_result"
+        self:_notifyCompletion(dl, false, reason)
+        self:_finishJob(dl)
+        return
+    end
+
+    local value = result.value
+    if value.auth and not WorkerSettings.merge(self.settings,
+        dl.auth_fingerprint, value.auth) then
+        logger.info("skip worker auth write-back: parent auth changed")
+    end
+    local book_id = tostring(dl.book.book_id or dl.book.bookId or "")
+    local chapter = dl.chapters[1] or {}
+    local uid = tostring(value.chapter_uid or chapter.chapterUid
+        or chapter.chapterId or "1")
+    local books = self.settings:get("books", {})
+    local record = books[book_id] or books[tonumber(book_id)] or {}
+    local function apply(target)
+        target.cached_chapters = target.cached_chapters or {}
+        target.cached_chapters[uid] = value.path
+        target.cache_dir = value.cache_dir or target.cache_dir
+        target.reader_url = target.reader_url or value.reader_url
+        if value.annotation_document then
+            target.annotation_documents = target.annotation_documents or {}
+            target.annotation_documents[value.path] = value.annotation_document
+        end
+    end
+    apply(dl.book)
+    if record ~= dl.book then apply(record) end
+    record.book_id = record.book_id or dl.book.book_id or dl.book.bookId
+    books[book_id] = record
+    self.settings:set("books", books)
+    self.settings:flush()
+    self.refresh_shelf()
+    logger.info("prefetch worker completed:", "book_id=", book_id,
+        "chapter_uid=", uid, "path=", value.path)
+    self:_notifyCompletion(dl, true, value.path)
+    self:_finishJob(dl)
+    if dl.open_on_complete then self.open_file(value.path) end
+end
+
+function Downloader:_startPrefetchWorker(dl)
+    local worker = self.background_worker
+    if not worker or not worker:available() then
+        self:_applyPrefetchResult(dl, {
+            ok = false, error = "worker_unavailable",
+        })
+        return false
+    end
+    local ChapterWorker = require("weread.lib.chapter_prefetch_worker")
+    local ok, handle = worker:start {
+        queue = true,
+        replace_active = true,
+        timeout = 180,
+        task = function(context)
+            return ChapterWorker.run(self.settings, self.client, dl.book,
+                dl.chapters[1], context)
+        end,
+        on_launch = function(pid, available_kb)
+            if self._active_job ~= dl then return end
+            self:_beginStandby()
+            dl.standby_guard = true
+            logger.info("prefetch worker started:", "pid=", tostring(pid),
+                "available_kb=", tostring(available_kb or "unknown"))
+        end,
+        on_progress = function(state)
+            if self._active_job == dl then self:_prefetchStage(dl, state) end
+        end,
+        on_done = function(result)
+            self:_applyPrefetchResult(dl, result)
+        end,
+    }
+    if ok then
+        dl.worker_handle = handle
+        return true
+    end
+    return false
 end
 
 -- Schedule any download step behind xpcall so an uncaught error always releases
@@ -384,12 +522,14 @@ function Downloader:start(book, chapters, suffix, options)
         on_start = options.on_start,
         on_complete = options.on_complete,
         started_at = time.now(),
+        auth_fingerprint = WorkerSettings.fingerprint(self.settings),
     }
     self._active_job = dl
 
     local task_label = options.single_chapter and _("Download chapter and read") or _("Download full book")
-    local task_runner = options.prefetch and self.run_background_task
-        or function(callback) return self.run_online_task(task_label, callback) end
+    local task_runner = function(callback)
+        return self.run_online_task(task_label, callback)
+    end
     local function notifyStart()
         if dl.start_notified or type(dl.on_start) ~= "function" then return end
         dl.start_notified = true
@@ -397,6 +537,19 @@ function Downloader:start(book, chapters, suffix, options)
         if not called then
             logger.warn("download start callback failed:", log_error(start_err))
         end
+    end
+    if dl.prefetch then
+        notifyStart()
+        UIManager:scheduleIn(math.max(0.1, dl.start_delay), function()
+            if self._active_job ~= dl then return end
+            if dl.cancelled then
+                self:_notifyCompletion(dl, false, dl.cancel_reason or "cancelled")
+                self:_finishJob(dl)
+                return
+            end
+            self:_startPrefetchWorker(dl)
+        end)
+        return true
     end
     local function initializeDownload()
         if dl.cancelled then
@@ -440,18 +593,7 @@ function Downloader:start(book, chapters, suffix, options)
 
         self:_scheduleGuarded(dl, function() self:_step(dl) end)
     end
-    local started = task_runner(function()
-        if dl.prefetch then
-            -- Give the transient start notice enough event-loop time to paint
-            -- and close before synchronous network work begins. Otherwise the
-            -- request blocks the timeout callback and makes the notice look
-            -- stuck while the whole UI appears frozen.
-            notifyStart()
-            UIManager:scheduleIn(math.max(0.1, dl.start_delay), initializeDownload)
-        else
-            initializeDownload()
-        end
-    end)
+    local started = task_runner(initializeDownload)
     if started == false then
         self:_notifyCompletion(dl, false, "offline")
         self:_finishJob(dl)

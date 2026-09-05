@@ -51,6 +51,26 @@ local host = {
     runOnlineTask = function(_self, _label, callback) callback() end,
     _xpointerOverlayPrototypeAvailable = function() return true end,
 }
+host.prefetch_worker = {
+    available = function() return true end,
+    start = function(_self, options)
+        local handle = {}
+        if options.on_launch then options.on_launch(123, 96 * 1024) end
+        local emitted = {}
+        local ok, value = pcall(options.task, {
+            checkCancelled = function() end,
+            emit = function(state)
+                emitted[#emitted + 1] = state
+                if options.on_progress then options.on_progress(state) end
+            end,
+            sleep = function() end,
+        })
+        options.on_done(ok and { ok = true, value = value }
+            or { ok = false, error = value })
+        return true, handle
+    end,
+    cancel = function() return true end,
+}
 for k,v in pairs(Controller) do host[k] = v end
 local store = helper.new()
 host.annotation_store = store

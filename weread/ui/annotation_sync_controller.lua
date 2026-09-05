@@ -183,14 +183,89 @@ function M:_refreshAnnotationOverlay()
     overlay._annotation_window = window
 end
 
-function M:_cancelUnifiedAnnotationSync()
+function M:_cancelUnifiedAnnotationSync(preserve_pending)
     local request = self._external_annotation_sync
     if not request then return end
     if request.job then request.job.cancelled = true end
     if request.progress then request.progress:close() end
     if request.guard then require("weread.lib.standby_guard").release(request.guard) end
+    request.guard = nil
+    if request.worker_handle and self.prefetch_worker then
+        request.cancelled = true
+        self.prefetch_worker:cancel(request.worker_handle, "cancelled")
+        if not preserve_pending then self._annotation_pending_prefetch = nil end
+        return
+    end
     self._external_annotation_sync = nil
+    if not preserve_pending then self._annotation_pending_prefetch = nil end
+end
+
+function M:_finishAnnotationPrefetchWorker(request, result)
+    if request.guard then
+        require("weread.lib.standby_guard").release(request.guard)
+        request.guard = nil
+    end
+    request.worker_handle = nil
+    if type(result) == "table" and result.ok then
+        if result.value and result.value.auth then
+            local WorkerSettings = require("weread.lib.worker_settings")
+            if not WorkerSettings.merge(self.settings, request.auth_fingerprint,
+                result.value.auth) then
+                logger.info("skip annotation worker auth write-back: parent auth changed")
+            end
+        end
+    elseif not request.cancelled then
+        logger.warn("annotation prefetch worker failed:",
+            tostring(type(result) == "table" and result.error or "no result"))
+    end
+    if self._external_annotation_sync == request then
+        self._external_annotation_sync = nil
+    end
+    local pending = self._annotation_pending_prefetch
     self._annotation_pending_prefetch = nil
+    if pending then self:_runAnnotationJob(pending.context, pending.options) end
+end
+
+function M:_runAnnotationPrefetchWorker(request, context, options)
+    local worker = self.prefetch_worker
+    if not worker or not worker:available() then
+        self._external_annotation_sync = nil
+        logger.warn("annotation prefetch skipped: subprocess worker unavailable")
+        return false
+    end
+    local WorkerSettings = require("weread.lib.worker_settings")
+    local AnnotationWorker = require("weread.lib.annotation_prefetch_worker")
+    request.auth_fingerprint = WorkerSettings.fingerprint(self.settings)
+    local ok, handle = worker:start {
+        queue = true,
+        timeout = 180,
+        task = function(worker_context)
+            return AnnotationWorker.run(self.settings, self.client, context,
+                options.chapters or context.chapters, worker_context)
+        end,
+        on_launch = function(pid, available_kb)
+            if self._external_annotation_sync ~= request then return end
+            request.guard = require("weread.lib.standby_guard").acquire()
+            logger.info("annotation prefetch worker started:",
+                "pid=", tostring(pid),
+                "available_kb=", tostring(available_kb or "unknown"))
+        end,
+        on_progress = function(state)
+            logger.info("annotation prefetch progress:",
+                "stage=", tostring(state.stage),
+                "chapter=", tostring(state.index or 0) .. "/"
+                    .. tostring(state.total or 0),
+                "items=", tostring(state.current or 0) .. "/"
+                    .. tostring(state.count or 0))
+        end,
+        on_done = function(result)
+            self:_finishAnnotationPrefetchWorker(request, result)
+        end,
+    }
+    if ok and self._external_annotation_sync == request then
+        request.worker_handle = handle
+    end
+    return ok
 end
 
 function M:_runAnnotationJob(context, options)
@@ -200,11 +275,19 @@ function M:_runAnnotationJob(context, options)
             self._annotation_pending_prefetch = { context = context, options = options }
             return
         end
+        if self._external_annotation_sync.worker_handle then
+            self._annotation_pending_prefetch = { context = context, options = options }
+            self:_cancelUnifiedAnnotationSync(true)
+            return
+        end
         self:_cancelUnifiedAnnotationSync()
     end
     local Sync = require("weread.lib.annotation_sync")
     local request = { context = context, session = self._reader_session_gen, prefetch = options.prefetch }
     self._external_annotation_sync = request
+    if options.prefetch then
+        return self:_runAnnotationPrefetchWorker(request, context, options)
+    end
     if not options.background then
         request.progress = require("weread.ui.download_dialog"):new{
             title = _("Sync underlines and thoughts"),

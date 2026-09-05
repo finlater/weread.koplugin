@@ -64,7 +64,9 @@ function Sync:run()
         if source_status and not refreshing then
             local status = self.document_key and store:get(book_id, "status",
                 store:projectionKey(self.document_key, uid))
-            if not self.document or (status and status.revision == source_status.revision) then
+            if not self.document or (status
+                and status.revision == source_status.revision
+                and status.matcher_version == External.MATCHER_VERSION) then
                 self.completed = self.completed + 1
                 self:yield("saved")
                 goto next_chapter
@@ -153,11 +155,15 @@ function Sync:run()
         if self.document then
             local key = store:projectionKey(document_key, uid)
             projection = store:get(book_id, "projection", key)
-            if not projection or projection.revision ~= source.revision then
+            if not projection or projection.revision ~= source.revision
+                or projection.matcher_version ~= External.MATCHER_VERSION then
                 local match_current = 0
                 self:yield("match", nil, { current = 0, count = #source.underlines })
                 local saved = store:get(book_id, "matching", key)
-                if saved and saved.revision ~= source.revision then saved = nil end
+                if saved and (saved.revision ~= source.revision
+                    or saved.matcher_version ~= External.MATCHER_VERSION) then
+                    saved = nil
+                end
                 if saved then match_current = math.max(0, (saved.next_index or 1) - 1) end
                 local records, stats = External.locate(self.document, { source }, {
                     chapter_ranges = self.ranges,
@@ -170,6 +176,7 @@ function Sync:run()
                     end,
                     checkpoint = function(state)
                         state.revision = source.revision
+                        state.matcher_version = External.MATCHER_VERSION
                         store:put(book_id, "matching", key, state, uid)
                     end,
                 })
@@ -180,7 +187,8 @@ function Sync:run()
                 -- Keep small position rows in the projection. Thoughts are
                 -- fetched on tap from the shared per-range cache below.
                 for _, record in ipairs(records) do record.items = nil end
-                projection = { revision = source.revision, records = records,
+                projection = { revision = source.revision,
+                    matcher_version = External.MATCHER_VERSION, records = records,
                     stats = stats, complete = true }
             end
         end
@@ -205,7 +213,8 @@ function Sync:run()
             changes[#changes + 1] = { kind = "projection", key = key, uid = uid, value = projection }
             changes[#changes + 1] = { kind = "matching", key = key }
             changes[#changes + 1] = { kind = "status", key = key, uid = uid,
-                value = { stats = projection.stats, revision = projection.revision } }
+                value = { stats = projection.stats, revision = projection.revision,
+                    matcher_version = projection.matcher_version } }
         end
         store:write(book_id, changes)
         self.completed = self.completed + 1

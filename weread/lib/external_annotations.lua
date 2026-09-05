@@ -5,6 +5,7 @@ local logger = require("weread.lib.logger")
 
 local ExternalAnnotations = {}
 ExternalAnnotations.SCHEMA_VERSION = 2
+ExternalAnnotations.MATCHER_VERSION = 2
 ExternalAnnotations.MAX_SEARCH_HITS = 16
 ExternalAnnotations.CHAPTER_SEARCH_HITS = 1
 ExternalAnnotations.FALLBACK_QUOTE_BYTES = 90
@@ -47,6 +48,7 @@ local function clean_quote(value)
     local text = scalar(value)
     text = text:gsub("^%s+", ""):gsub("%s+$", "")
     text = text:gsub("[\226][\128][\139-\141]", "")
+    text = text:gsub("\239\187\191", "")
     return text
 end
 
@@ -146,6 +148,30 @@ local function ws_len_at(text, i)
     return 0
 end
 
+-- Downloaded EPUB chapters render converted footnote references as visible
+-- bracketed numbers (for example, "[36]"). WeRead's annotation quotations
+-- omit those generated labels, so they must not participate in matching.
+local function footnote_marker_len_at(text, i)
+    if text:byte(i) ~= 0x5B then return 0 end -- "["
+    local start, stop = text:find("%[%d+%]", i)
+    return start == i and stop - i + 1 or 0
+end
+
+local function ignored_footnote_bytes(text)
+    local ignored = {}
+    local i, n = 1, #text
+    while i <= n do
+        local marker_len = footnote_marker_len_at(text, i)
+        if marker_len > 0 then
+            for byte = i, i + marker_len - 1 do ignored[byte] = true end
+            i = i + marker_len
+        else
+            i = i + char_len(text:byte(i))
+        end
+    end
+    return ignored
+end
+
 -- Whitespace-agnostic rendering of a chapter text: paragraph separators,
 -- spaces and punctuation-width spaces are removed so WeRead quotes match the
 -- local EPUB text regardless of paragraph breaks and spacing.
@@ -153,8 +179,11 @@ function ExternalAnnotations.flatten_text(text)
     local chunks = {}
     local i, n = 1, #text
     while i <= n do
-        local wlen = ws_len_at(text, i)
-        if wlen > 0 then
+        local marker_len = footnote_marker_len_at(text, i)
+        local wlen = marker_len == 0 and ws_len_at(text, i) or 0
+        if marker_len > 0 then
+            i = i + marker_len
+        elseif wlen > 0 then
             i = i + wlen
         else
             local clen = char_len(text:byte(i))
@@ -202,6 +231,7 @@ function ExternalAnnotations.new_chapter_walk(document, extracted, end_xpointer)
         ptr = #extracted,
         flat_byte = flat_bytes,
         xp_at = { [flat_bytes + 1] = end_xpointer },
+        ignored_footnote_bytes = ignored_footnote_bytes(extracted),
         valid = true,
         n = #extracted,
     }
@@ -236,7 +266,8 @@ function ExternalAnnotations.advance_chapter_walk(walk, target_byte)
             end
             walk.xp = previous_xp
             local clen = char_len(byte)
-            if ws_len_at(extracted, char_start) == 0 then
+            if ws_len_at(extracted, char_start) == 0
+                and not walk.ignored_footnote_bytes[char_start] then
                 walk.flat_byte = walk.flat_byte - clen
                 local offset = walk.flat_byte + 1
                 if not walk.needed or walk.needed[offset] then walk.xp_at[offset] = walk.xp end

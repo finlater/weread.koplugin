@@ -4,6 +4,7 @@ local UIManager = require("ui/uimanager")
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 
 local Client = require("weread.lib.client")
+local BackgroundWorker = require("weread.lib.background_worker")
 local Content = require("weread.lib.content")
 local Downloader = require("weread.lib.downloader")
 local ExternalAnnotationsDB = require("weread.lib.external_annotations_db")
@@ -63,9 +64,16 @@ function WeReadPlugin:init()
         end,
     }
     self.client = Client:new(self.settings)
+    self.prefetch_worker = BackgroundWorker:new{
+        temp_dir = self.settings.data_dir .. "/workers",
+        -- A soft launch gate, not a reservation: fork uses copy-on-write and
+        -- normally consumes far less than this on a 512 MB Kindle.
+        min_available_kb = 128 * 1024,
+    }
     self.downloader = Downloader:new{
         client = self.client,
         settings = self.settings,
+        background_worker = self.prefetch_worker,
         show_info       = function(text) self:showInfo(text) end,
         show_transient  = function(text, timeout) self:showTransientInfo(text, timeout) end,
         refresh_ui      = function() self:refreshUI() end,
@@ -75,10 +83,6 @@ function WeReadPlugin:init()
         require_login   = function(cookie, api_key) return self:requireLogin(cookie, api_key) end,
         run_online_task = function(label, fn)
             return self:runOnlineTask(label, fn)
-        end,
-        run_background_task = function(fn)
-            UIManager:scheduleIn(0.1, fn)
-            return true
         end,
         is_connected = function()
             return self:isNetworkConnected()

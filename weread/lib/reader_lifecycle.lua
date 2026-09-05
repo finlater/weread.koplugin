@@ -250,7 +250,14 @@ function M:maybePrefetchNextChapter(book_id)
         end,
         on_complete = function(ok, value)
             if ok then
-                if self.prefetchChapterAnnotations then self:prefetchChapterAnnotations(book, next_chapter) end
+                -- A promoted prefetch opens the new file immediately. Its
+                -- ReaderReady path will prepare annotations for that file, so
+                -- do not fork an annotation worker only to cancel it during
+                -- the document switch.
+                if self.prefetchChapterAnnotations
+                    and not self.downloader:isPromotedPrefetch(book, next_chapter) then
+                    self:prefetchChapterAnnotations(book, next_chapter)
+                end
                 logger.info("succeeded:",
                     "book_id=", tostring(book_id),
                     "chapter_uid=", next_uid,
@@ -273,6 +280,9 @@ function M:maybePrefetchNextChapter(book_id)
                 return
             end
             local reason = value == "offline" and _("Network is not connected")
+                or value == "low_memory" and _("Not enough free memory; prefetch skipped")
+                or value == "worker_unavailable" and _("Background prefetch is unavailable")
+                or value == "worker_timeout" and _("Background prefetch timed out")
                 or display_error(value)
             logger.warn("failed:",
                 "book_id=", tostring(book_id),

@@ -2,6 +2,7 @@
 package.path = "./?.lua;" .. package.path
 local helper = require("spec.helpers.annotation_test_store")
 local Sync = require("weread.lib.annotation_sync")
+local External = require("weread.lib.external_annotations")
 local calls, matched = {}, {}
 local empty, fail_batch = false, false
 local client = {
@@ -65,6 +66,21 @@ count = #calls
 assert(finish(new("full", chapters)))
 assert(#calls == count, "opening full book re-downloaded single-chapter data")
 assert(store:get("book", "projection", "full:1"), "full EPUB did not create its own coordinates")
+
+-- Matcher upgrades must invalidate only the document projection. Downloaded
+-- chapter data remains reusable and is projected again without network work.
+local stale = store:get("book", "projection", "full:1")
+stale.matcher_version = nil
+store:put("book", "projection", "full:1", stale, "1")
+local stale_status = store:get("book", "status", "full:1")
+stale_status.matcher_version = nil
+store:put("book", "status", "full:1", stale_status, "1")
+count = #calls
+assert(finish(new("full", { chapters[1] }, { offline = true })))
+assert(#calls == count, "matcher upgrade re-downloaded cached annotation data")
+assert(store:get("book", "projection", "full:1").matcher_version
+    == External.MATCHER_VERSION, "matcher upgrade reused a stale projection")
+
 assert(finish(new("other-selection", { { chapterUid = "2" } })))
 assert(#calls == count and not store:get("book", "projection", "other-selection:1"), "selection processed absent chapters")
 -- An interrupted refresh keeps the last committed results, and can resume.

@@ -1570,10 +1570,11 @@ function Content.finalize_single_chapter_content(client, settings, book, chapter
         local inline_xhtml, inline_assets
         if state.workspace then
             inline_xhtml, inline_assets = Content.download_remote_images_to_files(
-                client, xhtml, state.used_asset_names, state.workspace)
+                client, xhtml, state.used_asset_names, state.workspace,
+                state.image_progress)
         else
             inline_xhtml, inline_assets = Content.download_remote_images(
-                client, xhtml, state.used_asset_names)
+                client, xhtml, state.used_asset_names, state.image_progress)
         end
         xhtml = inline_xhtml
         for _, asset in ipairs(inline_assets) do

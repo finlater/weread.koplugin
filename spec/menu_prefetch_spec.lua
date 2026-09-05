@@ -330,8 +330,8 @@ prefetch_items[1].callback({
 })
 expect(cache.auto_prefetch_next_chapter == false and shown_widget ~= nil,
     "enabling automatic prefetch first shows a confirmation")
-expect(shown_widget.text:find("few seconds of delay", 1, true) ~= nil,
-    "confirmation warns about possible chapter-opening delay")
+expect(shown_widget.text:find("background process", 1, true) ~= nil,
+    "confirmation explains background resource use")
 shown_widget.ok_callback()
 expect(cache.auto_prefetch_next_chapter == true and menu_updates == 1,
     "automatic prefetch is enabled only after confirmation")
