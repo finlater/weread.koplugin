@@ -117,7 +117,8 @@ function M:onReaderReady()
         -- we must intercept taps on thought links to suppress the native footnote
         -- popup. Visibility is decided inside _onThoughtTap / applyAnnotationVisibility.
         self:_setupThoughtInterception()
-        if self.settings:get("cache").show_annotations ~= false then
+        if self.settings:get("cache").show_annotations ~= false
+            and not (self._usesUnifiedAnnotations and self:_usesUnifiedAnnotations()) then
             local db_session_gen = self._reader_session_gen
             UIManager:scheduleIn(0.1, function()
                 if db_session_gen ~= self._reader_session_gen
@@ -145,6 +146,7 @@ function M:onReaderReady()
     -- range, so unsupported/non-participating books pay only an empty module
     -- function call during paint.
     self:_setupXPointerOverlayPrototype()
+    if self.onUnifiedAnnotationsReady then self:onUnifiedAnnotationsReady() end
 
     self.progress_sync:on_reader_ready()
     local prefetch_session_gen = self._reader_session_gen
@@ -170,6 +172,9 @@ function M:onCloseDocument()
     self.progress_sync:on_close_document()
     self._reader_session_gen = (self._reader_session_gen or 0) + 1
     self.downloader:cancelPrefetch("document_closed")
+    if self._cancelUnifiedAnnotationSync then self:_cancelUnifiedAnnotationSync() end
+    self._annotation_pending_prefetch = nil
+    self._annotation_context = nil
     self._current_weread_book_id = nil
     self:_teardownThoughtInterception()
     self:_teardownXPointerOverlayPrototype()
@@ -217,6 +222,7 @@ function M:maybePrefetchNextChapter(book_id)
     local next_uid = tostring(next_chapter.chapterUid or next_chapter.chapterId or "")
     local cached = book.cached_chapters and book.cached_chapters[next_uid]
     if file_exists(cached) then
+        if self.prefetchChapterAnnotations then self:prefetchChapterAnnotations(book, next_chapter) end
         if not self.downloader:isPrefetching(book, next_chapter) then
             self.downloader:cancelPrefetch("next_chapter_cached")
         end
@@ -229,7 +235,7 @@ function M:maybePrefetchNextChapter(book_id)
     local title = next_chapter.title or T(_("Chapter %1"), next_uid)
     return self.downloader:start(book, { next_chapter }, "chapter", {
         single_chapter = true,
-        include_annotations = cache.download_underlines_and_thoughts == true,
+        include_annotations = false,
         prefetch = true,
         start_delay = cache.show_prefetch_notifications == false and 0.1 or 0.7,
         silent_completion = true,
@@ -244,6 +250,7 @@ function M:maybePrefetchNextChapter(book_id)
         end,
         on_complete = function(ok, value)
             if ok then
+                if self.prefetchChapterAnnotations then self:prefetchChapterAnnotations(book, next_chapter) end
                 logger.info("succeeded:",
                     "book_id=", tostring(book_id),
                     "chapter_uid=", next_uid,
@@ -297,6 +304,8 @@ function M:stopReadReport(reason)
 end
 
 function M:onSuspend()
+    if self._cancelUnifiedAnnotationSync then self:_cancelUnifiedAnnotationSync() end
+    self._annotation_pending_prefetch = nil
     self.progress_sync:on_suspend()
     self.read_report:on_suspend()
 end

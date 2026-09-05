@@ -6,6 +6,7 @@ local Dispatcher = require("dispatcher")
 local InfoMessage = require("ui/widget/infomessage")
 local logger = require("weread.lib.logger")
 local UIManager = require("ui/uimanager")
+local ThoughtPopup = require("weread.ui.thought_popup")
 local WeRead = require("weread.lib.protocol")
 
 local PluginUtil = require("weread.lib.plugin_util")
@@ -153,16 +154,16 @@ function M:getMainMenuItems()
         reader_items[#reader_items + 1] = {
             text = _("Show underlines and thoughts"),
             checked_func = function()
-                return self.settings:get("cache").show_annotations ~= false
+                return self:_annotationsVisibleForCurrentDocument()
             end,
             keep_menu_open = true,
             callback = self:safeCallback(_("Show underlines and thoughts"), function()
                 self:toggleAnnotationVisibility()
             end),
         }
-        if book_id == nil then
+        if self:_xpointerOverlayPrototypeAvailable() then
             reader_items[#reader_items + 1] = {
-                text = _("Local-book underlines and thoughts"),
+                text = _("Underlines and thoughts management"),
                 enabled_func = function()
                     return self:_xpointerOverlayPrototypeAvailable()
                 end,
@@ -375,6 +376,38 @@ function M:getSettingsMenuItems()
                         end),
                     },
                     {
+                        text = _("Hide footnote text"),
+                        keep_menu_open = true,
+                        check_callback_updates_menu = true,
+                        checked_func = function()
+                            return self.settings:get("cache").book_footnotes_in_popup
+                                == true
+                        end,
+                        callback = self:safeCallback(
+                            _("Hide footnote text"),
+                            function(touchmenu_instance)
+                                local cache = self.settings:get("cache")
+                                local function apply(enabled)
+                                    cache.book_footnotes_in_popup = enabled
+                                    self.settings:set("cache", cache)
+                                    self.settings:flush()
+                                    if touchmenu_instance then
+                                        touchmenu_instance:updateItems()
+                                    end
+                                end
+                                if cache.book_footnotes_in_popup == true then
+                                    apply(false)
+                                    return
+                                end
+                                UIManager:show(ConfirmBox:new{
+                                    text = _("To view hidden footnotes, enable \"Show footnotes in popup\" in KOReader Settings → Links. Otherwise footnote content will not be visible. Hide footnote text?"),
+                                    ok_text = _("Enable"),
+                                    cancel_text = _("Cancel"),
+                                    ok_callback = function() apply(true) end,
+                                })
+                            end),
+                    },
+                    {
                         text = _("Chapter prefetch"),
                         sub_item_table_func = function()
                             return {
@@ -435,34 +468,26 @@ function M:getSettingsMenuItems()
                                             == true
                                     end,
                                     checked_func = function()
-                                        return self.settings:get("cache").download_underlines_and_thoughts
+                                        return self:isAnnotationPrefetchEnabled()
                                     end,
                                     callback = self:safeCallback(
                                         _("Prefetch underlines and thoughts"),
                                         function(touchmenu_instance)
-                                            local cache = self.settings:get("cache")
-                                            if cache.download_underlines_and_thoughts then
-                                                cache.download_underlines_and_thoughts = false
-                                                self.settings:set("cache", cache)
-                                                self.settings:flush()
-                                                logger.info(
-                                                    "underlines/thoughts download setting changed:",
-                                                    "enabled=", "false")
-                                                touchmenu_instance:updateItems()
+                                            local function apply(enabled)
+                                                self:setAnnotationPrefetchEnabled(enabled)
+                                                if touchmenu_instance then
+                                                    touchmenu_instance:updateItems()
+                                                end
+                                            end
+                                            if self:isAnnotationPrefetchEnabled() then
+                                                apply(false)
                                                 return
                                             end
                                             UIManager:show(ConfirmBox:new{
                                                 text = _("Prefetching underlines and thoughts adds extra requests and may significantly increase prefetch time. Continue?"),
                                                 ok_text = _("Confirm"),
-                                                ok_callback = self:safeCallback(_("Confirm"), function()
-                                                    cache.download_underlines_and_thoughts = true
-                                                    self.settings:set("cache", cache)
-                                                    self.settings:flush()
-                                                    logger.info(
-                                                        "underlines/thoughts download setting changed:",
-                                                        "enabled=", "true")
-                                                    touchmenu_instance:updateItems()
-                                                end),
+                                                ok_callback = self:safeCallback(
+                                                    _("Confirm"), function() apply(true) end),
                                                 cancel_text = _("Cancel"),
                                             })
                                         end),
@@ -534,6 +559,86 @@ function M:getSettingsMenuItems()
                         callback = self:safeCallback(_("Edge zone"), function(touchmenu_instance)
                             self:showEdgeTapRatioPicker(touchmenu_instance)
                         end),
+                    },
+                    {
+                        text = _("Thought popup settings"),
+                        sub_item_table_func = function()
+                            return {
+                                {
+                                    text_func = function()
+                                        local position = self.settings:get("thought_popup").position or "center"
+                                        return T(_("Position: %1"),
+                                            position == "center" and _("Center") or _("Bottom"))
+                                    end,
+                                    keep_menu_open = true,
+                                    callback = self:safeCallback(_("Thought popup position"), function(touchmenu_instance)
+                                        self:showThoughtPopupPositionPicker(touchmenu_instance)
+                                    end),
+                                },
+                                {
+                                    text_func = function()
+                                        local height = tonumber(self.settings:get("thought_popup").height_ratio) or 0.70
+                                        return T(_("Height: %1%"), math.floor(height * 100 + 0.5))
+                                    end,
+                                    keep_menu_open = true,
+                                    callback = self:safeCallback(_("Thought popup height"), function(touchmenu_instance)
+                                        self:showThoughtPopupHeightPicker(touchmenu_instance)
+                                    end),
+                                },
+                                {
+                                    text_func = function()
+                                        local ratio = tonumber(self.settings:get("thought_popup").width_ratio) or 0.8
+                                        return T(_("Width: %1%"), math.floor(ratio * 100 + 0.5))
+                                    end,
+                                    enabled_func = function()
+                                        return (self.settings:get("thought_popup").position or "center") == "center"
+                                    end,
+                                    keep_menu_open = true,
+                                    callback = self:safeCallback(_("Thought popup width"), function(touchmenu_instance)
+                                        self:showThoughtPopupWidthPicker(touchmenu_instance)
+                                    end),
+                                },
+                                {
+                                    text = _("Font size"),
+                                    keep_menu_open = true,
+                                    callback = self:safeCallback(_("Thought popup font size"), function()
+                                        self:showThoughtPopupFontSizePicker()
+                                    end),
+                                },
+                                {
+                                    text_func = function()
+                                        local contrast = tonumber(self.settings:get("thought_popup").contrast) or 9
+                                        if contrast == 9 then
+                                            return _("Font contrast: Pure black (default)")
+                                        end
+                                        return T(_("Font contrast: %1"),
+                                            (contrast > 0 and "+" or "") .. tostring(contrast))
+                                    end,
+                                    keep_menu_open = true,
+                                    callback = self:safeCallback(_("Thought popup font contrast"), function(touchmenu_instance)
+                                        self:showThoughtPopupContrastPicker(touchmenu_instance)
+                                    end),
+                                },
+                                {
+                                    text = _("Tap left/right to turn pages"),
+                                    checked_func = function()
+                                        return self.settings:get("thought_popup").tap_to_page == true
+                                    end,
+                                    keep_menu_open = true,
+                                    callback = self:safeCallback(_("Thought popup: tap left/right to turn pages"), function(touchmenu_instance)
+                                        local thought_popup = self.settings:get("thought_popup")
+                                        thought_popup.tap_to_page = not (thought_popup.tap_to_page == true)
+                                        self.settings:set("thought_popup", thought_popup)
+                                        self.settings:flush()
+                                        logger.info("thought popup tap_to_page changed:",
+                                            "enabled=", tostring(thought_popup.tap_to_page))
+                                        if touchmenu_instance then
+                                            touchmenu_instance:updateItems()
+                                        end
+                                    end),
+                                },
+                            }
+                        end,
                     },
                 }
             end,
@@ -711,6 +816,218 @@ function M:getUpdateMenuItems()
             end),
     })
     return items
+end
+
+-- Let the user set the thought popup height as a percentage of the screen.
+function M:showThoughtPopupHeightPicker(touchmenu_instance)
+    local SpinWidget = require("ui/widget/spinwidget")
+    local current = math.floor((tonumber(self.settings:get("thought_popup").height_ratio) or 0.70) * 100)
+    local spin = SpinWidget:new{
+        value = current,
+        value_min = 20,
+        value_max = 90,
+        value_step = 5,
+        precision = "%d%%",
+        ok_text = _("Set height"),
+        title_text = _("Thought popup height"),
+        info_text = _("Set the thought popup height as a percentage of the screen height (20%-90%)."),
+        callback = function(spin_widget)
+            local thought_popup = self.settings:get("thought_popup")
+            thought_popup.height_ratio = spin_widget.value / 100
+            self.settings:set("thought_popup", thought_popup)
+            self.settings:flush()
+            logger.info("thought popup height changed:",
+                "ratio=", tostring(thought_popup.height_ratio))
+            if touchmenu_instance then
+                touchmenu_instance:updateItems()
+            end
+        end,
+    }
+    UIManager:show(spin)
+end
+
+-- Set the thought popup font size: a fixed absolute size or a size relative
+-- to the document font. Mirrors KOReader's footnote popup font size setting
+-- (frontend/apps/reader/modules/readerlink.lua).
+function M:showThoughtPopupFontSizePicker()
+    local Screen = require("device").screen
+    local thought_popup = self.settings:get("thought_popup")
+    local spin_widget
+    local get_font_size_widget
+    get_font_size_widget = function(show_absolute_font_size_widget)
+        local SpinWidget = require("ui/widget/spinwidget")
+        if show_absolute_font_size_widget then
+            spin_widget = SpinWidget:new{
+                width = math.floor(Screen:getWidth() * 0.75),
+                value = tonumber(thought_popup.font_size)
+                        or Screen:scaleBySize((self.ui
+                            and self.ui.document
+                            and self.ui.document.configurable
+                            and self.ui.document.configurable.font_size) or 18),
+                value_min = 12,
+                value_max = 255,
+                precision = "%d",
+                ok_text = _("Set font size"),
+                title_text = _("Thought popup font size"),
+                info_text = _([[
+The thought popup font adjusts to the font size you've set for the document, but you can specify here a fixed absolute font size to be used instead.]]),
+                callback = function(spin)
+                    local tp = self.settings:get("thought_popup")
+                    tp.font_size = spin.value
+                    tp.font_size_relative = nil
+                    self.settings:set("thought_popup", tp)
+                    self.settings:flush()
+                    logger.info("thought popup font size changed:", "absolute=", spin.value)
+                end,
+                extra_text = _("Set a relative font size instead"),
+                extra_callback = function()
+                    UIManager:close(spin_widget)
+                    spin_widget = get_font_size_widget(false)
+                    UIManager:show(spin_widget)
+                end,
+            }
+        else
+            spin_widget = SpinWidget:new{
+                width = math.floor(Screen:getWidth() * 0.75),
+                value = tonumber(thought_popup.font_size_relative) or 0,
+                value_min = -10,
+                value_max = 5,
+                precision = "%+d",
+                ok_text = _("Set font size"),
+                title_text = _("Thought popup font size"),
+                info_text = _([[
+The thought popup font adjusts to the font size you've set for the document.
+You can specify here how much smaller or larger it should be relative to the document font size.
+A negative value will make it smaller, while a positive one will make it larger.
+The default value is 0, which matches the document font size.]]),
+                callback = function(spin)
+                    local tp = self.settings:get("thought_popup")
+                    tp.font_size_relative = spin.value
+                    tp.font_size = nil
+                    self.settings:set("thought_popup", tp)
+                    self.settings:flush()
+                    logger.info("thought popup font size changed:", "relative=", spin.value)
+                end,
+                extra_text = _("Set an absolute font size instead"),
+                extra_callback = function()
+                    UIManager:close(spin_widget)
+                    spin_widget = get_font_size_widget(true)
+                    UIManager:show(spin_widget)
+                end,
+            }
+        end
+        return spin_widget
+    end
+    spin_widget = get_font_size_widget(thought_popup.font_size ~= nil)
+    UIManager:show(spin_widget)
+end
+
+-- Set the thought popup text contrast: positive values darken the text,
+-- negative values lighten it (+9 = the default pure black rendering).
+function M:showThoughtPopupContrastPicker(touchmenu_instance)
+    local SpinWidget = require("ui/widget/spinwidget")
+    local current = tonumber(self.settings:get("thought_popup").contrast) or 9
+    local spin = SpinWidget:new{
+        value = current,
+        value_min = -3,
+        value_max = 9,
+        precision = "%+d",
+        ok_text = _("Set contrast"),
+        title_text = _("Thought popup font contrast"),
+        info_text = _([[
+The thought popup text is pure black by default (maximum contrast). Lower the contrast to render it in lighter gray shades.]]),
+        callback = function(spin_widget)
+            local thought_popup = self.settings:get("thought_popup")
+            thought_popup.contrast = spin_widget.value
+            self.settings:set("thought_popup", thought_popup)
+            self.settings:flush()
+            logger.info("thought popup contrast changed:",
+                "contrast=", tostring(thought_popup.contrast))
+            if touchmenu_instance then
+                touchmenu_instance:updateItems()
+            end
+        end,
+    }
+    UIManager:show(spin)
+end
+
+-- Let the user choose where the thought popup appears: bottom (the solid-line
+-- bar) or centered (the TextViewer-style window with page buttons).
+function M:showThoughtPopupPositionPicker(touchmenu_instance)
+    local current = self.settings:get("thought_popup").position or "center"
+    local buttons = {}
+    for _i, choice in ipairs({
+        { key = "bottom", label = _("Bottom") },
+        { key = "center", label = _("Center") },
+    }) do
+        local label = choice.label
+        if choice.key == current then
+            label = label .. "  ✓"
+        end
+        table.insert(buttons, {
+            {
+                text = label,
+                callback = function()
+                    UIManager:close(self._thought_popup_position_dialog)
+                    self._thought_popup_position_dialog = nil
+                    local thought_popup = self.settings:get("thought_popup")
+                    thought_popup.position = choice.key
+                    self.settings:set("thought_popup", thought_popup)
+                    self.settings:flush()
+                    logger.info("thought popup position changed:",
+                        "position=", tostring(thought_popup.position))
+                    -- Close any open popup; the next open uses the new position.
+                    ThoughtPopup.closeVisible()
+                    if touchmenu_instance then
+                        touchmenu_instance:updateItems()
+                    end
+                end,
+            },
+        })
+    end
+    table.insert(buttons, {
+        {
+            text = _("Cancel"),
+            callback = function()
+                UIManager:close(self._thought_popup_position_dialog)
+                self._thought_popup_position_dialog = nil
+            end,
+        },
+    })
+    self._thought_popup_position_dialog = ButtonDialog:new{
+        title = _("Thought popup position"),
+        buttons = buttons,
+    }
+    UIManager:show(self._thought_popup_position_dialog)
+end
+
+-- Set the centered thought popup width as a percentage of the screen width.
+-- Only meaningful when the popup position is "center".
+function M:showThoughtPopupWidthPicker(touchmenu_instance)
+    local SpinWidget = require("ui/widget/spinwidget")
+    local current = math.floor((tonumber(self.settings:get("thought_popup").width_ratio) or 0.8) * 100)
+    local spin = SpinWidget:new{
+        value = current,
+        value_min = 40,
+        value_max = 100,
+        value_step = 5,
+        precision = "%d%%",
+        ok_text = _("Set width"),
+        title_text = _("Thought popup width"),
+        info_text = _("Set the centered thought popup width as a percentage of the screen width (40%-100%)."),
+        callback = function(spin_widget)
+            local thought_popup = self.settings:get("thought_popup")
+            thought_popup.width_ratio = spin_widget.value / 100
+            self.settings:set("thought_popup", thought_popup)
+            self.settings:flush()
+            logger.info("thought popup width changed:",
+                "ratio=", tostring(thought_popup.width_ratio))
+            if touchmenu_instance then
+                touchmenu_instance:updateItems()
+            end
+        end,
+    }
+    UIManager:show(spin)
 end
 
 -- Let the user pick how wide the left/right page-turn edge zone is (percent of

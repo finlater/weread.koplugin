@@ -4,36 +4,6 @@
 
 在 KOReader 上阅读微信读书中的书籍、公众号文章的插件。支持同步进度同步，阅读时长同步和统计，查看书评、划线和想法。让Kindle、Kobo等封闭系统设备也能体验微信读书！
 
-
-## 其它项目推荐
-
-| 插件 | 简介                                                  |
-|------|-----------------------------------------------------|
-| [kindlebtcontroller.koplugin](https://github.com/finlater/kindlebtcontroller.koplugin) | 蓝牙手柄/遥控器控制 Kindle —— 翻页、调节亮度、章节跳转等 20+ 操作，按键完全可自定义。 |
-| [one.koplugin](https://github.com/finlater/one.koplugin) | 在 KOReader 上离线阅读「ONE · 一个」每日更新：一图、一文、一问答。           |
-
-## 功能
-
-| 主菜单 | 书架 | 公众号 |
-|:---:|:---:|:---:|
-| ![主菜单](screenshots/main_manu.png) | ![微信读书书架](screenshots/bookshelf.png) | ![公众号](screenshots/bookshelf_wp.png) |
-
-| 阅读时间上报 | 阅读统计 | 阅读进度同步 |
-|:---:|:---:|:---:|
-| ![阅读时间上报](screenshots/read_report.png) | ![阅读统计](screenshots/read_stats.png) | ![阅读进度同步](screenshots/read_progress.png) |
-
-| 多选章节下载 | 章节预下载 | 下载全书 |
-|:---:|:---:|:---:|
-| ![多选章节下载](screenshots/download_multi_chapter.png) | ![章节预下载](screenshots/pre_download_next_chapter.png) | ![下载全书](screenshots/download.png) |
-
-| 书籍详情 | 书评 | 划线和想法 |
-|:---:|:---:|:---:|
-| ![书籍详情](screenshots/book_detail.png) | ![书评](screenshots/book_review.png) | ![划线和想法](screenshots/thought.png) |
-
-| 搜索书籍 | 快捷菜单 | 设置 |
-|:---:|:---:|:---:|
-| ![搜索书籍](screenshots/book_search.png) | ![快捷菜单](screenshots/quick_menu.png) | ![设置](screenshots/setting.png) |
-
 ## 安装
 
 > ⚠️ 建议使用 **KOReader 2026.03 或更高版本**。旧版本可能无法正常加载或使用插件，例如「工具」菜单中找不到「微信读书」。详见 [#14](https://github.com/finlater/weread.koplugin/issues/14)。
@@ -64,6 +34,29 @@ koreader/plugins/weread.koplugin/
 4. 在 KOReader 打开 **工具 → 微信读书 → 微信扫码登录**。
 5. 使用微信扫码并在手机端确认；若手机显示四位验证码，请在 KOReader 中输入。
 
+## 功能
+
+| 主菜单 | 书架 | 公众号 |
+|:---:|:---:|:---:|
+| ![主菜单](screenshots/main_manu.png) | ![微信读书书架](screenshots/bookshelf.png) | ![公众号](screenshots/bookshelf_wp.png) |
+
+| 阅读时间上报 | 阅读统计 | 阅读进度同步 |
+|:---:|:---:|:---:|
+| ![阅读时间上报](screenshots/read_report.png) | ![阅读统计](screenshots/read_stats.png) | ![阅读进度同步](screenshots/read_progress.png) |
+
+| 多选章节下载 | 章节预下载 | 下载全书 |
+|:---:|:---:|:---:|
+| ![多选章节下载](screenshots/download_multi_chapter.png) | ![章节预下载](screenshots/pre_download_next_chapter.png) | ![下载全书](screenshots/download.png) |
+
+| 书籍详情 | 书评 | 划线和想法 |
+|:---:|:---:|:---:|
+| ![书籍详情](screenshots/book_detail.png) | ![书评](screenshots/book_review.png) | ![划线和想法](screenshots/thought.png) |
+
+| 搜索书籍 | 快捷菜单 | 设置 |
+|:---:|:---:|:---:|
+| ![搜索书籍](screenshots/book_search.png) | ![快捷菜单](screenshots/quick_menu.png) | ![设置](screenshots/setting.png) |
+
+
 ## SimpleUI / Zen_UI 集成
 
 插件提供统一的“微信读书书架”入口并支持集成到 SimpleUI和 ZenUI的快捷按钮中。(需要安装最新版 [SimpleUI](https://github.com/doctorhetfield-cmd/simpleui.koplugin) 和 [ZenUI](https://github.com/AnthonyGress/zen_ui.koplugin)插件)。
@@ -86,10 +79,11 @@ koreader/plugins/weread.koplugin/
 ├── 立即同步进度       （阅读微信读书缓存书籍时显示）
 ├── 书籍详情           （阅读微信读书缓存书籍时显示）
 ├── 显示划线和想法     （阅读书籍时显示，开关）
-├── 本地书划线和想法   （阅读非微信读书的可重排文档时显示；不修改 EPUB/KOReader 笔记）
-│   ├── 匹配微信读书书目 / 已匹配：书名
-│   ├── 同步划线与想法（同步后显示已匹配条数）
-│   └── 清除数据
+├── 划线和想法管理     （本地书与微信下载书共用；不修改 EPUB/KOReader 笔记）
+│   ├── 匹配微信读书书目 / 已关联微信书籍：书名（下载书自动关联）
+│   ├── 继续匹配（显示完成章节和划线条数）
+│   ├── 选择章节匹配
+│   └── 清理划线和想法（再次匹配时下载最新数据）
 ├── 书架               书籍 / 公众号 Tab；书架内搜索、离线缓存、手动更新
 ├── weread收藏夹        已下载书籍（不包含单章）的本地入口
 ├── 搜索               搜索微信读书
@@ -116,13 +110,22 @@ koreader/plugins/weread.koplugin/
 │   ├── 下载设置
 │   │   ├── 书籍图片（默认开启）
 │   │   ├── 公众号文章图片（默认关闭）
+│   │   ├── 隐藏脚注文本（默认关闭；开启需同时启用 KOReader 脚注弹框；仅影响新下载书籍）
 │   │   └── 章节预下载
 │   │       ├── 自动预下载下一章（默认关闭，开启时会确认网络卡顿风险）
 │   │       ├── 预下载划线和想法（默认关闭，总开关关闭时不可操作）
 │   │       └── 显示预下载提示（默认开启，总开关关闭时不可操作）
 │   ├── 划线设置
 │   │   ├── 划线边缘防误触（默认开启）
-│   │   └── 边缘区域：20%（可调 10%–40%）
+│   │   ├── 边缘区域：20%（可调 10%–40%）
+│   │   └── 想法弹窗设置
+│   │       ├── 位置：居中（可切换为 底部）
+│   │       ├── 高度：62%（可调 20%–90%）
+│   │       ├── 宽度：80%（仅居中时可用，40%–100%）
+│   │       ├── 字体大小（相对文档字号，默认 -2；可切换为绝对字号）
+│   │       ├── 字体对比度：默认（可调 -3–+9，最大为纯黑）
+│   │       └── 点击左右区域翻页（默认关闭，底部与居中弹窗均生效）
+│   │   └── 想法弹窗宽度：80%（仅居中时可用，40%–100%）
 │   ├── 账号管理
 │   │   ├── 账号状态
 │   │   ├── 立即续期 Cookie
@@ -151,3 +154,25 @@ XPointer 外部标注层仍是实验性功能，测试步骤和限制见
 `fonts/NotoEmoji-Regular.ttf` 是第三方字体，采用 [SIL Open Font License 1.1](fonts/LICENSE)，不适用本项目的 AGPL-3.0。
 
 Copyright © 2026 finlater and contributors.
+
+## 项目推荐
+
+| 插件 | 简介                                                  |
+|------|-----------------------------------------------------|
+| [kindlebtcontroller.koplugin](https://github.com/finlater/kindlebtcontroller.koplugin) | 蓝牙手柄/遥控器控制 Kindle —— 翻页、调节亮度、章节跳转等 20+ 操作，按键完全可自定义。 |
+| [one.koplugin](https://github.com/finlater/one.koplugin) | 在 KOReader 上离线阅读「ONE · 一个」每日更新：一图、一文、一问答。           |
+
+### 划线和想法同步
+
+下载只保存正文，不再选择“含划线和想法”的版本。阅读时点击“显示划线和想法”：
+微信下载书自动绑定原书，本地导入书先选择微信书目，再逐章下载、匹配并保存。
+同一本微信书的单章、选章合集和全书共用注释数据库及下载断点；只有 XPointer
+定位缓存与具体文件关联。暂停、关书、断网后可继续已保存的章节和批次。
+
+仅处理当前文件实际包含的章节。启用本书同步后，自动预下载会先保存下一章正文，
+再准备该章共享注释；打开该章后自动生成定位缓存。可在下载设置全局关闭注释预准备，
+“隐藏划线”只改变显示。快捷动作“微信读书·显示/隐藏划线和想法”沿用原绑定；
+新覆盖层采用较淡的短虚线。
+
+“继续匹配”复用缓存；需要重新获取数据时，先清理划线和想法，再重新匹配。
+旧版内嵌划线书籍在迁移完成前保留旧显示，不强制重新下载。

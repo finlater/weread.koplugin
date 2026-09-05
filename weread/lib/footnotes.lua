@@ -8,21 +8,34 @@ local logger = require("weread.lib.logger").scoped("Footnotes")
 
 local Footnotes = {}
 
-Footnotes.FOOTNOTES_CSS = [[
+local FOOTNOTE_REFERENCE_CSS = [[
 .wr-fn-ref{font-size:0.75em;vertical-align:super;line-height:0;white-space:nowrap;}
 .wr-fn-ref a{-cr-hint:noteref;position:relative;text-decoration:none;color:#0366d6;}
 .wr-fn-ref a::after{content:"";position:absolute;top:-0.5em;right:-0.3em;bottom:-0.5em;left:-0.3em;}
-/* Render each generated note at the bottom of the page that references it,
- * like KOReader's built-in "In-page EPUB footnotes" tweak (ON by default).
- * Must NOT hide the aside: the old `-cr-hint: footnote` + hidden block relied on
- * the footnote *popup* (`footnote_link_in_popup`), which is OFF by default, so
- * the text stayed invisible and tapping the marker followed the #id link to the
- * hidden aside, jumping the page. `footnote-inpage` works with default settings. */
-aside.wr-book-footnote{-cr-hint:footnote-inpage;font-size:0.85em;margin:0!important;}
 div.wr-footnotes{margin:0;padding:0;border:0;}
 div.wr-footnotes>hr{display:none;}
 .wr-fn-num{font-weight:bold;margin-right:0.3em;text-decoration:none;color:inherit;}
 ]]
+
+Footnotes.IN_PAGE_CSS = FOOTNOTE_REFERENCE_CSS .. [[
+/* Render each generated note at the bottom of the page that references it,
+ * like KOReader's built-in "In-page EPUB footnotes" tweak (ON by default). */
+aside.wr-book-footnote{-cr-hint:footnote-inpage;font-size:0.85em;margin:0!important;}
+]]
+
+Footnotes.POPUP_CSS = FOOTNOTE_REFERENCE_CSS .. [[
+/* Keep a zero-height rendered block so CREngine can extract exactly one note
+ * when KOReader's footnote-link popup option is enabled. */
+aside.wr-book-footnote{-cr-hint:footnote;display:block!important;visibility:hidden;height:0!important;max-height:0!important;overflow:hidden!important;margin:0!important;padding:0!important;border:0!important;font-size:0!important;line-height:0!important;text-indent:0!important;}
+aside.wr-book-footnote *{margin:0!important;padding:0!important;font-size:0!important;line-height:0!important;}
+]]
+
+-- Retain the historical constant as the default download behavior.
+Footnotes.FOOTNOTES_CSS = Footnotes.IN_PAGE_CSS
+
+function Footnotes.get_css(use_popup)
+    return use_popup == true and Footnotes.POPUP_CSS or Footnotes.IN_PAGE_CSS
+end
 
 local function xml_escape(value)
     return (tostring(value or "")
@@ -94,6 +107,55 @@ local function is_trivial_note(value)
         or text:match("^%(%d+%)$") ~= nil
         or text:match("^（%d+）$") ~= nil
         or is_symbol_marker(text)
+end
+
+-- Decode the UTF-8 codepoint starting at byte i; returns the codepoint (nil
+-- for a malformed sequence) and the number of bytes consumed.
+local function utf8_codepoint(text, i)
+    local b = text:byte(i)
+    if b < 0x80 then return b, 1 end
+    local cp, len
+    if b >= 0xC2 and b < 0xE0 then cp, len = b - 0xC0, 2
+    elseif b >= 0xE0 and b < 0xF0 then cp, len = b - 0xE0, 3
+    elseif b >= 0xF0 and b < 0xF5 then cp, len = b - 0xF0, 4
+    else return nil, 1 end
+    for j = 1, len - 1 do
+        local cb = text:byte(i + j)
+        if not cb or cb < 0x80 or cb > 0xBF then return nil, j end
+        cp = cp * 64 + (cb - 0x80)
+    end
+    return cp, len
+end
+
+-- Backlink glyphs (↩ ↑ ← ⤴) are pure symbols, yet an element carrying one may
+-- share the note target's id; such a capture can never be a definition.
+-- Enumerating "known" text scripts instead (the old %w + CJK lead-byte check)
+-- silently dropped notes written only in kana, hangul, Cyrillic or any other
+-- non-ASCII script, so reject a candidate only when EVERY codepoint it holds
+-- is a symbol or punctuation: arrows, dingbats and enclosed numbers
+-- (U+2000-U+2FFF), CJK punctuation (U+3000-U+303F), Latin-1 symbols
+-- (U+0080-U+00BF), variation selectors and the BOM. Any other codepoint
+-- (Latin letters, kana, hangul, CJK, emoji …) counts as note text.
+local function is_symbol_only(text)
+    local i, n = 1, #text
+    while i <= n do
+        local cp, len = utf8_codepoint(text, i)
+        if not cp then
+            i = i + (len or 1)
+        elseif cp < 128 then
+            if text:sub(i, i):match("%w") then return false end
+            i = i + 1
+        elseif (cp >= 0x80 and cp <= 0xBF)
+            or (cp >= 0x2000 and cp <= 0x2FFF)
+            or (cp >= 0x3000 and cp <= 0x303F)
+            or (cp >= 0xFE00 and cp <= 0xFE0F)
+            or cp == 0xFEFF then
+            i = i + len
+        else
+            return false
+        end
+    end
+    return true
 end
 
 local function normalize_path(value)
@@ -205,10 +267,27 @@ end
 
 local BLOCK_TAGS = { "aside", "li", "p", "div", "section", "blockquote", "dd", "td" }
 
+-- Cap on cleaned note text length in bytes (#text counts bytes, so this is
+-- ~2000 CJK chars); genuine notes are far smaller, whole-chapter captures are
+-- far larger.
+local MAX_NOTE_TEXT_BYTES = 6000
+
 local function remember_definition(definitions, anchor, inner)
-    if not anchor or anchor == "" or definitions[anchor] then return end
+    if not anchor or anchor == "" then return end
     local text = clean_note_text(inner)
-    if text ~= "" and not is_trivial_note(text) then
+    if text == "" or is_trivial_note(text) then return end
+    if is_symbol_only(text) then return end
+    -- Ancestor blocks spanning most of the chapter poison the definition;
+    -- reject oversized candidates outright instead of storing them.
+    if #text > MAX_NOTE_TEXT_BYTES then
+        logger.warn("dropping oversized note candidate:",
+            "anchor=", tostring(anchor), "bytes=", tostring(#text))
+        return
+    end
+    local current = definitions[anchor]
+    -- The true note content is the smallest region describing the anchor,
+    -- so keep whichever candidate has the shortest cleaned text.
+    if not current or #text < #current.text then
         definitions[anchor] = { text = text }
     end
 end

@@ -112,7 +112,9 @@ function DownloadDialog:reportProgress(progress)
 end
 
 function DownloadDialog:setTitle(title)
-    self.title = title or ""
+    title = title or ""
+    if self.title == title then return end
+    self.title = title
     if self.title_widget and self.title_widget.setText then
         self.title_widget:setText(self.title)
         UIManager:setDirty(self, function() return "fast", self.dimen end)

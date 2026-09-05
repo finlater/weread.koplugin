@@ -58,19 +58,32 @@ end
 
 local cache = {
     auto_prefetch_next_chapter = false,
+    book_footnotes_in_popup = false,
     download_underlines_and_thoughts = false,
+    prefetch_annotations = false,
     show_prefetch_notifications = true,
 }
 local shelf = { sort_order = "time_desc" }
 local flush_count = 0
+local thought_popup = {
+    height_ratio = 0.70,
+    font_size_relative = 0,
+    position = "center",
+    width_ratio = 0.8,
+    contrast = 9,
+}
 local available_version
+local annotations_visible = false
 local host = {
     ui = {},
+    _xpointerOverlayPrototypeAvailable = function() return true end,
+    _annotationsVisibleForCurrentDocument = function() return annotations_visible end,
     version = "test",
     settings = {
         get = function(_self, key, default)
             if key == "cache" then return cache end
             if key == "shelf" then return shelf end
+            if key == "thought_popup" then return thought_popup end
             return default
         end,
         set = function(_self, key, value)
@@ -80,6 +93,13 @@ local host = {
     },
     downloader = { cancelPrefetch = function() end },
     updater = { available_version = function() return available_version end },
+    isAnnotationPrefetchEnabled = function()
+        return cache.prefetch_annotations == true
+    end,
+    setAnnotationPrefetchEnabled = function(_self, enabled)
+        cache.prefetch_annotations = enabled == true
+        return true
+    end,
     safeCallback = function(_self, _label, callback) return callback end,
 }
 for key, value in pairs(Menu) do host[key] = value end
@@ -108,6 +128,8 @@ expect(toggle_action and toggle_action.reader == true
 expect(toggle_action
         and toggle_action.title == "WeRead · Toggle underlines and thoughts",
     "annotation visibility action has a gesture-friendly title")
+expect(registered.weread_current_page_thoughts == nil,
+    "current-page thoughts is no longer exposed as a separate shortcut action")
 local bookshelf_action = registered.weread_bookshelf
 expect(bookshelf_action and bookshelf_action.event == "ShowWeReadBookshelf",
     "bookshelf dispatcher action uses the matching event")
@@ -233,21 +255,30 @@ host.detectWeReadBook = function() return nil end
 local local_reader_items = host:getMainMenuItems()
 expect(not menu_has(local_reader_items, "Sync progress now")
         and not menu_has(local_reader_items, "Book details")
-        and menu_has(local_reader_items, "Local-book underlines and thoughts"),
+        and menu_has(local_reader_items, "Underlines and thoughts management"),
     "local document menu retained WeRead-only book actions")
 
 host.detectWeReadBook = function() return "book-1" end
 local weread_reader_items = host:getMainMenuItems()
 expect(menu_has(weread_reader_items, "Sync progress now")
         and menu_has(weread_reader_items, "Book details")
-        and not menu_has(weread_reader_items, "Local-book underlines and thoughts"),
+        and menu_has(weread_reader_items, "Underlines and thoughts management"),
     "WeRead book menu retained the local-book annotation submenu")
+local visibility_item
+for _, item in ipairs(weread_reader_items) do
+    if item.text == "Show underlines and thoughts" then visibility_item = item end
+end
+expect(visibility_item and not visibility_item.checked_func(),
+    "unmatched document does not show the visibility item as checked")
+annotations_visible = true
+expect(visibility_item and visibility_item.checked_func(),
+    "matched visible document shows the visibility item as checked")
 
 host.detectWeReadBook = function() return "mp-book" end
 local mp_reader_items = host:getMainMenuItems()
 expect(not menu_has(mp_reader_items, "Sync progress now")
         and menu_has(mp_reader_items, "Book details")
-        and not menu_has(mp_reader_items, "Local-book underlines and thoughts"),
+        and menu_has(mp_reader_items, "Underlines and thoughts management"),
     "public-account menu exposed unsupported progress or local-book actions")
 local download_settings
 local cache_management
@@ -261,18 +292,35 @@ expect(cache_items[1] and cache_items[1].keep_menu_open == true
     "cache dialogs keep the settings menu open")
 local download_items = download_settings and download_settings.sub_item_table_func()
 local prefetch
+local footnote_popup
 for _, item in ipairs(download_items or {}) do
     if item.text == "Chapter prefetch" then prefetch = item end
+    if item.text == "Hide footnote text" then footnote_popup = item end
 end
 expect(prefetch ~= nil, "download settings contain a prefetch submenu")
+expect(footnote_popup and not footnote_popup.checked_func(),
+    "book footnotes default to in-page display")
+footnote_popup.callback({
+    updateItems = function() menu_update_count = menu_update_count + 1 end,
+})
+expect(cache.book_footnotes_in_popup == false
+        and shown_widget
+        and shown_widget.text:find("Settings → Links", 1, true),
+    "enabling hidden footnotes should first explain the KOReader popup setting")
+shown_widget.ok_callback()
+expect(cache.book_footnotes_in_popup == true and footnote_popup.checked_func(),
+    "book footnotes were hidden only after confirmation")
 
 local prefetch_items = prefetch and prefetch.sub_item_table_func() or {}
-expect(#prefetch_items == 3, "prefetch submenu contains exactly three settings")
+expect(#prefetch_items == 3, "chapter prefetch contains its two related preferences")
 expect(prefetch_items[1] and prefetch_items[1].text
         == "Automatically prefetch next chapter",
     "automatic prefetch is the parent switch")
 expect(prefetch_items[2] and not prefetch_items[2].enabled_func(),
-    "annotation setting is disabled while automatic prefetch is off")
+    "annotation prefetch is disabled while automatic prefetch is off")
+expect(prefetch_items[2] and prefetch_items[2].text
+        == "Prefetch underlines and thoughts",
+    "annotation prefetch uses the short label")
 expect(prefetch_items[3] and not prefetch_items[3].enabled_func(),
     "notification setting is disabled while automatic prefetch is off")
 
@@ -288,10 +336,51 @@ shown_widget.ok_callback()
 expect(cache.auto_prefetch_next_chapter == true and menu_updates == 1,
     "automatic prefetch is enabled only after confirmation")
 
-expect(prefetch_items[2].enabled_func(),
-    "annotation setting is enabled while automatic prefetch is on")
+expect(prefetch_items[2].enabled_func() and not prefetch_items[2].checked_func(),
+    "annotation prefetch is available and defaults to off")
+prefetch_items[2].callback({
+    updateItems = function() menu_updates = menu_updates + 1 end,
+})
+expect(shown_widget.text:find("adds extra requests", 1, true),
+    "enabling annotation prefetch explains the extra work")
+shown_widget.ok_callback()
+expect(cache.prefetch_annotations == true and menu_updates == 2,
+    "annotation prefetch is enabled and refreshes the menu")
 expect(prefetch_items[3].enabled_func(),
     "notification setting is enabled while automatic prefetch is on")
+
+local underline_settings
+for _, item in ipairs(settings_items) do
+    if item.text == "Underline settings" then underline_settings = item end
+end
+local underline_items = underline_settings and underline_settings.sub_item_table_func() or {}
+expect(#underline_items == 3,
+    "underline settings contain edge taps, edge zone, and the popup settings submenu")
+local popup_settings_item = underline_items[3]
+expect(popup_settings_item and popup_settings_item.text == "Thought popup settings",
+    "thought popup settings is a nested submenu")
+local popup_items = popup_settings_item and popup_settings_item.sub_item_table_func() or {}
+expect(#popup_items == 6,
+    "thought popup settings contain height, font size, contrast, position, width, and tap paging")
+expect(popup_items[1] and type(popup_items[1].text_func) == "function"
+        and popup_items[1].text_func() == "Position: %1",
+    "thought popup position entry is first")
+expect(popup_items[2] and type(popup_items[2].text_func) == "function"
+        and popup_items[2].text_func() == "Height: %1%",
+    "thought popup height entry shows the current percentage")
+expect(popup_items[3] and type(popup_items[3].text_func) == "function"
+        and popup_items[3].text_func() == "Width: %1%",
+    "thought popup width entry shows the current percentage")
+expect(popup_items[3] and popup_items[3].enabled_func(),
+    "thought popup width is enabled for the default centered position")
+expect(popup_items[4] and popup_items[4].text == "Font size",
+    "thought popup font size entry is present")
+expect(popup_items[5] and popup_items[5].text_func()
+        == "Font contrast: Pure black (default)",
+    "thought popup font contrast entry shows the pure-black default")
+expect(popup_items[6] and popup_items[6].text == "Tap left/right to turn pages"
+        and not popup_items[6].checked_func(),
+    "tap-to-page entry is present and off by default")
 
 print(string.format(
     "menu_prefetch_spec: %d checks, %d failure(s)", checks, failures))

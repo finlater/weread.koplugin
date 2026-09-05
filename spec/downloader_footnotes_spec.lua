@@ -83,6 +83,11 @@ local client = setmetatable({}, {
 })
 local downloader = Downloader:new{
     client = client,
+    settings = {
+        get = function()
+            return { book_footnotes_in_popup = true }
+        end,
+    },
     show_transient = function() end,
 }
 local dl = {
@@ -124,5 +129,9 @@ expect(dl.bodies["1"]:find("下载器跨章脚注", 1, true),
     "downloader did not embed a cross-chapter note")
 local _, css_count = dl.state.css:gsub("%.wr%-fn%-ref%{", "")
 expect(css_count == 1, "footnote CSS was not merged exactly once")
+expect(dl.state.css:find(
+        "aside.wr%-book%-footnote{%-cr%-hint:footnote;", 1) ~= nil
+        and dl.state.css:find("visibility:hidden", 1, true) ~= nil,
+    "popup preference did not select the previous footnote CSS")
 
 print(("downloader_footnotes_spec: %d checks"):format(checks))

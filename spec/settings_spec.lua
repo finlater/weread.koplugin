@@ -91,6 +91,15 @@ expect(settings:get("update").prefer_proxy == true,
     "update proxy should be preferred by default")
 expect(settings:get("shelf").paginated == true,
     "bookshelf pagination should be enabled by default")
+local thought_popup = settings:get("thought_popup")
+expect(thought_popup.height_ratio == 0.70
+    and thought_popup.font_size_relative == 0
+    and thought_popup.font_size == nil
+    and thought_popup.position == "center"
+    and thought_popup.width_ratio == 0.8
+    and thought_popup.contrast == 9
+    and thought_popup.tap_to_page == false,
+    "thought popup preferences should use the defaults")
 expect(settings:get("shelf").view_mode == "list",
     "bookshelf should default to the low-overhead list view")
 expect(created_dirs[1] == "/data/weread"
@@ -106,6 +115,9 @@ expect(values.books["42"].cache_dir == "/cache/42",
 expect(values.config_loaded == nil, "legacy setting was not removed")
 expect(values.cache.download_book_images == false
     and values.cache.download_mp_images == false
+    and values.cache.book_footnotes_in_popup == false
+    and values.cache.download_underlines_and_thoughts == false
+    and values.cache.prefetch_annotations == false
     and values.cache.auto_prefetch_next_chapter == false
     and values.cache.show_prefetch_notifications == true
     and values.cache.show_annotations == true

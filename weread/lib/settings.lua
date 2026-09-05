@@ -31,7 +31,9 @@ local defaults = {
     cache = {
         download_book_images = true,
         download_mp_images = false,
+        book_footnotes_in_popup = false,
         download_underlines_and_thoughts = false,
+        prefetch_annotations = false,
         auto_prefetch_next_chapter = false,
         show_prefetch_notifications = true,
         show_annotations = true,
@@ -49,6 +51,28 @@ local defaults = {
         book_title = "",
         interval_seconds = 30,
         report_on_open = true,
+    },
+    thought_popup = {
+        -- Thought popup height as a fraction of the screen height.
+        height_ratio = 0.70,
+        -- Popup font size relative to the document font size; used while
+        -- font_size is unset. Zero follows the document font size exactly.
+        font_size_relative = 0,
+        -- Fixed absolute popup font size (unscaled px); when set it takes
+        -- precedence over font_size_relative.
+        font_size = nil,
+        -- Popup position: "center" (TextViewer-style centered window with
+        -- page buttons, default) or "bottom" (solid-line bottom bar).
+        position = "center",
+        -- Centered popup width as a fraction of the screen width (only used
+        -- when position is "center").
+        width_ratio = 0.8,
+        -- Text contrast delta for the popup blocks: +9 (the default) renders
+        -- every text block in pure black; lower values progressively lighten it.
+        contrast = 9,
+        -- Tap the left/right half of the popup to turn pages (bottom and
+        -- centered positions; off by default).
+        tap_to_page = false,
     },
     advanced = {
         developer_logs = false,
@@ -120,8 +144,18 @@ function Settings:new()
         cache.download_mp_images = false
         cache_changed = true
     end
+    if cache.book_footnotes_in_popup == nil then
+        cache.book_footnotes_in_popup = false
+        cache_changed = true
+    end
     if cache.download_underlines_and_thoughts == nil then
         cache.download_underlines_and_thoughts = false
+        cache_changed = true
+    end
+    if cache.prefetch_annotations == nil then
+        -- Annotation prefetch now stores reusable source data instead of
+        -- embedding marks in downloaded EPUBs, so it starts as a new opt-in.
+        cache.prefetch_annotations = false
         cache_changed = true
     end
     if cache.auto_prefetch_next_chapter == nil then

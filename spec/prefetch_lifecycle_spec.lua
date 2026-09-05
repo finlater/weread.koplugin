@@ -108,8 +108,8 @@ host.detectWeReadBook = function() return nil end
 expect(host:maybePrefetchNextChapter("book"), "prefetch request accepted")
 expect(#starts == 1 and starts[1].chapters[1] == chapters[2],
     "only the immediate next chapter is selected")
-expect(starts[1].options.include_annotations == true,
-    "background annotation preference is forwarded")
+expect(starts[1].options.include_annotations == false,
+    "prefetch creates clean text regardless of the legacy annotation preference")
 expect(starts[1].options.start_delay == 0.7,
     "visible start notice gets time to close before network work")
 

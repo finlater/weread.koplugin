@@ -25,7 +25,7 @@ local _ = PluginUtil.tr
 local WeReadPlugin = WidgetContainer:extend{
     name = "weread",
     is_doc_only = false,
-    version = "1.2.0",
+    version = "1.3.1",
 }
 
 -- Stable entry point used by third-party launchers such as SimpleUI and ZenUI.
@@ -162,8 +162,9 @@ function WeReadPlugin:init()
         get_file_context = function(book, path)
             return self:getChapterInfoFromFile(book, path)
         end,
-        run_online = function(_kind, callback)
-            return self:runOnlineTask(_("Sync progress"), callback)
+        run_online = function(_kind, callback, run_options)
+            return self:runOnlineTask(
+                _("Sync progress"), callback, nil, run_options)
         end,
         upload_position = function(book_id, position, elapsed_seconds)
             return self.read_report:upload_position(
@@ -222,6 +223,7 @@ Mixin.apply(WeReadPlugin, {
     (require("weread.ui.library")),
     (require("weread.ui.annotations_controller")),
     (require("weread.ui.xpointer_overlay_controller")),
+    (require("weread.ui.annotation_sync_controller")),
     (require("weread.ui.reader_navigation")),
     (require("weread.lib.reader_lifecycle")),
 })

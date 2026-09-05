@@ -61,7 +61,7 @@ package.preload["ffi/archiver"] = function()
     end
     function Writer:addFileFromMemory(name, data)
         archive_calls[#archive_calls + 1] = {
-            kind = "memory", name = name, bytes = #data,
+            kind = "memory", name = name, bytes = #data, data = data,
         }
         return true
     end
@@ -193,7 +193,12 @@ local settings = {
     cache_dir = root,
     get = function(_self, _key, default) return default end,
 }
-local book = { book_id = "book", title = "Disk Assets", cache_dir = root }
+local book = {
+    book_id = "book",
+    title = "Disk Assets",
+    intro = "简介 & <精彩> \"引号\"\n第二行\0\1",
+    cache_dir = root,
+}
 local output = Content.save_book_epub(settings, book,
     { { chapterUid = 7, title = "Chapter" } },
     { ["7"] = "<p>body</p>" }, "book", assets, "body{}")
@@ -212,6 +217,19 @@ expect(used_path and path_calls == 1,
     "EPUB writer did not stream the staged image directory with one addPath")
 expect(io.open(output .. ".part", "rb") == nil,
     "successful EPUB build left a partial archive")
+local opf
+for _, call in ipairs(archive_calls) do
+    if call.kind == "memory" and call.name == "OEBPS/content.opf" then
+        opf = call.data
+    end
+end
+expect(opf ~= nil, "full-book EPUB did not contain an OPF package document")
+expect(opf:find(
+    '<dc:description>简介 &amp; &lt;精彩&gt; &quot;引号&quot;\n第二行</dc:description>',
+    1, true) ~= nil,
+    "book introduction was not safely embedded as dc:description")
+expect(opf:find("\0", 1, true) == nil and opf:find("\1", 1, true) == nil,
+    "XML-illegal control characters remained in the OPF metadata")
 
 local old = assert(io.open(output, "wb"))
 old:write("known-good-old-epub")
