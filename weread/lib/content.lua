@@ -838,6 +838,8 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
 <dc:publisher>WeRead</dc:publisher>
 <dc:source>]] .. xml_escape(WeRead.reader_url(book_id)) .. [[</dc:source>
 <dc:language>zh-CN</dc:language>
+<dc:subject>weread</dc:subject>
+<meta name="keywords" content="weread"/>
 <meta property="dcterms:modified">]] .. utc_modified() .. [[</meta>]] .. cover_meta .. [[
 </metadata>
 <manifest>
@@ -2138,6 +2140,161 @@ function Content.fetch_mp_article_html(client, settings, book, article, opts)
         body = Content.strip_mp_images(body)
     end
     return Content.save_mp_article_html(settings, book, article, body)
+end
+
+-- Keyword used by ZenOS / SimpleUI / Bookshelf as a native tag/genre source.
+Content.WEREAD_TAG = "weread"
+
+local function trim_keyword(value)
+    return tostring(value or ""):match("^%s*(.-)%s*$") or ""
+end
+
+function Content.merge_weread_keywords(existing, tag)
+    tag = tag or Content.WEREAD_TAG
+    local seen = {}
+    local out = {}
+    local function add(part)
+        part = trim_keyword(part)
+        if part == "" or seen[part] then return end
+        seen[part] = true
+        out[#out + 1] = part
+    end
+    if type(existing) == "string" and existing ~= "" then
+        local normalized = existing:gsub(",", "\n")
+        for part in normalized:gmatch("[^\n]+") do
+            add(part)
+        end
+    end
+    add(tag)
+    return table.concat(out, "\n")
+end
+
+local function has_weread_tag(keywords)
+    if type(keywords) ~= "string" then
+        return false
+    end
+    for part in keywords:gsub(",", "\n"):gmatch("[^\n]+") do
+        if trim_keyword(part) == Content.WEREAD_TAG then
+            return true
+        end
+    end
+    return false
+end
+
+local function file_exists(path)
+    local ok_lfs, lfs = pcall(require, "libs/libkoreader-lfs")
+    if ok_lfs and lfs and lfs.attributes then
+        return lfs.attributes(path, "mode") == "file"
+    end
+    local file = io.open(path, "rb")
+    if not file then
+        return false
+    end
+    file:close()
+    return true
+end
+
+-- Test seam: inject sidecar/CoverBrowser fakes without KOReader.
+local function apply_weread_tag_with_hooks(path, hooks)
+    if hooks.file_exists and not hooks.file_exists(path) then
+        return false
+    end
+    local existing = hooks.read_keywords and hooks.read_keywords(path)
+    if has_weread_tag(existing) then
+        return true
+    end
+    local merged = Content.merge_weread_keywords(existing)
+    if hooks.write_keywords then
+        hooks.write_keywords(path, merged)
+    end
+    local current
+    if hooks.get_bookinfo_keywords then
+        current = hooks.get_bookinfo_keywords(path)
+    end
+    if current == nil and hooks.extract_bookinfo then
+        hooks.extract_bookinfo(path)
+    end
+    if hooks.set_bookinfo_keywords then
+        hooks.set_bookinfo_keywords(path, merged)
+    end
+    return true
+end
+
+-- Device path: prefer CoverBrowser extraction of EPUB dc:subject (CRE stores
+-- it as keywords). Fall back to Book Information custom keywords for older
+-- files that were packaged without the subject.
+local function apply_weread_tag_native(path)
+    if not file_exists(path) then
+        return false
+    end
+    local BookInfoManager = require("bookinfomanager")
+    local function tagged_in_bookinfo()
+        local info = BookInfoManager:getBookInfo(path)
+        return info ~= nil and has_weread_tag(info.keywords), info ~= nil
+    end
+    local tagged, has_row = tagged_in_bookinfo()
+    if tagged then
+        return true
+    end
+    if not has_row then
+        BookInfoManager:extractBookInfo(path)
+        tagged = tagged_in_bookinfo()
+        if tagged then
+            return true
+        end
+    end
+    local BookInfo = require("apps/filemanager/filemanagerbookinfo")
+    if has_weread_tag(BookInfo.getCustomProp("keywords", path)) then
+        require("ui/uimanager"):broadcastEvent(
+            require("ui/event"):new("InvalidateMetadataCache", path))
+        BookInfoManager:extractBookInfo(path)
+        return true
+    end
+    local host = setmetatable({
+        ui = {},
+        is_current_doc = false,
+        updateBookInfo = function() end,
+    }, { __index = BookInfo })
+    local props = host:getDocProps(path, nil, true) or {}
+    if has_weread_tag(props.keywords) then
+        return true
+    end
+    host:setCustomMetadata(path, props, "keywords",
+        Content.merge_weread_keywords(props.keywords))
+    require("ui/uimanager"):broadcastEvent(
+        require("ui/event"):new("InvalidateMetadataCache", path))
+    BookInfoManager:extractBookInfo(path)
+    return true
+end
+
+function Content.apply_weread_tag(path, hooks)
+    if type(path) ~= "string" or path == "" then
+        return false
+    end
+    if type(hooks) == "table" then
+        return apply_weread_tag_with_hooks(path, hooks)
+    end
+    local ok, tagged = pcall(apply_weread_tag_native, path)
+    return ok and tagged == true
+end
+
+function Content.backfill_weread_tags(hooks)
+    local tagged = 0
+    pcall(function()
+        local ReadCollection = require("readcollection")
+        if not ReadCollection.coll then
+            ReadCollection:_read()
+        end
+        local coll = ReadCollection.coll and ReadCollection.coll["weread"]
+        if type(coll) ~= "table" then return end
+        for file, item in pairs(coll) do
+            local path = type(item) == "table" and item.file or file
+            if Content.apply_weread_tag(path, hooks) then
+                tagged = tagged + 1
+            end
+        end
+    end)
+    return tagged
 end
 
 return Content
