@@ -49,7 +49,9 @@ local ThoughtPopupWidget = InputContainer:extend{
     height_ratio = 0.70,
     contrast = 9,
     tap_to_page = false,
+    comment_tap_open = false,
     close_callback = nil,
+    on_view_comments = nil,
     dialog = nil,
 
     _pages = nil,
@@ -123,8 +125,10 @@ function ThoughtPopupWidget:_reopen(opts)
     if opts.height_ratio then self.height_ratio = opts.height_ratio end
     if opts.contrast ~= nil then self.contrast = opts.contrast end
     if opts.tap_to_page ~= nil then self.tap_to_page = opts.tap_to_page end
+    if opts.comment_tap_open ~= nil then self.comment_tap_open = opts.comment_tap_open end
     if opts.dialog then self.dialog = opts.dialog end
     self.close_callback = opts.close_callback
+    self.on_view_comments = opts.on_view_comments
     self.height_ratio = math.max(0.1, math.min(0.9, self.height_ratio or 0.70))
     self.height = math.floor(Screen:getHeight() * self.height_ratio)
 
@@ -162,6 +166,9 @@ function ThoughtPopupWidget:_buildLayout()
         text_w = text_w,
         dialog = self,
         tap_to_page = self.tap_to_page,
+        on_tap_center = self.comment_tap_open and function(ges)
+            return self:_openCommentsAtGes(ges)
+        end or nil,
         boundaries = self._pages.boundaries,
         page_bb_getter = function(page_idx)
             local pages = self._scroll_container and self._scroll_container.pages
@@ -264,29 +271,58 @@ function ThoughtPopupWidget:_findItemAtContentY(y)
     return nil
 end
 
+--- Middle-zone tap: open the comments of the thought under the tap position.
+function ThoughtPopupWidget:_openCommentsAtGes(ges)
+    local scroll = self._scroll_container
+    if not (scroll and scroll.dimen) then
+        return false
+    end
+    local content_y = (ges.pos.y - scroll.dimen.y) + (scroll.scroll_offset or 0)
+    local item = self:_findItemAtContentY(content_y)
+    if item and type(item.review_id) == "string" and item.review_id ~= ""
+        and self.on_view_comments then
+        self.on_view_comments(item)
+    end
+    return true
+end
+
 function ThoughtPopupWidget:_showThoughtActionMenu(item)
     local popup = self
     local action_dialog
-    action_dialog = ButtonDialog:new{
-        buttons = {
+    local rows = {
+        {
             {
-                {
-                    text = _("Copy"),
-                    callback = function()
-                        UIManager:close(action_dialog)
-                        popup:_copyThoughtContent(item)
-                    end,
-                },
-                {
-                    text = _("Generate QR code"),
-                    callback = function()
-                        UIManager:close(action_dialog)
-                        popup:_generateQRCode(item)
-                    end,
-                },
+                text = _("Copy"),
+                callback = function()
+                    UIManager:close(action_dialog)
+                    popup:_copyThoughtContent(item)
+                end,
+            },
+            {
+                text = _("Generate QR code"),
+                callback = function()
+                    UIManager:close(action_dialog)
+                    popup:_generateQRCode(item)
+                end,
             },
         },
     }
+    -- Comments live on the WeRead server and need the thought's reviewId;
+    -- rows written before that field was stored get no comment entry.
+    if type(item) == "table" and type(item.review_id) == "string" and item.review_id ~= "" then
+        rows[#rows + 1] = {
+            {
+                text = _("View comments"),
+                callback = function()
+                    UIManager:close(action_dialog)
+                    if popup.on_view_comments then
+                        popup.on_view_comments(item)
+                    end
+                end,
+            },
+        }
+    end
+    action_dialog = ButtonDialog:new{ buttons = rows }
     UIManager:show(action_dialog)
 end
 

@@ -54,7 +54,9 @@ local CenterThoughtPopupWidget = InputContainer:extend{
     width_ratio = 0.8,
     contrast = 9,
     tap_to_page = true,
+    comment_tap_open = false,
     close_callback = nil,
+    on_view_comments = nil,
     dialog = nil,
     page_index = 1,
 
@@ -138,8 +140,10 @@ function CenterThoughtPopupWidget:_reopen(opts)
     if opts.width_ratio then self.width_ratio = opts.width_ratio end
     if opts.contrast ~= nil then self.contrast = opts.contrast end
     if opts.tap_to_page ~= nil then self.tap_to_page = opts.tap_to_page end
+    if opts.comment_tap_open ~= nil then self.comment_tap_open = opts.comment_tap_open end
     if opts.dialog then self.dialog = opts.dialog end
     self.close_callback = opts.close_callback
+    self.on_view_comments = opts.on_view_comments
     self.height_ratio = math.max(0.1, math.min(0.9, self.height_ratio or 0.70))
     self.width_ratio = math.max(0.4, math.min(1.0, self.width_ratio or 0.8))
     self.width = math.floor(Screen:getWidth() * self.width_ratio)
@@ -329,16 +333,46 @@ function CenterThoughtPopupWidget:onTapClose(_, ges)
         UIManager:close(self)
         return true
     end
-    -- Optional tap-to-page: left/right half of the window flips pages.
+    -- Optional tap-to-page: left/right zone flips pages; with comment_tap_open
+    -- the window splits into thirds and the middle zone opens the comments of
+    -- the thought under the tap (a tap that misses any thought does nothing).
     if self.tap_to_page then
         local dimen = self.container.dimen
-        if BD.flipIfMirroredUILayout(ges.pos.x < dimen.x + dimen.w / 2) then
+        local rel = (ges.pos.x - dimen.x) / math.max(1, dimen.w)
+        if self.comment_tap_open then
+            local visual_left = BD.flipIfMirroredUILayout(rel < 1 / 3)
+            local visual_right = BD.flipIfMirroredUILayout(rel >= 2 / 3)
+            if visual_left then
+                self:changePage(-1)
+            elseif visual_right then
+                self:changePage(1)
+            else
+                self:_openCommentsAtGes(ges)
+            end
+        elseif BD.flipIfMirroredUILayout(ges.pos.x < dimen.x + dimen.w / 2) then
             self:changePage(-1)
         else
             self:changePage(1)
         end
     end
     return true
+end
+
+--- Middle-zone tap: open the comments of the thought under the tap position.
+function CenterThoughtPopupWidget:_openCommentsAtGes(ges)
+    local viewport = self._viewport
+    if not (viewport and viewport.dimen) then
+        return
+    end
+    if not ges.pos:intersectWith(viewport.dimen) then
+        return
+    end
+    local content_y = (ges.pos.y - viewport.dimen.y) + (self._page_starts[self.page_index] or 0)
+    local item = self:_findItemAtContentY(content_y)
+    if item and type(item.review_id) == "string" and item.review_id ~= ""
+        and self.on_view_comments then
+        self.on_view_comments(item)
+    end
 end
 
 function CenterThoughtPopupWidget:onSwipe(_, ges)
@@ -406,26 +440,40 @@ end
 function CenterThoughtPopupWidget:_showThoughtActionMenu(item)
     local popup = self
     local action_dialog
-    action_dialog = ButtonDialog:new{
-        buttons = {
+    local rows = {
+        {
             {
-                {
-                    text = _("Copy"),
-                    callback = function()
-                        UIManager:close(action_dialog)
-                        popup:_copyThoughtContent(item)
-                    end,
-                },
-                {
-                    text = _("Generate QR code"),
-                    callback = function()
-                        UIManager:close(action_dialog)
-                        popup:_generateQRCode(item)
-                    end,
-                },
+                text = _("Copy"),
+                callback = function()
+                    UIManager:close(action_dialog)
+                    popup:_copyThoughtContent(item)
+                end,
+            },
+            {
+                text = _("Generate QR code"),
+                callback = function()
+                    UIManager:close(action_dialog)
+                    popup:_generateQRCode(item)
+                end,
             },
         },
     }
+    -- Comments live on the WeRead server and need the thought's reviewId;
+    -- rows written before that field was stored get no comment entry.
+    if type(item) == "table" and type(item.review_id) == "string" and item.review_id ~= "" then
+        rows[#rows + 1] = {
+            {
+                text = _("View comments"),
+                callback = function()
+                    UIManager:close(action_dialog)
+                    if popup.on_view_comments then
+                        popup.on_view_comments(item)
+                    end
+                end,
+            },
+        }
+    end
+    action_dialog = ButtonDialog:new{ buttons = rows }
     UIManager:show(action_dialog)
 end
 

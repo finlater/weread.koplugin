@@ -87,8 +87,10 @@ function M.show(opts)
         width_ratio = opts.width_ratio,
         contrast = opts.contrast,
         tap_to_page = opts.tap_to_page,
+        comment_tap_open = opts.comment_tap_open,
         dialog = opts.dialog,
         close_callback = opts.close_callback,
+        on_view_comments = opts.on_view_comments,
     }
     _pool[position] = popup
     UIManager:show(popup)

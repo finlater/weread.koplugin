@@ -41,6 +41,11 @@ local ScrollContainer = InputContainer:extend{
     -- When false, taps on the left/right half of the viewport do not turn
     -- pages (gestures fall through to the outer widget instead).
     tap_to_page = false,
+
+    -- Installed by the popup when comment_tap_open is on: the tap zones
+    -- switch from halves to thirds and a middle-zone tap is handed to this
+    -- handler (ges) instead of turning a page.
+    on_tap_center = nil,
     -- Page-break boundary table: { {top, bottom, keep_next?} } in y order.
     -- Page steps land only on boundaries so a line is never split across pages.
     boundaries = nil,
@@ -202,12 +207,27 @@ function ScrollContainer:onScrollText(arg, ges)
     return false
 end
 
---- Tap left half to page up, right half to page down (mirrored UI flips).
+--- Without on_tap_center: tap left half to page up, right half to page down
+--- (mirrored UI flips). With on_tap_center: thirds, and a middle-zone tap is
+--- handed to the handler instead of turning a page.
 function ScrollContainer:onTapScrollText(arg, ges)
-    if BD.flipIfMirroredUILayout(ges.pos.x < Screen:getWidth() / 2) then
+    if not self.on_tap_center then
+        if BD.flipIfMirroredUILayout(ges.pos.x < Screen:getWidth() / 2) then
+            self:scrollToPage(-1)
+        else
+            self:scrollToPage(1)
+        end
+        return true
+    end
+    local left = self.dimen and self.dimen.x or 0
+    local width = math.max(1, (self.dimen and self.dimen.w) or Screen:getWidth())
+    local rel = (ges.pos.x - left) / width
+    if BD.flipIfMirroredUILayout(rel < 1 / 3) then
         self:scrollToPage(-1)
-    else
+    elseif BD.flipIfMirroredUILayout(rel >= 2 / 3) then
         self:scrollToPage(1)
+    else
+        self.on_tap_center(ges)
     end
     return true
 end

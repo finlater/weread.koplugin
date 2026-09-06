@@ -371,8 +371,8 @@ local popup_settings_item = underline_items[3]
 expect(popup_settings_item and popup_settings_item.text == "Thought popup settings",
     "thought popup settings is a nested submenu")
 local popup_items = popup_settings_item and popup_settings_item.sub_item_table_func() or {}
-expect(#popup_items == 6,
-    "thought popup settings contain height, font size, contrast, position, width, and tap paging")
+expect(#popup_items == 7,
+    "thought popup settings contain height, font size, contrast, position, width, tap paging, and middle-tap comments")
 expect(popup_items[1] and type(popup_items[1].text_func) == "function"
         and popup_items[1].text_func() == "Position: %1",
     "thought popup position entry is first")
@@ -392,6 +392,10 @@ expect(popup_items[5] and popup_items[5].text_func()
 expect(popup_items[6] and popup_items[6].text == "Tap left/right to turn pages"
         and not popup_items[6].checked_func(),
     "tap-to-page entry is present and off by default")
+expect(popup_items[7] and popup_items[7].text == "Tap middle to open comments"
+        and not popup_items[7].checked_func()
+        and popup_items[7].enabled_func and not popup_items[7].enabled_func(),
+    "middle-tap comments entry is present, off by default, and gated on tap-to-page")
 
 print(string.format(
     "menu_prefetch_spec: %d checks, %d failure(s)", checks, failures))

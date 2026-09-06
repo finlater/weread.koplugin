@@ -3,6 +3,7 @@ local Annotations = require("weread.lib.annotations")
 local Content = require("weread.lib.content")
 local Event = require("ui/event")
 local logger = require("weread.lib.logger")
+local ReviewComments = require("weread.lib.review_comments")
 local ThoughtDB = require("weread.lib.thought_db")
 local ThoughtPopup = require("weread.ui.thought_popup")
 local ThoughtPopupConfig = require("weread.ui.thought_popup.popup_config")
@@ -11,6 +12,9 @@ local UIManager = require("ui/uimanager")
 
 local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
+local T = PluginUtil.T
+local log_error = PluginUtil.log_error
+local display_error = PluginUtil.display_error
 local thought_perf = PluginUtil.thought_perf
 
 local M = {}
@@ -332,6 +336,9 @@ function M:_showThoughtPopup(pages, link, session_gen, tap_started)
                     UIManager:setDirty(self.dialog, "ui")
                 end
             end,
+            on_view_comments = function(item)
+                self:_viewThoughtComments(item)
+            end,
         }))
     end)
     thought_perf("popup_show", popup_started, "ok=", tostring(ok),
@@ -349,6 +356,59 @@ function M:_showThoughtPopup(pages, link, session_gen, tap_started)
     if tap_started then
         thought_perf("tap_to_popup_return", tap_started, "pages=", tostring(#pages))
     end
+end
+
+-- Fetch and show the comments of one thought (Issue #104). Thoughts stored
+-- before review_id was persisted carry no id; the action stays hidden for
+-- them until the next thought sync rewrites the rows.
+function M:_viewThoughtComments(item)
+    local review_id = type(item) == "table" and item.review_id or nil
+    if type(review_id) ~= "string" or review_id == "" then
+        return
+    end
+
+    self:showBusy(_("Loading comments..."))
+    self:runOnlineTask(_("Comments"), function()
+        local api_ok, data, err = self.client:get_review_comments(review_id, 50)
+        self:closeBusy()
+        if not api_ok then
+            logger.warn("load review comments failed:", log_error(err))
+            self:showInfo(T(_("%1 failed:\n%2"), _("Comments"), display_error(err)))
+            return
+        end
+
+        local result = ReviewComments.normalize(data)
+        if result.err_code ~= nil then
+            self:showInfo(T(_("%1 failed:\n%2"), _("Comments"),
+                "errCode " .. tostring(result.err_code)))
+            return
+        end
+        if #result.comments == 0 then
+            self:showInfo(_("No comments on this thought yet."))
+            return
+        end
+        self:_showReviewComments(result)
+    end)
+end
+
+function M:_showReviewComments(result)
+    local blocks = {}
+    for _i, comment in ipairs(result.comments) do
+        local author = comment.author ~= "" and comment.author or _("Anonymous")
+        local header = author
+        if (comment.likes_count or 0) > 0 then
+            header = header .. " · ♥ " .. tostring(comment.likes_count)
+        end
+        blocks[#blocks + 1] = header .. "\n" .. comment.content
+    end
+
+    local TextViewer = require("ui/widget/textviewer")
+    UIManager:show(TextViewer:new{
+        title = T(_("Comments (%1)"), tostring(result.total_count)),
+        text = table.concat(blocks, "\n\n————————\n\n"),
+        text_type = "general",
+        auto_para_direction = true,
+    })
 end
 
 -- Recursively pull a thought anchor href out of a KOReader link object.

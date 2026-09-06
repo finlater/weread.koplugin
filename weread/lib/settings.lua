@@ -73,6 +73,9 @@ local defaults = {
         -- Tap the left/right half of the popup to turn pages (bottom and
         -- centered positions; off by default).
         tap_to_page = false,
+        -- With tap_to_page on, tap the middle third to open the comments of
+        -- the thought under the tap (off by default).
+        comment_tap_open = false,
     },
     advanced = {
         developer_logs = false,

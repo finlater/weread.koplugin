@@ -35,6 +35,33 @@ function ThoughtDB.remove_db(book_dir)
 end
 
 --- Open or create the per-book thought database.
+-- Databases written before review comments existed lack the review_id column;
+-- ALTER TABLE adds it in place so existing rows stay readable.
+local function ensure_review_id_column(db)
+    local ok, stmt = pcall(function()
+        return db:prepare("PRAGMA table_info(review_items)")
+    end)
+    if not ok or not stmt then
+        return
+    end
+    local has_column = false
+    local step_ok, row = pcall(function() return stmt:step() end)
+    while step_ok and row do
+        if row[2] == "review_id" then
+            has_column = true
+            break
+        end
+        step_ok, row = pcall(function() return stmt:step() end)
+    end
+    pcall(function() stmt:close() end)
+    if not has_column then
+        logger.info("thought_db migrating review_items: adding review_id")
+        pcall(function()
+            db:exec("ALTER TABLE review_items ADD COLUMN review_id TEXT")
+        end)
+    end
+end
+
 function ThoughtDB.open(book_dir)
     if type(book_dir) ~= "string" or book_dir == "" then
         return nil
@@ -71,9 +98,11 @@ function ThoughtDB.open(book_dir)
                 author      TEXT    NOT NULL,
                 content     TEXT    NOT NULL,
                 likes_count INTEGER NOT NULL DEFAULT 0,
+                review_id   TEXT,
                 PRIMARY KEY (chapter_uid, range, item_index)
             ) WITHOUT ROWID
         ]])
+        ensure_review_id_column(db)
     end)
     if not schema_ok then
         logger.warn("thought_db schema init failed:", db_path, schema_err)
@@ -91,7 +120,7 @@ function ThoughtDB.getReviewItems(db, chapter_uid, range_str)
 
     local ok, stmt = pcall(function()
         return db:prepare([[
-            SELECT abstract, author, content, likes_count
+            SELECT abstract, author, content, likes_count, review_id
             FROM review_items
             WHERE chapter_uid=? AND range=?
             ORDER BY item_index
@@ -113,6 +142,7 @@ function ThoughtDB.getReviewItems(db, chapter_uid, range_str)
             author = row[2],
             content = row[3],
             likes_count = row[4],
+            review_id = row[5],
         }
         step_ok, row = pcall(function() return stmt:step() end)
         if not step_ok then
@@ -128,8 +158,8 @@ local function insert_reviews(db, chapter_uid, reviews)
     local Annotations = require("weread.lib.annotations")
     local insert_stmt = db:prepare([[
         INSERT INTO review_items
-            (chapter_uid, range, item_index, abstract, author, content, likes_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+            (chapter_uid, range, item_index, abstract, author, content, likes_count, review_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ]])
 
     local by_range = {}
@@ -150,7 +180,8 @@ local function insert_reviews(db, chapter_uid, reviews)
         for item_index, item in ipairs(items) do
             insert_stmt:reset():bind(
                 chapter_uid, range_str, item_index,
-                item.abstract, item.author, item.content, item.likes_count
+                item.abstract, item.author, item.content, item.likes_count,
+                item.review_id
             ):step()
             inserted = inserted + 1
         end

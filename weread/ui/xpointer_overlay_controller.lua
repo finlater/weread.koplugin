@@ -130,7 +130,11 @@ function M:_onXPointerOverlayTap(ges)
             },
         }
     end
-    require("weread.ui.thought_popup").show(ThoughtPopupConfig.build(self, items))
+    require("weread.ui.thought_popup").show(ThoughtPopupConfig.build(self, items, {
+        on_view_comments = function(item)
+            self:_viewThoughtComments(item)
+        end,
+    }))
     return true
 end
 

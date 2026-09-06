@@ -259,6 +259,11 @@ function Annotations.buildThoughtPopupItems(range_review)
             author = tostring(author.nick or author.name or "匿名"),
             content = tostring(review.content or ""),
             likes_count = tonumber(pr.likesCount) or 0,
+            -- Comments of one thought are fetched by its reviewId through
+            -- /web/review/single; rows written before this field existed stay
+            -- nil and the comment action stays hidden for them.
+            review_id = type(review.reviewId) == "string" and review.reviewId ~= ""
+                and review.reviewId or nil,
         }
     end
     return items

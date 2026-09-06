@@ -43,6 +43,7 @@ function M.build(plugin, pages, extra)
         width_ratio = tonumber(popup_settings.width_ratio) or 0.8,
         contrast = tonumber(popup_settings.contrast) or 9,
         tap_to_page = popup_settings.tap_to_page == true,
+        comment_tap_open = popup_settings.comment_tap_open == true,
         dialog = plugin.dialog,
         doc_font_name = layout.doc_font_name,
         doc_font_size = layout.doc_font_size,

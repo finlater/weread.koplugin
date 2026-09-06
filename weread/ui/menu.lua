@@ -643,6 +643,27 @@ function M:getSettingsMenuItems()
                                         end
                                     end),
                                 },
+                                {
+                                    text = _("Tap middle to open comments"),
+                                    enabled_func = function()
+                                        return self.settings:get("thought_popup").tap_to_page == true
+                                    end,
+                                    checked_func = function()
+                                        return self.settings:get("thought_popup").comment_tap_open == true
+                                    end,
+                                    keep_menu_open = true,
+                                    callback = self:safeCallback(_("Thought popup: tap middle to open comments"), function(touchmenu_instance)
+                                        local thought_popup = self.settings:get("thought_popup")
+                                        thought_popup.comment_tap_open = not (thought_popup.comment_tap_open == true)
+                                        self.settings:set("thought_popup", thought_popup)
+                                        self.settings:flush()
+                                        logger.info("thought popup comment_tap_open changed:",
+                                            "enabled=", tostring(thought_popup.comment_tap_open))
+                                        if touchmenu_instance then
+                                            touchmenu_instance:updateItems()
+                                        end
+                                    end),
+                                },
                             }
                         end,
                     },
