@@ -8,6 +8,11 @@ local _ = PluginUtil.tr
 local T = PluginUtil.T
 local M = {}
 
+local function compare_xpointers(document, a, b)
+    local ok, order = pcall(document.compareXPointers, document, a, b)
+    if ok then return order end
+end
+
 local function file(plugin)
     return plugin.ui and plugin.ui.document and plugin.ui.document.file
 end
@@ -155,38 +160,60 @@ function M:_annotationChapterIndex(context, point)
         return nil
     end
 
-    local latest_index, latest_start
-    for index, chapter in ipairs(context.chapters or {}) do
-        local range = context.ranges
-            and context.ranges[Chapters.uid(chapter)]
-        local start_xpointer = range and range.start_xpointer
-        if start_xpointer then
-            local ok_start, start_cmp = pcall(document.compareXPointers,
-                document, start_xpointer, point)
-            if ok_start and (start_cmp == 0 or start_cmp == 1) then
-                if not latest_start then
-                    latest_index, latest_start = index, start_xpointer
-                else
-                    local ok_order, order = pcall(document.compareXPointers,
-                        document, latest_start, start_xpointer)
-                    if ok_order and order == 1 then
-                        latest_index, latest_start = index, start_xpointer
-                    end
+    -- Keep only chapter boundaries, never chapter text or annotation rows.
+    -- Chapters.map returns document order, so index construction is linear.
+    local lookup = context._chapter_lookup
+    if not lookup or lookup.chapters ~= context.chapters or lookup.ranges ~= context.ranges then
+        lookup = { chapters = context.chapters, ranges = context.ranges, starts = {} }
+        local previous
+        for index, chapter in ipairs(context.chapters or {}) do
+            local range = context.ranges and context.ranges[Chapters.uid(chapter)]
+            local start = range and range.start_xpointer
+            if start then
+                local order = previous and compare_xpointers(document, previous, start) or 1
+                -- Equal TOC anchors retain the first chapter, as before.
+                if order == 1 then
+                    lookup.starts[#lookup.starts + 1] = { point = start, index = index }
+                    previous = start
                 end
             end
         end
+        context._chapter_lookup = lookup
     end
-    return latest_index
+    local starts, cursor = lookup.starts, lookup.cursor
+    -- Ordinary same-chapter page turns need at most two comparisons.
+    if cursor then
+        local lower = compare_xpointers(document, point, starts[cursor].point)
+        if lower == nil then return nil end
+        if lower ~= 1 then
+            local upper = starts[cursor + 1] and compare_xpointers(document, point, starts[cursor + 1].point)
+            if not starts[cursor + 1] or upper == 1 then return starts[cursor].index end
+        end
+    end
+    local low, high = 1, #starts
+    while low <= high do
+        local middle = math.floor((low + high) / 2)
+        local order = compare_xpointers(document, point, starts[middle].point)
+        if order == nil then return nil end
+        if order == 1 then high = middle - 1
+        else low = middle + 1 end
+    end
+    lookup.cursor = high > 0 and high or nil
+    return high > 0 and starts[high].index or nil
 end
 
 function M:_refreshAnnotationOverlay()
     local context, overlay = self._annotation_context, self._xpointer_overlay
-    if not context or not overlay or #context.chapters == 0 then return end
+    if not context or not overlay or overlay.enabled == false or #context.chapters == 0 then return end
     if context.binding.automatic and not (context.descriptor and context.descriptor.clean)
-        and not self._unified_annotations_active
-        and self:_annotationSummary(context).chapters < #context.chapters then
-        overlay:setRecords({})
-        return
+        and not self._unified_annotations_active then
+        local generation = context.generation or 0
+        if context._overlay_blocked_generation == generation then return end
+        if self:_annotationSummary(context).chapters < #context.chapters then
+            context._overlay_blocked_generation = generation
+            overlay:setRecords({})
+            return
+        end
     end
     local document = self.ui.document
     local current = document:getXPointer()
@@ -199,10 +226,12 @@ function M:_refreshAnnotationOverlay()
         local count = document.getVisiblePageCount and document:getVisiblePageCount() or 1
         local next_page = document:getCurrentPage() + count
         local stop
-        if not document.getPageCount or next_page <= document:getPageCount() then
+        local at_end = document.getPageCount and next_page > document:getPageCount()
+        if not at_end then
             stop = document:getPageXPointer(next_page)
         end
-        last = stop and chapter_at(stop) or #context.chapters
+        -- A missing page anchor must not load the rest of a large book.
+        last = stop and chapter_at(stop) or (at_end and #context.chapters or active)
     end
     local window = tostring(active) .. ":" .. tostring(last) .. ":" .. tostring(context.generation or 0)
     if overlay._annotation_window == window then return end
@@ -349,6 +378,7 @@ function M:_runAnnotationJob(context, options)
         document = not options.prefetch and self.ui.document or nil,
         document_key = not options.prefetch and context.document_key or nil,
         refresh = options.refresh, offline = options.offline,
+        is_online = function() return self:isNetworkConnected() end,
         fetch_source = function(chapter)
             local html = Content.fetch_chapter_xhtml(self.client, self.settings, source_book, chapter)
             if source_book._content_format == "txt" then
@@ -381,10 +411,15 @@ function M:_runAnnotationJob(context, options)
             if done == nil then
                 logger.warn("annotation_sync interrupted:", state)
                 if not options.background then
-                    self:showInfo(T(_("Annotation sync paused: %1\nSaved progress will be reused."), state))
+                    if state == Sync.NETWORK_REQUIRED then
+                        self:showInfo(_("Connect to the network to download annotation data. Saved matching progress will be reused."))
+                    else
+                        self:showInfo(T(_("Annotation sync paused: %1\nSaved progress will be reused."), state))
+                    end
                 end
-            elseif not options.prefetch then
-                local prune_catalog = context.store:get(context.book_id, "meta", "prune_catalog")
+            end
+            if not options.prefetch then
+                local prune_catalog = done and context.store:get(context.book_id, "meta", "prune_catalog")
                 if prune_catalog then
                     context.store:pruneCatalog(context.book_id, prune_catalog)
                     context.store:put(context.book_id, "meta", "prune_catalog", nil)
@@ -402,7 +437,7 @@ function M:_runAnnotationJob(context, options)
                         self:applyAnnotationVisibility()
                     end
                 end
-                if not options.background then
+                if done and not options.background then
                     self:showInfo(T(_("Matched %1/%2 underlines in %3/%4 chapters."),
                         tostring(summary.located), tostring(summary.total),
                         tostring(summary.chapters), tostring(#context.chapters)))
@@ -582,53 +617,26 @@ function M:chooseAnnotationChapters()
         if not context or #context.chapters == 0 then
             self:showInfo(_("No matching chapters found.")); return
         end
-        local selected, menu, items = {}, nil, {}
-        local function selection()
-            local result = {}
-            for _, chapter in ipairs(context.chapters) do
-                if selected[Chapters.uid(chapter)] then result[#result + 1] = chapter end
-            end
-            return result
-        end
-        local function start()
-            local chapters = selection()
-            if #chapters == 0 then return end
-            if menu then UIManager:close(menu) end
-            self:startUnifiedAnnotationSync({ chapters = chapters, offline = not self:isNetworkConnected() })
-        end
-        local current_index
         local document = self.ui and self.ui.document
-        if document and type(document.getXPointer) == "function" then
+        local current_index, toc
+        if document then
             local ok, point = pcall(document.getXPointer, document)
             if ok then current_index = self:_annotationChapterIndex(context, point) end
+            local ok_toc, entries = pcall(function() return document:getToc() end)
+            if ok_toc and type(entries) == "table" then toc = entries end
         end
-        -- Keep the action reachable on every page, including keyboard devices.
-        local per_page = 8
-        for index, chapter in ipairs(context.chapters) do
-            if (index - 1) % (per_page - 1) == 0 then
-                items[#items + 1] = { text_func = function()
-                    return T(_("Match selected chapters (%1)"), tostring(#selection()))
-                end, bold = true, separator = true,
-                    select_enabled_func = function() return #selection() > 0 end, callback = start }
-            end
-            local uid = Chapters.uid(chapter)
-            local title = chapter.title or uid
-            local status = context.statuses[context.store:projectionKey(context.document_key, uid)]
-            items[#items + 1] = { text_func = function()
-                return (selected[uid] and "[✓] " or "[  ] ") .. title
-            end, bold = current_index == index,
-                mandatory_func = function() return status and _("Matched") or nil end,
-                callback = function()
-                    selected[uid] = not selected[uid]
-                    if menu then menu:updateItems() end
-                end }
+        local Selection = require("weread.lib.chapter_selection")
+        local function is_matched(chapter)
+            return context.statuses[context.store:projectionKey(
+                context.document_key, Chapters.uid(chapter))] ~= nil
         end
-        local initial_page = current_index
-            and math.floor((current_index - 1) / (per_page - 1)) + 1 or 1
-        menu = self:showList(_("Choose chapters to match"), items, nil, {
-            items_per_page = per_page,
-            initial_page = initial_page,
-        })
+        return require("weread.ui.annotation_chapter_picker").show{
+            model = Selection:new(context.chapters, context.ranges, toc, current_index, is_matched),
+            book_title = context.binding.title,
+            on_select = function(chapters)
+                self:startUnifiedAnnotationSync({ chapters = chapters, offline = not self:isNetworkConnected() })
+            end,
+        }
     end
     local context = self:_prepareAnnotationContext(false)
     if context and #context.chapters > 0 then return show() end

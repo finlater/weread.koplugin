@@ -163,6 +163,11 @@ end
 
 function M:onPageUpdate()
     self.progress_sync:on_page_update()
+    if self._refreshAnnotationOverlay then self:_refreshAnnotationOverlay() end
+end
+
+function M:onPosUpdate()
+    if self._refreshAnnotationOverlay then self:_refreshAnnotationOverlay() end
 end
 
 function M:onCloseDocument()

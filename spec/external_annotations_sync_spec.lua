@@ -105,5 +105,56 @@ assert(finish(prefetch))
 count = #calls
 assert(finish(new("chapter3", { { chapterUid = "3" } }, { offline = true })))
 assert(#calls == count)
+-- Cached but not yet projected chapters can finish offline. Stop exactly when
+-- the next chapter needs downloading; never skip it or erase earlier results.
+count = #calls
+local offline = new("offline-resume", { { chapterUid = "3" }, { chapterUid = "4" } }, { offline = true })
+local done, reason = finish(offline)
+assert(done == nil and reason == Sync.NETWORK_REQUIRED and offline.index == 2)
+assert(store:get("book", "projection", "offline-resume:3") and #calls == count)
+assert(not store:get("book", "source", "4"))
+
+-- Disconnecting during the scheduled delay must not dispatch an HTTP request.
+local connected = true
+local interrupted = new("disconnect", { { chapterUid = "4" } }, { is_online = function() return connected end })
+local running, state = interrupted:step()
+assert(running == false and state.stage == "underlines")
+connected = false
+done, reason = finish(interrupted)
+assert(done == nil and reason == Sync.NETWORK_REQUIRED and #calls == count)
+
+-- A saved partial thoughts batch still needs the network; its checkpoint stays.
+local partial = new("partial-offline", { { chapterUid = "4" } })
+for _ = 1, 100 do
+    assert(partial:step() ~= nil)
+    if store:get("book", "batch", "4:1") then break end
+end
+assert(store:get("book", "batch", "4:1")); partial.cancelled = true
+count = #calls
+done, reason = finish(new("partial-offline", { { chapterUid = "4" } }, { offline = true }))
+assert(done == nil and reason == Sync.NETWORK_REQUIRED and #calls == count)
+assert(store:get("book", "download", "4").next_batch == 2)
+assert(finish(new("partial-offline", { { chapterUid = "4" } })))
+assert(calls[count + 1] == "r4:3-4", "reconnect must resume at the unfinished batch")
+
+-- All thought batches may already be on disk while matching has not started.
+-- Offline resume must consume them, not insist on a committed source snapshot.
+store:put("book", "download", "5", { revision = "1", next_batch = 2,
+    underlines = { { range = "1-2", markText = "alpha" } } }, "5")
+store:put("book", "batch", "5:1", {}, "5")
+count = #calls
+assert(finish(new("batches-only", { { chapterUid = "5" } }, { offline = true })))
+assert(#calls == count and store:get("book", "projection", "batches-only:5").stats.located == 1)
+
+-- Missing original quote text is also a download boundary. Do not silently
+-- commit an unmatched chapter simply because offline mode skipped that fetch.
+store:put("book", "download", "6", { revision = "1", next_batch = 2,
+    underlines = { { range = "1-2" } } }, "6")
+store:put("book", "batch", "6:1", {}, "6")
+done, reason = finish(new("missing-original", { { chapterUid = "6" } }, {
+    offline = true, fetch_source = function() error("offline source fetch must not run") end,
+}))
+assert(done == nil and reason == Sync.NETWORK_REQUIRED and #calls == count)
+assert(not store:get("book", "projection", "missing-original:6") and store:get("book", "download", "6"))
 helper.cleanup()
 print("external_annotations_sync_spec: resume, cross-file reuse, empty updates and offline prefetch passed")

@@ -1,11 +1,14 @@
 local I18n = {}
 
 local zh = {
-    ["Match selected chapters (%1)"] = "匹配所选章节（%1）",
+    ["Match (%1)"] = "匹配（%1）",
     ["Continue matching · %1/%2 chapters, %3 underlines"] = "继续匹配 · %1/%2 章，%3 条划线",
     ["Underlines and thoughts management"] = "划线和想法管理",
     ["Continue matching"] = "继续匹配",
     ["Choose chapters to match"] = "选择章节匹配",
+    ["Arrows expand. Selecting a parent selects its chapters."] = "点箭头展开目录，勾选父项可全选子项",
+    ["Clear selection"] = "清空选择",
+    ["Connect to the network to download annotation data. Saved matching progress will be reused."] = "需要连接网络才能拉取划线和想法。\n已保存匹配进度，联网后可继续。",
     ["Clear underlines and thoughts"] = "清理划线和想法",
     ["Underlines and thoughts cleared. Match again to download fresh data."] = "已清理划线和想法；再次匹配将下载最新数据。",
     ["Pause"] = "暂停",

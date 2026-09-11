@@ -221,7 +221,7 @@ function Chapters.map(document, catalog, descriptor)
         end
         ranges[Chapters.uid(match.chapter)] = {
             start_xpointer = entry.xpointer, end_xpointer = end_xp or doc_end,
-            title = entry.title,
+            title = entry.title, toc_index = match.index,
         }
     end
     return selected, ranges
