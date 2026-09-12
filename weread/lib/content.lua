@@ -5,6 +5,9 @@ local logger = require("weread.lib.logger")
 
 local Content = {}
 local b64chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+-- Forward declarations used by the resumable-download checkpoint helpers.
+local xml_escape
+local body_fragment
 
 local function basename_safe(value)
     value = tostring(value or ""):gsub("[^%w%._-]", "_")
@@ -239,7 +242,8 @@ end
 
 local function remove_tree(path)
     if type(path) ~= "string"
-        or not path:match("/%.weread%-download%-%d+%-%d+$") then
+        or (not path:match("/%.weread%-download%-%d+%-%d+$")
+            and not path:match("/%.weread%-download%-resume%-full$")) then
         return nil, "refusing to remove an invalid download workspace"
     end
     local ok, ffiutil = pcall(require, "ffi/util")
@@ -250,6 +254,167 @@ local function remove_tree(path)
     if not called then return nil, removed end
     if removed == false then return nil, err end
     return true
+end
+
+-- A full-book job is the only one that can run long enough to make a restart
+-- meaningful. Keep its working files under a stable, book-local directory so
+-- a failed transfer (or an OOM kill) can be resumed without putting book text
+-- in the plugin settings file.
+function Content.open_full_download_workspace(settings, book)
+    local book_id = book.book_id or book.bookId
+    local book_dir = Content.book_resolved_dir(settings, book_id, book)
+    make_path(book_dir)
+    book.cache_dir = book_dir
+    local workspace = book_dir .. "/.weread-download-resume-full"
+    local incoming_dir = workspace .. "/incoming"
+    local asset_dir = workspace .. "/images"
+    local text_dir = workspace .. "/text"
+    make_path(incoming_dir)
+    make_path(asset_dir)
+    make_path(text_dir)
+    return {
+        path = workspace,
+        incoming_dir = incoming_dir,
+        asset_dir = asset_dir,
+        text_dir = text_dir,
+        resumable = true,
+    }
+end
+
+local function workspace_chapter_name(chapter, chapter_index)
+    return string.format("chapter-%03d.xhtml", tonumber(chapter_index) or 0)
+end
+
+local function workspace_chapter_marker(chapter)
+    return "<!-- weread-chapter-uid: "
+        .. basename_safe(chapter and chapter.chapterUid or "unknown") .. " -->"
+end
+
+function Content.full_download_chapter_path(workspace, chapter, chapter_index)
+    if not workspace or not workspace.text_dir then return nil end
+    return workspace.text_dir .. "/" .. workspace_chapter_name(chapter, chapter_index)
+end
+
+function Content.full_download_chapter_exists(workspace, chapter, chapter_index)
+    local path = Content.full_download_chapter_path(workspace, chapter, chapter_index)
+    local file = path and io.open(path, "rb")
+    if not file then return false end
+    local head = file:read(256) or ""
+    file:close()
+    return head:find(workspace_chapter_marker(chapter), 1, true) ~= nil
+end
+
+function Content.load_full_download_chapter(workspace, chapter, chapter_index)
+    local path = Content.full_download_chapter_path(workspace, chapter, chapter_index)
+    if not path then return nil, "chapter checkpoint is missing" end
+    local file, err = io.open(path, "rb")
+    if not file then return nil, err or "chapter checkpoint is missing" end
+    local xhtml = file:read("*a")
+    file:close()
+    return xhtml
+end
+
+local function atomic_write(path, data)
+    local tmp_path = path .. ".part"
+    local file, err = io.open(tmp_path, "wb")
+    if not file then return nil, err end
+    local ok, write_err = file:write(data)
+    file:close()
+    if not ok then
+        pcall(os.remove, tmp_path)
+        return nil, write_err
+    end
+    local renamed, rename_err = os.rename(tmp_path, path)
+    if not renamed then
+        pcall(os.remove, tmp_path)
+        return nil, rename_err
+    end
+    return true
+end
+
+function Content.save_full_download_chapter(workspace, chapter, chapter_index, xhtml)
+    local path = Content.full_download_chapter_path(workspace, chapter, chapter_index)
+    if not path then return nil, "missing full-book workspace" end
+    local title = chapter and chapter.title
+        or ("Chapter " .. tostring(chapter and chapter.chapterUid or chapter_index))
+    local chapter_xhtml = [[<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+]] .. workspace_chapter_marker(chapter) .. [[
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="zh-CN">
+<head>
+<title>]] .. xml_escape(title) .. [[</title>
+<link rel="stylesheet" type="text/css" href="../style.css"/>
+</head>
+<body>
+]] .. body_fragment(xhtml) .. [[
+</body>
+</html>]]
+    local ok, err = atomic_write(path, chapter_xhtml)
+    if not ok then error(err or "could not checkpoint chapter") end
+    return path
+end
+
+function Content.save_full_download_css(workspace, css)
+    if not workspace or not workspace.path then return nil end
+    local ok, err = atomic_write(workspace.path .. "/style.css", css or "")
+    if not ok then error(err or "could not checkpoint stylesheet") end
+    return true
+end
+
+function Content.load_full_download_css(workspace)
+    local file = workspace and workspace.path
+        and io.open(workspace.path .. "/style.css", "rb")
+    if not file then return nil end
+    local css = file:read("*a")
+    file:close()
+    return css
+end
+
+function Content.full_download_completed_chapters(workspace, chapters)
+    local completed = {}
+    for chapter_index, chapter in ipairs(chapters or {}) do
+        if Content.full_download_chapter_exists(workspace, chapter, chapter_index) then
+            completed[chapter_index] = true
+        end
+    end
+    return completed
+end
+
+function Content.full_download_workspace_assets(workspace)
+    local assets = {}
+    if not workspace or not workspace.asset_dir then return assets end
+    local ok_lfs, lfs = pcall(require, "libs/libkoreader-lfs")
+    if not ok_lfs then ok_lfs, lfs = pcall(require, "lfs") end
+    if not ok_lfs or not lfs
+        or lfs.attributes(workspace.asset_dir, "mode") ~= "directory" then
+        return assets
+    end
+    for name in lfs.dir(workspace.asset_dir) do
+        if name ~= "." and name ~= ".." then
+            local path = workspace.asset_dir .. "/" .. name
+            if lfs.attributes(path, "mode") == "file" then
+                local _, media_type = media_type_for_file(path)
+                if media_type and media_type:match("^image/") then
+                    table.insert(assets, {
+                        href = "images/" .. name,
+                        media_type = media_type,
+                        path = path,
+                    })
+                end
+            end
+        end
+    end
+    table.sort(assets, function(a, b) return a.href < b.href end)
+    return assets
+end
+
+function Content.full_download_workspace_used_asset_names(workspace)
+    local used = {}
+    for _, asset in ipairs(Content.full_download_workspace_assets(workspace)) do
+        local name = basename(asset.href)
+        if name ~= "" then used[name] = true end
+    end
+    return used
 end
 
 function Content.create_download_workspace(settings, book)
@@ -417,7 +582,7 @@ local function append_asset_entries(entries, assets)
     end
 end
 
-local function xml_escape(value)
+xml_escape = function(value)
     value = tostring(value or "")
     -- XML 1.0 permits tabs, newlines, and carriage returns from the C0 range,
     -- but rejects the remaining control characters. Book metadata comes from
@@ -432,7 +597,7 @@ end
 
 -- WeRead EPUB chapters may decode to multiple concatenated XHTML documents.
 -- The first <body> is often a title shell; main content lives in later bodies.
-local function body_fragment(xhtml)
+body_fragment = function(xhtml)
     xhtml = tostring(xhtml or "")
     local bodies = {}
     local remaining = xhtml
@@ -778,6 +943,11 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
         [[<item id="style" href="style.css" media-type="text/css"/>]],
     }
     local spine_items = {}
+    -- Resumable full-book jobs checkpoint ready-to-package XHTML files.  The
+    -- archiver can stream that directory directly, avoiding one large Lua
+    -- string table for the entire book at the final packaging step.
+    local workspace_text_dir = type(chapter_bodies) == "table"
+        and chapter_bodies.__workspace_text_dir or nil
     local entries = {
         { name = "mimetype", data = "application/epub+zip" },
         { name = "META-INF/container.xml", data = [[<?xml version="1.0" encoding="utf-8"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>]] },
@@ -813,7 +983,8 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
         local filename = string.format("text/chapter-%03d.xhtml", chapter_index)
         local id = item_id("chapter_", uid)
         local title = chapter.title or ("Chapter " .. uid)
-        local chapter_xhtml = [[<?xml version="1.0" encoding="utf-8"?>
+        if not workspace_text_dir then
+            local chapter_xhtml = [[<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="zh-CN">
 <head>
@@ -824,7 +995,8 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
 ]] .. body_fragment(chapter_bodies[uid] or "") .. [[
 </body>
 </html>]]
-        table.insert(entries, { name = "OEBPS/" .. filename, data = chapter_xhtml })
+            table.insert(entries, { name = "OEBPS/" .. filename, data = chapter_xhtml })
+        end
         table.insert(manifest_items, [[<item id="]] .. id .. [[" href="]] .. filename .. [[" media-type="application/xhtml+xml"/>]])
         table.insert(spine_items, [[<itemref idref="]] .. id .. [["/>]])
     end
@@ -881,6 +1053,13 @@ function Content.save_book_epub(settings, book, chapters, chapter_bodies, suffix
     table.insert(entries, { name = "OEBPS/nav.xhtml", data = nav })
     table.insert(entries, { name = "OEBPS/toc.ncx", data = ncx })
     table.insert(entries, { name = "OEBPS/style.css", data = css })
+    if workspace_text_dir then
+        table.insert(entries, {
+            name = "OEBPS/text",
+            path = workspace_text_dir,
+            recursive = true,
+        })
+    end
     write_epub(path, entries)
     Content.register_annotation_document(book, path, chapters)
     return path

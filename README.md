@@ -56,6 +56,13 @@ koreader/plugins/weread.koplugin/
 |:---:|:---:|:---:|
 | ![搜索书籍](screenshots/book_search.png) | ![快捷菜单](screenshots/quick_menu.png) | ![设置](screenshots/setting.png) |
 
+## 下载与断点恢复
+
+“下载全书”会把每个完成的章节暂存到该书的本地缓存目录。下载因网络错误、取消或
+设备重启而中断时，不会生成残缺 EPUB；再次选择“下载全书”会自动跳过已完成章节，
+继续下载剩余内容。全部章节完成后，插件会重新逐章校验暂存文件；只有全部存在才会
+打包生成 EPUB 并清理暂存目录。
+
 
 ## SimpleUI / Zen_UI 集成
 

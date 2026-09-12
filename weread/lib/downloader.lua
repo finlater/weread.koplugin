@@ -87,6 +87,40 @@ function Downloader:_cleanupWorkspace(dl)
     Content.cleanup_download_workspace(workspace)
 end
 
+-- A resumable full-book workspace is intentionally retained after a failure,
+-- cancellation or crash.  It only contains downloaded book material under the
+-- cache directory; credentials and settings remain untouched.
+function Downloader:_preserveWorkspace(dl, reason)
+    self:_releaseStandby(dl)
+    if dl and dl.progress_dialog then
+        dl.progress_dialog:close()
+        dl.progress_dialog = nil
+    end
+    logger.info("full-book download checkpoint retained:",
+        "reason=", tostring(reason or "paused"),
+        "completed=", tostring(dl and dl.completed_count or 0),
+        "total=", tostring(dl and dl.total or 0))
+    self:_notifyCompletion(dl, false, reason or "paused")
+    self:_finishJob(dl)
+end
+
+function Downloader:_restoreFullDownloadCheckpoint(dl)
+    local completed = Content.full_download_completed_chapters(
+        dl.workspace, dl.chapters)
+    local selected = {}
+    local completed_count = 0
+    for chapter_index, chapter in ipairs(dl.chapters) do
+        if completed[chapter_index] then
+            table.insert(selected, chapter)
+            completed_count = completed_count + 1
+        end
+    end
+    dl.completed = completed
+    dl.selected = selected
+    dl.completed_count = completed_count
+    return completed_count
+end
+
 -- Keep the device awake during long book downloads (reference counted so
 -- multiple concurrent jobs share a single guard).
 function Downloader:_beginStandby()
@@ -401,15 +435,19 @@ function Downloader:_scheduleGuarded(dl, step_fn, delay)
     UIManager:scheduleIn(delay or 0.1, function()
         local ok, err = xpcall(step_fn, debug.traceback)
         if not ok and dl.standby_guard then
-            self:_releaseStandby(dl)
-            self:_cleanupWorkspace(dl)
-            if dl.progress_dialog then
-                dl.progress_dialog:close()
-                dl.progress_dialog = nil
-            end
             logger.err("download step failed:", log_error(err))
-            self:_notifyCompletion(dl, false, err)
-            self:_finishJob(dl)
+            if dl.resumable then
+                self:_preserveWorkspace(dl, err)
+            else
+                self:_releaseStandby(dl)
+                self:_cleanupWorkspace(dl)
+                if dl.progress_dialog then
+                    dl.progress_dialog:close()
+                    dl.progress_dialog = nil
+                end
+                self:_notifyCompletion(dl, false, err)
+                self:_finishJob(dl)
+            end
             if not dl.prefetch then
                 self.show_info(T(_("Download failed:\n%1"), display_error(err)))
             end
@@ -487,6 +525,9 @@ function Downloader:start(book, chapters, suffix, options)
     end
 
     local total = #chapters
+    local resumable = (suffix or "book") == "full"
+        and not options.single_chapter
+        and not options.separate_chapters
     local dl = {
         book = book,
         chapters = chapters,
@@ -500,6 +541,9 @@ function Downloader:start(book, chapters, suffix, options)
         state = {},
         total = total,
         failed = {},
+        resumable = resumable,
+        completed = {},
+        completed_count = 0,
         annotation_failed_batches = 0,
         footnote_scans = {},
         footnote_stats = {
@@ -561,7 +605,15 @@ function Downloader:start(book, chapters, suffix, options)
             Content.ensure_reader_state(self.client, book)
             local cache = self.settings.get
                 and self.settings:get("cache", {}) or {}
-            if cache.download_book_images and Content.create_download_workspace then
+            if dl.resumable and Content.open_full_download_workspace then
+                dl.workspace = Content.open_full_download_workspace(
+                    self.settings, book)
+                dl.state.workspace = dl.workspace
+                dl.state.css = Content.load_full_download_css(dl.workspace)
+                dl.state.used_asset_names = Content.full_download_workspace_used_asset_names(
+                    dl.workspace)
+                self:_restoreFullDownloadCheckpoint(dl)
+            elseif cache.download_book_images and Content.create_download_workspace then
                 dl.workspace = Content.create_download_workspace(
                     self.settings, book)
                 dl.state.workspace = dl.workspace
@@ -671,10 +723,14 @@ end
 
 function Downloader:_footnoteStep(dl)
     if dl.cancelled then
-        self:_releaseStandby(dl)
-        self:_cleanupWorkspace(dl)
-        self:_notifyCompletion(dl, false, dl.cancel_reason or "cancelled")
-        self:_finishJob(dl)
+        if dl.resumable then
+            self:_preserveWorkspace(dl, dl.cancel_reason or "cancelled")
+        else
+            self:_releaseStandby(dl)
+            self:_cleanupWorkspace(dl)
+            self:_notifyCompletion(dl, false, dl.cancel_reason or "cancelled")
+            self:_finishJob(dl)
+        end
         if not dl.prefetch then
             self.show_transient(_("Download cancelled"), 2)
         end
@@ -705,19 +761,28 @@ function Downloader:_footnoteStep(dl)
         return
     end
 
-    local chapter = dl.selected[job.index]
+    local chapter = (job.chapters or dl.selected)[job.index]
     local uid = tostring(chapter.chapterUid or job.index)
     self:_setStage(dl,
         T(_("Processing footnotes · chapter %1/%2"),
             tostring(job.index), tostring(#dl.selected)), dl.total)
     local original = dl.bodies[uid]
+    if dl.resumable then
+        original = Content.load_full_download_chapter(
+            dl.workspace, chapter, job.index)
+    end
     local started = time.now()
     local ok, transformed, stats = pcall(Footnotes.transform_chapter,
         original, dl.footnote_scans[uid], job.index_data)
     if ok then
         local valid, validation_error = Footnotes.validate(transformed)
         if valid then
-            dl.bodies[uid] = transformed
+            if dl.resumable then
+                Content.save_full_download_chapter(
+                    dl.workspace, chapter, job.index, transformed)
+            else
+                dl.bodies[uid] = transformed
+            end
             add_footnote_stats(dl.footnote_stats, stats)
             if Footnotes.has_converted(stats) then job.css_needed = true end
         else
@@ -747,9 +812,21 @@ function Downloader:_startFootnotes(dl)
         unresolved = 0,
         fallback = 0,
     }
+    local selected = dl.resumable and dl.chapters or dl.selected
     local scans = {}
-    for chapter_index, chapter in ipairs(dl.selected or {}) do
+    for chapter_index, chapter in ipairs(selected or {}) do
         local uid = tostring(chapter.chapterUid or chapter_index)
+        if dl.resumable then
+            local body = Content.load_full_download_chapter(
+                dl.workspace, chapter, chapter_index)
+            local scan_ok, scan = pcall(Footnotes.scan_chapter, body, chapter)
+            if scan_ok then
+                dl.footnote_scans[uid] = scan
+            else
+                logger.warn("checkpoint footnote scan failed; keeping original chapter:",
+                    "chapter_uid=", uid, "error=", log_error(scan))
+            end
+        end
         if dl.footnote_scans[uid] then
             scans[uid] = dl.footnote_scans[uid]
         end
@@ -757,7 +834,8 @@ function Downloader:_startFootnotes(dl)
     local cache = self.settings and self.settings:get("cache") or {}
     dl.footnote_job = {
         index = 1,
-        index_data = Footnotes.build_book_index(scans, dl.selected),
+        chapters = selected,
+        index_data = Footnotes.build_book_index(scans, selected),
         css_needed = false,
         use_popup = cache.book_footnotes_in_popup == true,
     }
@@ -788,13 +866,22 @@ function Downloader:_finishChapter(dl)
         return
     end
     local uid = tostring(chapter.chapterUid or dl.index)
-    dl.bodies[uid] = xhtml
+    if dl.resumable then
+        Content.save_full_download_css(dl.workspace, dl.state.css)
+        Content.save_full_download_chapter(dl.workspace, chapter, dl.index, xhtml)
+        dl.completed[dl.index] = true
+        dl.completed_count = dl.completed_count + 1
+    else
+        dl.bodies[uid] = xhtml
+    end
     dl.assets_by_uid = dl.assets_by_uid or {}
     dl.assets_by_uid[uid] = chapter_assets or {}
     table.insert(dl.selected, chapter)
-    for _i, asset in ipairs(chapter_assets or {}) do
-        table.insert(dl.assets, asset)
-        dl.asset_bytes = (dl.asset_bytes or 0) + (tonumber(asset.size) or 0)
+    if not dl.resumable then
+        for _i, asset in ipairs(chapter_assets or {}) do
+            table.insert(dl.assets, asset)
+            dl.asset_bytes = (dl.asset_bytes or 0) + (tonumber(asset.size) or 0)
+        end
     end
     logger.info("download assets staged:",
         "chapter=", tostring(dl.index) .. "/" .. tostring(dl.total),
@@ -812,10 +899,14 @@ end
 
 function Downloader:_step(dl)
     if dl.cancelled then
-        self:_releaseStandby(dl)
-        self:_cleanupWorkspace(dl)
-        self:_notifyCompletion(dl, false, dl.cancel_reason or "cancelled")
-        self:_finishJob(dl)
+        if dl.resumable then
+            self:_preserveWorkspace(dl, dl.cancel_reason or "cancelled")
+        else
+            self:_releaseStandby(dl)
+            self:_cleanupWorkspace(dl)
+            self:_notifyCompletion(dl, false, dl.cancel_reason or "cancelled")
+            self:_finishJob(dl)
+        end
         if not dl.prefetch then
             self.show_transient(_("Download cancelled"), 2)
         end
@@ -847,22 +938,53 @@ function Downloader:_step(dl)
                 dl.progress_dialog:close()
                 dl.progress_dialog = nil
             end
-            self:_releaseStandby(dl)
-            self:_cleanupWorkspace(dl)
+            if dl.resumable then
+                self:_preserveWorkspace(dl, "incomplete_full_book")
+            else
+                self:_releaseStandby(dl)
+                self:_cleanupWorkspace(dl)
+            end
             logger.warn(
                 "full-book download aborted after chapter failures:",
                 "success=", tostring(#dl.selected),
                 "failed=", tostring(#dl.failed),
                 "total=", tostring(dl.total)
             )
-            self:_notifyCompletion(dl, false, "incomplete_full_book")
-            self:_finishJob(dl)
+            if not dl.resumable then
+                self:_notifyCompletion(dl, false, "incomplete_full_book")
+                self:_finishJob(dl)
+            end
             if not dl.prefetch then
-                self.show_info(T(_(
-                    "Full-book download stopped: %1 of %2 chapters failed.\n\nNo incomplete EPUB was saved. Please retry the download."
-                ), tostring(#dl.failed), tostring(dl.total)))
+                local message = dl.resumable
+                    and "Full-book download paused: %1 of %2 chapters failed.\n\nCompleted chapters were kept. Choose Download full book again to continue."
+                    or "Full-book download stopped: %1 of %2 chapters failed.\n\nNo incomplete EPUB was saved. Please retry the download."
+                self.show_info(T(_(message), tostring(#dl.failed), tostring(dl.total)))
             end
             return
+        end
+        -- The in-memory completion map is only an optimization for skipping
+        -- chapters. Before packaging, read every checkpoint marker again so a
+        -- partially written or externally removed chapter can never result in
+        -- a truncated EPUB.
+        if dl.resumable and not dl.workspace_verified then
+            local completed_count = self:_restoreFullDownloadCheckpoint(dl)
+            if completed_count < dl.total then
+                for chapter_index = 1, dl.total do
+                    if not dl.completed[chapter_index] then
+                        dl.index = chapter_index
+                        break
+                    end
+                end
+                dl.footnote_scans = {}
+                dl.footnotes_done = false
+                self:_setStage(dl,
+                    T(_("Verifying downloaded chapters %1/%2"),
+                        tostring(completed_count), tostring(dl.total)),
+                    completed_count)
+                self:_scheduleGuarded(dl, function() self:_step(dl) end)
+                return
+            end
+            dl.workspace_verified = true
         end
         if dl.footnote_scans and not dl.footnotes_done then
             self:_startFootnotes(dl)
@@ -898,8 +1020,12 @@ function Downloader:_step(dl)
                 pcall(function() cover_data = self.client:get_binary(cover_url) end)
             end
             return Content.save_book_epub(
-                self.settings, dl.book, dl.selected, dl.bodies,
-                dl.suffix, dl.assets, dl.state.css, cover_data
+                self.settings, dl.book,
+                dl.resumable and dl.chapters or dl.selected,
+                dl.resumable and { __workspace_text_dir = dl.workspace.text_dir } or dl.bodies,
+                dl.suffix,
+                dl.resumable and Content.full_download_workspace_assets(dl.workspace) or dl.assets,
+                dl.state.css, cover_data
             )
         end)
         self:_cleanupWorkspace(dl)
@@ -1050,6 +1176,18 @@ function Downloader:_step(dl)
             end),
             cancel_text = _("Close"),
         })
+        return
+    end
+
+    if dl.resumable and dl.completed[dl.index] then
+        self:_setStage(dl,
+            T(_("Resuming downloaded chapter %1/%2"),
+                tostring(dl.index), tostring(dl.total)), dl.index)
+        dl.index = dl.index + 1
+        if dl.progress_dialog then
+            dl.progress_dialog:reportProgress(dl.index - 1)
+        end
+        self:_scheduleGuarded(dl, function() self:_step(dl) end)
         return
     end
 
