@@ -5,6 +5,7 @@ local Chapters = require("weread.lib.annotation_chapters")
 local Source = require("weread.lib.annotation_source")
 local Sync = {}
 Sync.__index = Sync
+Sync.NETWORK_REQUIRED = "annotation_network_required"
 
 local function unique_underlines(rows)
     local seen, result = {}, {}
@@ -32,13 +33,21 @@ function Sync:yield(stage, delay, detail)
     coroutine.yield(state)
 end
 
+function Sync:requireNetwork()
+    if self.offline or (self.is_online and not self.is_online()) then
+        error(Sync.NETWORK_REQUIRED, 0)
+    end
+end
+
 function Sync:request(fn, progress)
-    if self.offline then error("Annotation data is not cached. Connect to continue.") end
+    self:requireNetwork()
     for attempt = 1, 3 do
         self:yield(progress and progress.stage or "download",
             attempt == 1 and 0.3 or 2 ^ attempt, progress)
+        self:requireNetwork()
         local ok, data, err = fn()
         if ok and type(data) == "table" then return data end
+        self:requireNetwork()
         if attempt == 3 then error(err or "Invalid annotation response") end
     end
 end
@@ -135,8 +144,10 @@ function Sync:run()
             end
             if missing then
                 local original = store:get(book_id, "original", uid)
-                if (not original or refreshing) and self.fetch_source and not self.offline then
+                if (not original or refreshing) and self.fetch_source then
+                    self:requireNetwork()
                     self:yield("source", 0.3)
+                    self:requireNetwork()
                     local fetched = self.fetch_source(chapter)
                     original = type(fetched) == "table" and fetched or Source.index(fetched)
                     store:put(book_id, "original", uid, original, uid)

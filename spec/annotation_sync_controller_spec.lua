@@ -157,18 +157,18 @@ drain()
 assert(calls == 2)
 -- Multi-select keeps source catalog order, including noncontiguous choices.
 context.chapters = { { chapterUid = "1" }, { chapterUid = "2" }, { chapterUid = "3" } }
-local picker, chosen, picker_options
-host.showList = function(_self, _title, items, _empty, options)
-    picker, picker_options = items, options
-    return { updateItems = function() end }
+local picker_options, chosen
+package.preload["weread.ui.annotation_chapter_picker"] = function()
+    return { show = function(options) picker_options = options; return options end }
 end
 host.startUnifiedAnnotationSync = function(_self, options) chosen = options.chapters end
 host:chooseAnnotationChapters()
-picker[4].callback(); picker[2].callback(); picker[1].callback()
-assert(#chosen == 2 and chosen[1].chapterUid == "1" and chosen[2].chapterUid == "3")
--- The picker opens on the page containing the current local XPointer range.
--- This deliberately uses uneven local chapter positions and unrelated remote
--- UIDs so remote/local chapter-number offsets cannot affect the result.
+local model = picker_options.model
+model:toggle(model.by_uid["3"]); model:toggle(model.by_uid["1"])
+picker_options.on_select(model:selection())
+assert(#chosen == 1 and chosen[1].chapterUid == "3",
+    "chapter picker allowed selecting an already matched chapter")
+-- Current chapter uses local bounds, independent of remote UID numbering.
 context.chapters, context.ranges = {}, {}
 local starts = { 0, 8, 19, 33, 48, 65, 79, 91, 103, 1000, 1300, 1600, 1900, 2200, 2500 }
 for index, start in ipairs(starts) do
@@ -182,8 +182,8 @@ host.ui.document.compareXPointers = function(_self, a, b)
     return a == b and 0 or a < b and 1 or -1
 end
 host:chooseAnnotationChapters()
-assert(picker_options.initial_page == 2,
-    "chapter picker did not open on the current local chapter page")
+assert(picker_options.model.current.chapter.chapterUid == "110",
+    "chapter picker did not locate the current local chapter")
 -- Matching one selected chapter must activate its projection immediately;
 -- waiting for every mapped chapter leaves valid underlines invisible.
 context.chapters = { { chapterUid = "1" }, { chapterUid = "2" } }
@@ -237,5 +237,16 @@ assert(helper.legacy_entries.single
     and helper.legacy_entries.single.binding.book_id == "book"
     and helper.legacy_entries.single.records == nil,
     "clearing did not remove legacy records while preserving the binding")
+-- Offline continuation shows a translated business message, with no Lua path,
+-- and stops at the first chapter that needs downloading.
+host.startUnifiedAnnotationSync = Controller.startUnifiedAnnotationSync
+host.isNetworkConnected = function() return false end
+context.chapters = { { chapterUid = "uncached" } }
+local previous_calls, previous_notices = calls, #notices
+host:startUnifiedAnnotationSync({ offline = true })
+drain()
+assert(calls == previous_calls and #notices == previous_notices + 1)
+assert(notices[#notices] == "Connect to the network to download annotation data. Saved matching progress will be reused.")
+assert(prevented == allowed, "offline pause leaked the standby guard")
 helper.cleanup()
 print("annotation_sync_controller_spec: consent, completion, cancellation, sessions and prefetch passed")

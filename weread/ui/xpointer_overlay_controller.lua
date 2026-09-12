@@ -228,7 +228,6 @@ end
 -- page number may stay unchanged, so the page-keyed rectangle cache must be
 -- discarded before ReaderView paints the newly reflowed document.
 function M:onUpdatePos()
-    if self._refreshAnnotationOverlay then self:_refreshAnnotationOverlay() end
     self:_invalidateXPointerOverlayLayout()
 end
 
