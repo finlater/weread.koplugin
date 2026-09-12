@@ -15,6 +15,8 @@ local checkpointed = {}
 local streamed_bodies
 local saved_chapters
 local checkpoint_checks = 0
+local cleanup_count = 0
+local fail_next_save = false
 
 package.preload["ui/widget/confirmbox"] = function()
     return { new = function(_self, options) return options end }
@@ -126,11 +128,12 @@ package.preload["weread.lib.content"] = function()
         end,
         full_download_workspace_assets = function() return {} end,
         save_book_epub = function(_settings, _book, chapters, bodies)
+            if fail_next_save then error("injected package failure") end
             saved_chapters = chapters
             streamed_bodies = bodies
             return "/cache/book/full.epub"
         end,
-        cleanup_download_workspace = function() end,
+        cleanup_download_workspace = function() cleanup_count = cleanup_count + 1 end,
     }
 end
 
@@ -180,5 +183,32 @@ expect(type(streamed_bodies) == "table"
     "final EPUB did not stream checkpointed chapter files")
 expect(checkpoint_checks >= 2,
     "full-book checkpoints were not verified again before packaging")
+
+local cleanup_before_failure = cleanup_count
+fail_next_save = true
+downloader:_step{
+    book = { book_id = "book", title = "Book" },
+    chapters = chapters,
+    selected = chapters,
+    bodies = {},
+    assets = {},
+    state = { css = "body{}" },
+    suffix = "full",
+    index = 3,
+    total = 2,
+    failed = {},
+    resumable = true,
+    workspace = {
+        path = "/cache/book/.weread-download-resume-full",
+        text_dir = "/cache/book/.weread-download-resume-full/text",
+        asset_dir = "/cache/book/.weread-download-resume-full/images",
+    },
+    workspace_verified = true,
+    footnotes_done = true,
+    annotation_failed_batches = 0,
+    started_at = 1000,
+}
+expect(cleanup_count == cleanup_before_failure,
+    "failed EPUB packaging removed resumable chapter checkpoints")
 
 print(("downloader_resume_spec: %d checks"):format(checks))

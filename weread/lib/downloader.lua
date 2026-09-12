@@ -1028,7 +1028,9 @@ function Downloader:_step(dl)
                 dl.state.css, cover_data
             )
         end)
-        self:_cleanupWorkspace(dl)
+        if ok then
+            self:_cleanupWorkspace(dl)
+        end
         self:_perf(dl, "save_epub", save_started, "ok=", tostring(ok),
             "single=", tostring(dl.single_chapter))
         if dl.progress_dialog then
