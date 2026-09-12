@@ -145,86 +145,127 @@ function Chapters.documentEnd(document)
     end
 end
 
+-- Resolve identity independently of catalog order. Only unique names are
+-- automatic; duplicate names need a unique parent context.
 function Chapters.map(document, catalog, descriptor)
     local ok, toc = pcall(document.getToc, document)
     toc = ok and type(toc) == "table" and toc or {}
-    local by_title, by_exact, by_relaxed = {}, {}, {}
-    for index, item in ipairs(toc) do
-        local norm = normalized_chapter_title(item.title)
-        by_title[norm] = by_title[norm] or {}
-        table.insert(by_title[norm], index)
-        local relaxed = relaxed_chapter_title(item.title)
-        by_relaxed[relaxed] = by_relaxed[relaxed] or {}
-        table.insert(by_relaxed[relaxed], index)
-        local exact = tostring(item.title or "")
-        by_exact[exact] = by_exact[exact] or {}
-        table.insert(by_exact[exact], index)
+    catalog = descriptor and descriptor.chapters or catalog
+    local indexes, counts = { {}, {}, {} }, { {}, {}, {} }
+    local function keys(title)
+        return { tostring(title or ""), normalized_chapter_title(title), relaxed_chapter_title(title) }
     end
-    local remote_relaxed_counts = {}
+    local parents, stack = {}, {}
+    for i, entry in ipairs(toc) do
+        local depth = tonumber(entry.depth) or 1
+        while #stack > 0 and (tonumber(toc[stack[#stack]].depth) or 1) >= depth do
+            table.remove(stack)
+        end
+        parents[i] = stack[#stack]
+        stack[#stack + 1] = i
+        for n, key in ipairs(keys(entry.title)) do
+            indexes[n][key] = indexes[n][key] or {}
+            table.insert(indexes[n][key], i)
+        end
+    end
     for _, chapter in ipairs(catalog) do
-        local relaxed = relaxed_chapter_title(chapter.title)
-        remote_relaxed_counts[relaxed] = (remote_relaxed_counts[relaxed] or 0) + 1
+        for n, key in ipairs(keys(chapter.title)) do counts[n][key] = (counts[n][key] or 0) + 1 end
     end
-    local ranges, selected, matched, previous = {}, {}, {}, 0
-    local allowed
-    if descriptor then
-        allowed = {}
-        for _, chapter in ipairs(descriptor.chapters or {}) do
-            allowed[Chapters.uid(chapter)] = true
-        end
-        -- Download manifests are authoritative, including partial/noncontiguous
-        -- selections. Their TOC is generated in exactly the same order.
-        catalog = descriptor.chapters or {}
-    end
-    for index, chapter in ipairs(catalog) do
+    local chosen, occupied, candidates = {}, {}, {}
+    for i, chapter in ipairs(catalog) do
         local uid = Chapters.uid(chapter)
-        local candidates = by_exact[tostring(chapter.title or "")]
-            or by_title[normalized_chapter_title(chapter.title)]
-        if not candidates then
-            local relaxed = relaxed_chapter_title(chapter.title)
-            local local_candidates = by_relaxed[relaxed]
-            -- A relaxed key is safe only when it identifies one chapter on
-            -- both sides. Exact/strict duplicate titles still use TOC order.
-            if remote_relaxed_counts[relaxed] == 1
-                and local_candidates and #local_candidates == 1 then
-                candidates = local_candidates
-            end
-        end
-        candidates = candidates or {}
-        local chosen
-        if descriptor and toc[index] then
-            chosen = index
-        else
-            for _, candidate in ipairs(candidates) do
-                if candidate > previous then chosen = candidate; break end
-            end
-        end
-        if chosen and toc[chosen].xpointer then
-            matched[#matched + 1] = { chapter = chapter, index = chosen }
-            previous = chosen
-        end
-        if not allowed or allowed[uid] then selected[#selected + 1] = chapter end
-    end
-    local doc_end = Chapters.documentEnd(document)
-    for index, match in ipairs(matched) do
-        local entry = toc[match.index]
-        local next_match = matched[index + 1]
-        local end_xp = next_match and toc[next_match.index].xpointer
-        -- Stop at an intervening sibling even if its title could not be
-        -- matched. Child sections belong to this chapter unless they themselves
-        -- are the next matched remote chapter.
-        for j = match.index + 1, next_match and next_match.index or #toc do
-            if (tonumber(toc[j].depth) or 1) <= (tonumber(entry.depth) or 1) then
-                end_xp = toc[j].xpointer
+        local chapter_keys = keys(chapter.title)
+        for n, key in ipairs(chapter_keys) do
+            if indexes[n][key] then
+                candidates[uid] = indexes[n][key]
+                if key ~= "" and not descriptor and #indexes[n][key] == 1 and counts[n][key] == 1 then
+                    local target = indexes[n][key][1]
+                    if not occupied[target] then chosen[uid], occupied[target] = target, uid end
+                end
                 break
             end
         end
+        if descriptor and toc[i] and not occupied[i] then
+            chosen[uid], occupied[i] = i, uid
+        end
+    end
+    -- Resolve duplicate children only inside an already identified parent.
+    -- Avoid quadratic work for pathological catalogs of repeated headings.
+    local scope, scope_counts = {}, {}
+    stack = {}
+    for i, chapter in ipairs(catalog) do
+        local depth = tonumber(chapter.level) or 1
+        while #stack > 0 and (tonumber(catalog[stack[#stack]].level) or 1) >= depth do
+            table.remove(stack)
+        end
+        local uid = Chapters.uid(chapter)
+        scope[uid] = tostring(stack[#stack] or 0) .. "\n" .. normalized_chapter_title(chapter.title)
+        scope_counts[scope[uid]] = (scope_counts[scope[uid]] or 0) + 1
+        stack[#stack + 1] = i
+    end
+    stack = {}
+    for i, chapter in ipairs(catalog) do
+        local depth = tonumber(chapter.level) or 1
+        while #stack > 0 and (tonumber(catalog[stack[#stack]].level) or 1) >= depth do
+            table.remove(stack)
+        end
+        local uid = Chapters.uid(chapter)
+        local parent = stack[#stack] and chosen[Chapters.uid(catalog[stack[#stack]])]
+        local options = candidates[uid] or {}
+        if not chosen[uid] and parent and #options <= 32
+            and scope_counts[scope[uid]] == 1 then
+            local target, ambiguous
+            for _, candidate in ipairs(options) do
+                if parents[candidate] == parent and not occupied[candidate] then
+                    if target then ambiguous = true end
+                    target = candidate
+                end
+            end
+            if target and not ambiguous then
+                chosen[uid], occupied[target] = target, uid
+            end
+        end
+        stack[#stack + 1] = i
+    end
+    local matched, selected, ranges = {}, {}, {}
+    for _, chapter in ipairs(catalog) do
+        local uid = Chapters.uid(chapter)
+        local i = chosen[uid]
+        if i and toc[i].xpointer then matched[#matched + 1] = { chapter = chapter, index = i } end
+    end
+    table.sort(matched, function(a, b) return a.index < b.index end)
+    -- Compute sibling boundaries once, including unmapped local entries.
+    local stops = {}
+    stack = {}
+    for i, entry in ipairs(toc) do
+        while #stack > 0 and (tonumber(toc[stack[#stack]].depth) or 1) >= (tonumber(entry.depth) or 1) do
+            stops[table.remove(stack)] = i
+        end
+        stack[#stack + 1] = i
+    end
+    local doc_end = Chapters.documentEnd(document)
+    for i, match in ipairs(matched) do
+        local entry = toc[match.index]
+        local stop = stops[match.index]
+        local next_match = matched[i + 1]
+        if next_match and (not stop or next_match.index < stop) then stop = next_match.index end
         ranges[Chapters.uid(match.chapter)] = {
-            start_xpointer = entry.xpointer, end_xpointer = end_xp or doc_end,
+            start_xpointer = entry.xpointer, end_xpointer = stop and toc[stop].xpointer or doc_end,
             title = entry.title, toc_index = match.index,
         }
+        selected[#selected + 1] = match.chapter
+    end
+    -- Preserve the existing API's unbound entries; callers filter by ranges.
+    for _, chapter in ipairs(catalog) do
+        if not ranges[Chapters.uid(chapter)] then selected[#selected + 1] = chapter end
     end
     return selected, ranges
+end
+
+-- Versioned range identity also invalidates checkpoints from older algorithms.
+function Chapters.rangeKey(range)
+    if not range then return nil end
+    return "mapping-v2:" .. tostring(range.start_xpointer) .. "\n" .. tostring(range.end_xpointer)
 end
 
 function Chapters.descriptor(book, path)

@@ -116,7 +116,7 @@ function M:_prepareAnnotationContext(online, refresh_catalog)
     store:importLegacy(book_id, path, document_key)
     context = { path = path, book_id = book_id, binding = binding, book = book,
         store = store, document_key = document_key, chapters = selected, ranges = ranges,
-        descriptor = descriptor, statuses = store:list(book_id, "status") }
+        descriptor = descriptor, statuses = store:reconcileRanges(book_id, document_key, ranges) }
     self._annotation_context = context
     return context
 end

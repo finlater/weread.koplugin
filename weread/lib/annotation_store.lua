@@ -90,6 +90,27 @@ function Store:put(book_id, kind, key, value, uid)
     self:write(book_id, { { kind = kind, key = key, value = value, uid = uid } })
 end
 
+-- Invalidate projections whose local chapter boundaries have changed.
+-- Shared downloads, quote indexes and thoughts are deliberately retained.
+function Store:reconcileRanges(book_id, document_key, ranges)
+    local Chapters = require("weread.lib.annotation_chapters")
+    local statuses, changes = self:list(book_id, "status"), {}
+    local prefix = document_key .. ":"
+    for key, status in pairs(statuses) do
+        if key:sub(1, #prefix) == prefix then
+            local uid = key:sub(#prefix + 1)
+            if not ranges[uid] or status.range_key ~= Chapters.rangeKey(ranges[uid]) then
+                for _, kind in ipairs({ "projection", "status", "matching" }) do
+                    changes[#changes + 1] = { kind = kind, key = key }
+                end
+                statuses[key] = nil
+            end
+        end
+    end
+    if #changes > 0 then self:write(book_id, changes) end
+    return statuses
+end
+
 function Store:clearBook(book_id)
     book_id = tostring(book_id or "")
     if book_id == "" then return false, "book id required" end
