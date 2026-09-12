@@ -94,6 +94,7 @@ package.preload["weread.lib.content"] = function()
     local workspace = {
         path = "/cache/book/.weread-download-resume-full",
         text_dir = "/cache/book/.weread-download-resume-full/text",
+        rendered_text_dir = "/cache/book/.weread-download-resume-full/rendered-text",
         asset_dir = "/cache/book/.weread-download-resume-full/images",
     }
     return {
@@ -123,6 +124,8 @@ package.preload["weread.lib.content"] = function()
                 uid = chapter.chapterUid, index = chapter_index, body = xhtml,
             }
         end,
+        reset_full_download_rendered_text = function() end,
+        save_full_download_rendered_chapter = function() end,
         load_full_download_chapter = function(_workspace, chapter)
             return "<p>checkpoint " .. tostring(chapter.chapterUid) .. "</p>"
         end,
@@ -179,8 +182,8 @@ expect(#checkpointed >= 1 and checkpointed[1].uid == 2
     "newly downloaded chapter was not checkpointed at its catalog index")
 expect(saved_chapters == chapters, "final EPUB did not retain the full catalog order")
 expect(type(streamed_bodies) == "table"
-    and streamed_bodies.__workspace_text_dir:match("/text$"),
-    "final EPUB did not stream checkpointed chapter files")
+    and streamed_bodies.__workspace_text_dir:match("/rendered%-text$"),
+    "final EPUB did not stream rendered chapter files")
 expect(checkpoint_checks >= 2,
     "full-book checkpoints were not verified again before packaging")
 
@@ -201,6 +204,7 @@ downloader:_step{
     workspace = {
         path = "/cache/book/.weread-download-resume-full",
         text_dir = "/cache/book/.weread-download-resume-full/text",
+        rendered_text_dir = "/cache/book/.weread-download-resume-full/rendered-text",
         asset_dir = "/cache/book/.weread-download-resume-full/images",
     },
     workspace_verified = true,
@@ -210,5 +214,16 @@ downloader:_step{
 }
 expect(cleanup_count == cleanup_before_failure,
     "failed EPUB packaging removed resumable chapter checkpoints")
+
+local batch_dl = { index = 1, total = 1000, completed = {} }
+for chapter_index = 1, batch_dl.total do
+    batch_dl.completed[chapter_index] = true
+end
+expect(downloader:_skipCompletedChapterBatch(batch_dl),
+    "completed chapter batch was not scheduled")
+expect(batch_dl.index == 26,
+    "resume batch should yield after 25 completed chapters")
+expect(#scheduled == 1,
+    "resume batch should schedule one continuation instead of one per chapter")
 
 print(("downloader_resume_spec: %d checks"):format(checks))

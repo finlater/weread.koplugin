@@ -13,7 +13,13 @@ local archive_calls = {}
 package.preload["logger"] = function()
     return { info = function() end, warn = function() end, err = function() end }
 end
-package.preload["weread.lib.crypto"] = function() return {} end
+package.preload["weread.lib.crypto"] = function()
+    return {
+        sha256_hex = function(data)
+            return ("%08x%08x"):format(#data, #data * 31)
+        end,
+    }
+end
 package.preload["weread.lib.reader_state"] = function() return {} end
 package.preload["weread.lib.protocol"] = function()
     return { reader_url = function(book_id) return "https://reader/" .. tostring(book_id) end }
@@ -103,6 +109,42 @@ expect(restored:find("second", 1, true) ~= nil,
     "checkpointed chapter body could not be restored")
 expect(Content.load_full_download_css(workspace) == "body{color:black}",
     "checkpointed stylesheet could not be restored")
+
+Content.save_full_download_rendered_chapter(workspace, chapters[1], 1, "<p>rendered</p>")
+local rendered = assert(Content.load_full_download_chapter(workspace, chapters[1], 1))
+expect(rendered:find("first", 1, true) ~= nil and not rendered:find("rendered", 1, true),
+    "footnote rendering overwrote the pristine resumable checkpoint")
+
+local first_path = Content.full_download_chapter_path(workspace, chapters[1], 1)
+local truncated = assert(io.open(first_path, "wb"))
+truncated:write("<!-- weread-chapter-uid: 11 -->")
+truncated:close()
+expect(not Content.full_download_chapter_exists(workspace, chapters[1], 1),
+    "truncated checkpoint with a valid marker was accepted")
+Content.save_full_download_chapter(workspace, chapters[1], 1, "<p>first</p>")
+
+local original_open = io.open
+-- luacheck: push ignore 122
+io.open = function(path, mode)
+    local file, err = original_open(path, mode)
+    if not file or path:sub(-5) ~= ".part" or mode ~= "wb" then
+        return file, err
+    end
+    return {
+        write = function(_self, data) return file:write(data) end,
+        close = function()
+            file:close()
+            return nil, "No space left on device"
+        end,
+    }
+end
+local close_ok = pcall(Content.save_full_download_chapter,
+    workspace, chapters[1], 1, "<p>must not commit</p>")
+io.open = original_open
+-- luacheck: pop
+expect(not close_ok, "checkpoint committed after close reported a disk error")
+expect(Content.full_download_chapter_exists(workspace, chapters[1], 1),
+    "previous complete checkpoint was invalidated after close failure")
 
 local output = Content.save_book_epub(settings, book, chapters,
     { __workspace_text_dir = workspace.text_dir }, "full", {}, "body{color:black}")

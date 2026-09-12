@@ -269,14 +269,20 @@ function Content.open_full_download_workspace(settings, book)
     local incoming_dir = workspace .. "/incoming"
     local asset_dir = workspace .. "/images"
     local text_dir = workspace .. "/text"
+    local checkpoint_dir = workspace .. "/checkpoints"
+    local rendered_text_dir = workspace .. "/rendered-text"
     make_path(incoming_dir)
     make_path(asset_dir)
     make_path(text_dir)
+    make_path(checkpoint_dir)
+    make_path(rendered_text_dir)
     return {
         path = workspace,
         incoming_dir = incoming_dir,
         asset_dir = asset_dir,
         text_dir = text_dir,
+        checkpoint_dir = checkpoint_dir,
+        rendered_text_dir = rendered_text_dir,
         resumable = true,
     }
 end
@@ -295,13 +301,43 @@ function Content.full_download_chapter_path(workspace, chapter, chapter_index)
     return workspace.text_dir .. "/" .. workspace_chapter_name(chapter, chapter_index)
 end
 
+function Content.full_download_checkpoint_path(workspace, chapter, chapter_index)
+    if not workspace or not workspace.checkpoint_dir then return nil end
+    return workspace.checkpoint_dir .. "/" .. workspace_chapter_name(chapter, chapter_index) .. ".meta"
+end
+
+function Content.full_download_rendered_chapter_path(workspace, chapter, chapter_index)
+    if not workspace or not workspace.rendered_text_dir then return nil end
+    return workspace.rendered_text_dir .. "/" .. workspace_chapter_name(chapter, chapter_index)
+end
+
+local function read_full_download_checkpoint(path)
+    local file = path and io.open(path, "rb")
+    if not file then return nil end
+    local data = file:read("*a")
+    local closed = file:close()
+    if not closed then return nil end
+    local uid = data:match("^uid=([^\n]*)\n")
+    local length = tonumber(data:match("\nlength=(%d+)\n"))
+    local digest = data:match("\nsha256=([0-9a-f]+)\n")
+    if not uid or not length or not digest then return nil end
+    return uid, length, digest
+end
+
 function Content.full_download_chapter_exists(workspace, chapter, chapter_index)
     local path = Content.full_download_chapter_path(workspace, chapter, chapter_index)
     local file = path and io.open(path, "rb")
     if not file then return false end
-    local head = file:read(256) or ""
-    file:close()
-    return head:find(workspace_chapter_marker(chapter), 1, true) ~= nil
+    local xhtml = file:read("*a") or ""
+    local closed = file:close()
+    if not closed or xhtml:find(workspace_chapter_marker(chapter), 1, true) == nil then
+        return false
+    end
+    local uid, length, digest = read_full_download_checkpoint(
+        Content.full_download_checkpoint_path(workspace, chapter, chapter_index))
+    return uid == basename_safe(chapter and chapter.chapterUid or "unknown")
+        and length == #xhtml
+        and digest == Crypto.sha256_hex(xhtml)
 end
 
 function Content.load_full_download_chapter(workspace, chapter, chapter_index)
@@ -319,10 +355,10 @@ local function atomic_write(path, data)
     local file, err = io.open(tmp_path, "wb")
     if not file then return nil, err end
     local ok, write_err = file:write(data)
-    file:close()
-    if not ok then
+    local closed, close_err = file:close()
+    if not ok or not closed then
         pcall(os.remove, tmp_path)
-        return nil, write_err
+        return nil, write_err or close_err
     end
     local renamed, rename_err = os.rename(tmp_path, path)
     if not renamed then
@@ -332,12 +368,10 @@ local function atomic_write(path, data)
     return true
 end
 
-function Content.save_full_download_chapter(workspace, chapter, chapter_index, xhtml)
-    local path = Content.full_download_chapter_path(workspace, chapter, chapter_index)
-    if not path then return nil, "missing full-book workspace" end
+local function full_download_chapter_xhtml(chapter, chapter_index, xhtml)
     local title = chapter and chapter.title
         or ("Chapter " .. tostring(chapter and chapter.chapterUid or chapter_index))
-    local chapter_xhtml = [[<?xml version="1.0" encoding="utf-8"?>
+    return [[<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 ]] .. workspace_chapter_marker(chapter) .. [[
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="zh-CN">
@@ -349,8 +383,41 @@ function Content.save_full_download_chapter(workspace, chapter, chapter_index, x
 ]] .. body_fragment(xhtml) .. [[
 </body>
 </html>]]
+end
+
+function Content.save_full_download_chapter(workspace, chapter, chapter_index, xhtml)
+    local path = Content.full_download_chapter_path(workspace, chapter, chapter_index)
+    local checkpoint_path = Content.full_download_checkpoint_path(workspace, chapter, chapter_index)
+    if not path or not checkpoint_path then return nil, "missing full-book workspace" end
+    local chapter_xhtml = full_download_chapter_xhtml(chapter, chapter_index, xhtml)
     local ok, err = atomic_write(path, chapter_xhtml)
     if not ok then error(err or "could not checkpoint chapter") end
+    local checkpoint = table.concat({
+        "uid=" .. basename_safe(chapter and chapter.chapterUid or "unknown"),
+        "length=" .. tostring(#chapter_xhtml),
+        "sha256=" .. Crypto.sha256_hex(chapter_xhtml),
+        "",
+    }, "\n")
+    ok, err = atomic_write(checkpoint_path, checkpoint)
+    if not ok then error(err or "could not checkpoint chapter metadata") end
+    return path
+end
+
+function Content.reset_full_download_rendered_text(workspace)
+    if not workspace or not workspace.rendered_text_dir then
+        error("missing full-book rendered workspace")
+    end
+    local ok, err = remove_tree(workspace.rendered_text_dir)
+    if not ok then error(err or "could not reset rendered chapter workspace") end
+    make_path(workspace.rendered_text_dir)
+    return true
+end
+
+function Content.save_full_download_rendered_chapter(workspace, chapter, chapter_index, xhtml)
+    local path = Content.full_download_rendered_chapter_path(workspace, chapter, chapter_index)
+    if not path then error("missing full-book rendered workspace") end
+    local ok, err = atomic_write(path, full_download_chapter_xhtml(chapter, chapter_index, xhtml))
+    if not ok then error(err or "could not save rendered chapter") end
     return path
 end
 

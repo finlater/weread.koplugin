@@ -48,6 +48,7 @@ end
 
 local Downloader = {}
 Downloader.__index = Downloader
+local RESUME_SKIP_BATCH_SIZE = 25
 
 -- o = {
 --   client, settings,                       -- injected dependencies
@@ -689,6 +690,28 @@ function Downloader:_failChapter(dl, err)
     self:_scheduleGuarded(dl, function() self:_step(dl) end)
 end
 
+function Downloader:_skipCompletedChapterBatch(dl)
+    local first_index = dl.index
+    local skipped = 0
+    while dl.index <= dl.total and dl.completed[dl.index]
+        and skipped < RESUME_SKIP_BATCH_SIZE do
+        dl.index = dl.index + 1
+        skipped = skipped + 1
+    end
+    if skipped == 0 then return false end
+    self:_setStage(dl,
+        T(_("Resuming downloaded chapter %1/%2"),
+            tostring(dl.index - 1), tostring(dl.total)), dl.index - 1)
+    if dl.progress_dialog then
+        dl.progress_dialog:reportProgress(dl.index - 1)
+    end
+    logger.info("resumed completed chapter batch:",
+        "first=", tostring(first_index), "count=", tostring(skipped),
+        "total=", tostring(dl.total))
+    self:_scheduleGuarded(dl, function() self:_step(dl) end)
+    return true
+end
+
 function Downloader:_retryChapterSource(dl, err)
     local chapter = dl.chapters[dl.index]
     local uid = tostring(chapter and chapter.chapterUid or dl.index)
@@ -778,7 +801,7 @@ function Downloader:_footnoteStep(dl)
         local valid, validation_error = Footnotes.validate(transformed)
         if valid then
             if dl.resumable then
-                Content.save_full_download_chapter(
+                Content.save_full_download_rendered_chapter(
                     dl.workspace, chapter, job.index, transformed)
             else
                 dl.bodies[uid] = transformed
@@ -813,6 +836,12 @@ function Downloader:_startFootnotes(dl)
         fallback = 0,
     }
     local selected = dl.resumable and dl.chapters or dl.selected
+    if dl.resumable then
+        -- Keep source checkpoints pristine. Footnote conversion removes
+        -- consumed definitions, so its output belongs in a disposable
+        -- rendering directory that can be rebuilt after an interrupted run.
+        Content.reset_full_download_rendered_text(dl.workspace)
+    end
     local scans = {}
     for chapter_index, chapter in ipairs(selected or {}) do
         local uid = tostring(chapter.chapterUid or chapter_index)
@@ -1022,7 +1051,7 @@ function Downloader:_step(dl)
             return Content.save_book_epub(
                 self.settings, dl.book,
                 dl.resumable and dl.chapters or dl.selected,
-                dl.resumable and { __workspace_text_dir = dl.workspace.text_dir } or dl.bodies,
+                dl.resumable and { __workspace_text_dir = dl.workspace.rendered_text_dir } or dl.bodies,
                 dl.suffix,
                 dl.resumable and Content.full_download_workspace_assets(dl.workspace) or dl.assets,
                 dl.state.css, cover_data
@@ -1181,17 +1210,7 @@ function Downloader:_step(dl)
         return
     end
 
-    if dl.resumable and dl.completed[dl.index] then
-        self:_setStage(dl,
-            T(_("Resuming downloaded chapter %1/%2"),
-                tostring(dl.index), tostring(dl.total)), dl.index)
-        dl.index = dl.index + 1
-        if dl.progress_dialog then
-            dl.progress_dialog:reportProgress(dl.index - 1)
-        end
-        self:_scheduleGuarded(dl, function() self:_step(dl) end)
-        return
-    end
+    if dl.resumable and self:_skipCompletedChapterBatch(dl) then return end
 
     local chapter = dl.chapters[dl.index]
     self:_setStage(dl,
