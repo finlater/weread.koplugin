@@ -50,7 +50,23 @@ package.preload["ffi/util"] = function()
         end,
     }
 end
-package.preload["weread.lib.content"] = function() return {} end
+local resumable_raw = {}
+local resumable_rendered = {}
+local rendered_resets = 0
+package.preload["weread.lib.content"] = function()
+    return {
+        reset_full_download_rendered_text = function()
+            rendered_resets = rendered_resets + 1
+            resumable_rendered = {}
+        end,
+        load_full_download_chapter = function(_workspace, chapter)
+            return resumable_raw[tostring(chapter.chapterUid)]
+        end,
+        save_full_download_rendered_chapter = function(_workspace, chapter, _index, body)
+            resumable_rendered[tostring(chapter.chapterUid)] = body
+        end,
+    }
+end
 package.preload["weread.ui.download_dialog"] = function() return {} end
 package.preload["weread.lib.i18n"] = function()
     return { tr = function(text) return text end }
@@ -133,5 +149,89 @@ expect(dl.state.css:find(
         "aside.wr%-book%-footnote{%-cr%-hint:footnote;", 1) ~= nil
         and dl.state.css:find("visibility:hidden", 1, true) ~= nil,
     "popup preference did not select the previous footnote CSS")
+
+local resumed_source_chapter = {
+    chapterUid = 11, chapterIdx = 1, files = { "Text/chapter1.xhtml" },
+}
+local resumed_reference_chapter = {
+    chapterUid = 22, chapterIdx = 2, files = { "Text/chapter2.xhtml" },
+}
+resumable_raw = {
+    ["11"] = [[<p><a class="noteref" href="#shared-note">[1]</a></p>
+<p id="shared-note">[1] 可跨章节恢复的脚注</p>]],
+    ["22"] = [[<p><a class="noteref" href="../Text/chapter1.xhtml#shared-note">[1]</a></p>]],
+}
+
+local function new_resumable_footnote_job()
+    return {
+        cancelled = false,
+        resumable = true,
+        workspace = { rendered_text_dir = "/cache/rendered-text" },
+        chapters = { resumed_source_chapter, resumed_reference_chapter },
+        selected = { resumed_source_chapter, resumed_reference_chapter },
+        bodies = {},
+        footnote_scans = {},
+        footnote_stats = {
+            candidates = 0, converted = 0, image_notes = 0,
+            backlinks = 0, removed_note_blocks = 0,
+            unresolved = 0, fallback = 0,
+        },
+        state = { css = "body{}" },
+        index = 3,
+        total = 2,
+        progress_dialog = {
+            setTitle = function() end,
+            reportProgress = function() end,
+        },
+    }
+end
+
+local function run_resumable_footnotes(resumable_dl)
+    local before = #scheduled
+    downloader:_startFootnotes(resumable_dl)
+    scheduled[before + 1]()
+    scheduled[before + 2]()
+    scheduled[before + 3]()
+end
+
+local first_run = new_resumable_footnote_job()
+run_resumable_footnotes(first_run)
+expect(resumable_raw["11"]:find('id="shared-note"', 1, true),
+    "first footnote conversion mutated the raw resumable checkpoint")
+
+local restarted_run = new_resumable_footnote_job()
+run_resumable_footnotes(restarted_run)
+expect(rendered_resets == 2,
+    "resumed footnote pass did not discard stale rendered chapters")
+expect(restarted_run.footnote_stats.unresolved == 0,
+    "cross-chapter footnote was unresolved after rebuilding from checkpoints")
+expect(resumable_rendered["22"]:find("可跨章节恢复的脚注", 1, true),
+    "restarted footnote pass did not embed the cross-chapter definition")
+expect(restarted_run.state.css:find("%.wr%-fn%-ref%{", 1) ~= nil,
+    "restarted footnote pass did not rebuild its stylesheet")
+
+local original_transform = Footnotes.transform_chapter
+Footnotes.transform_chapter = function()
+    error("injected footnote transformation failure")
+end
+local transform_fallback_run = new_resumable_footnote_job()
+run_resumable_footnotes(transform_fallback_run)
+Footnotes.transform_chapter = original_transform
+expect(transform_fallback_run.footnote_stats.fallback == 2,
+    "footnote transformation failures did not use original chapter fallbacks")
+expect(resumable_rendered["11"] == resumable_raw["11"]
+    and resumable_rendered["22"] == resumable_raw["22"],
+    "footnote transformation fallback did not stage original chapters for packaging")
+
+local original_validate = Footnotes.validate
+Footnotes.validate = function() return false, "injected validation failure" end
+local validation_fallback_run = new_resumable_footnote_job()
+run_resumable_footnotes(validation_fallback_run)
+Footnotes.validate = original_validate
+expect(validation_fallback_run.footnote_stats.fallback == 2,
+    "footnote validation failures did not use original chapter fallbacks")
+expect(resumable_rendered["11"] == resumable_raw["11"]
+    and resumable_rendered["22"] == resumable_raw["22"],
+    "footnote validation fallback did not stage original chapters for packaging")
 
 print(("downloader_footnotes_spec: %d checks"):format(checks))
