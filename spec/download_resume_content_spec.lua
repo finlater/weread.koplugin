@@ -115,6 +115,20 @@ local rendered = assert(Content.load_full_download_chapter(workspace, chapters[1
 expect(rendered:find("first", 1, true) ~= nil and not rendered:find("rendered", 1, true),
     "footnote rendering overwrote the pristine resumable checkpoint")
 
+local stale_rendered = assert(io.open(workspace.rendered_text_dir .. "/stale.xhtml", "wb"))
+stale_rendered:write("stale")
+stale_rendered:close()
+Content.reset_full_download_rendered_text(workspace)
+expect(not io.open(workspace.rendered_text_dir .. "/stale.xhtml", "rb"),
+    "rendered chapter workspace was not reset")
+expect(Content.full_download_chapter_exists(workspace, chapters[1], 1),
+    "resetting rendered chapters removed the pristine checkpoint")
+Content.save_full_download_rendered_chapter(workspace, chapters[1], 1, "<p>rendered first</p>")
+Content.save_full_download_rendered_chapter(workspace, chapters[2], 2, "<p>rendered second</p>")
+expect(Content.full_download_rendered_chapter_exists(workspace, chapters[1], 1)
+    and Content.full_download_rendered_chapter_exists(workspace, chapters[2], 2),
+    "rendered chapters were not available for EPUB packaging")
+
 local first_path = Content.full_download_chapter_path(workspace, chapters[1], 1)
 local truncated = assert(io.open(first_path, "wb"))
 truncated:write("<!-- weread-chapter-uid: 11 -->")
@@ -147,12 +161,12 @@ expect(Content.full_download_chapter_exists(workspace, chapters[1], 1),
     "previous complete checkpoint was invalidated after close failure")
 
 local output = Content.save_book_epub(settings, book, chapters,
-    { __workspace_text_dir = workspace.text_dir }, "full", {}, "body{color:black}")
+    { __workspace_text_dir = workspace.rendered_text_dir }, "full", {}, "body{color:black}")
 expect(io.open(output, "rb") ~= nil, "streamed EPUB was not committed")
 local streamed_text = false
 for _, call in ipairs(archive_calls) do
     if call.kind == "path" and call.name == "OEBPS/text" then
-        streamed_text = call.path == workspace.text_dir and call.recursive == true
+        streamed_text = call.path == workspace.rendered_text_dir and call.recursive == true
     end
 end
 expect(streamed_text, "EPUB writer did not stream the checkpoint text directory")

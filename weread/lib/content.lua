@@ -243,7 +243,8 @@ end
 local function remove_tree(path)
     if type(path) ~= "string"
         or (not path:match("/%.weread%-download%-%d+%-%d+$")
-            and not path:match("/%.weread%-download%-resume%-full$")) then
+            and not path:match("/%.weread%-download%-resume%-full$")
+            and not path:match("/%.weread%-download%-resume%-full/rendered%-text$")) then
         return nil, "refusing to remove an invalid download workspace"
     end
     local ok, ffiutil = pcall(require, "ffi/util")
@@ -309,6 +310,15 @@ end
 function Content.full_download_rendered_chapter_path(workspace, chapter, chapter_index)
     if not workspace or not workspace.rendered_text_dir then return nil end
     return workspace.rendered_text_dir .. "/" .. workspace_chapter_name(chapter, chapter_index)
+end
+
+function Content.full_download_rendered_chapter_exists(workspace, chapter, chapter_index)
+    local path = Content.full_download_rendered_chapter_path(workspace, chapter, chapter_index)
+    local file = path and io.open(path, "rb")
+    if not file then return false end
+    local xhtml = file:read("*a") or ""
+    local closed = file:close()
+    return closed and xhtml:find(workspace_chapter_marker(chapter), 1, true) ~= nil
 end
 
 local function read_full_download_checkpoint(path)

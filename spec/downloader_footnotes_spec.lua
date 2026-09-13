@@ -210,4 +210,28 @@ expect(resumable_rendered["22"]:find("可跨章节恢复的脚注", 1, true),
 expect(restarted_run.state.css:find("%.wr%-fn%-ref%{", 1) ~= nil,
     "restarted footnote pass did not rebuild its stylesheet")
 
+local original_transform = Footnotes.transform_chapter
+Footnotes.transform_chapter = function()
+    error("injected footnote transformation failure")
+end
+local transform_fallback_run = new_resumable_footnote_job()
+run_resumable_footnotes(transform_fallback_run)
+Footnotes.transform_chapter = original_transform
+expect(transform_fallback_run.footnote_stats.fallback == 2,
+    "footnote transformation failures did not use original chapter fallbacks")
+expect(resumable_rendered["11"] == resumable_raw["11"]
+    and resumable_rendered["22"] == resumable_raw["22"],
+    "footnote transformation fallback did not stage original chapters for packaging")
+
+local original_validate = Footnotes.validate
+Footnotes.validate = function() return false, "injected validation failure" end
+local validation_fallback_run = new_resumable_footnote_job()
+run_resumable_footnotes(validation_fallback_run)
+Footnotes.validate = original_validate
+expect(validation_fallback_run.footnote_stats.fallback == 2,
+    "footnote validation failures did not use original chapter fallbacks")
+expect(resumable_rendered["11"] == resumable_raw["11"]
+    and resumable_rendered["22"] == resumable_raw["22"],
+    "footnote validation fallback did not stage original chapters for packaging")
+
 print(("downloader_footnotes_spec: %d checks"):format(checks))

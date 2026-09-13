@@ -812,11 +812,23 @@ function Downloader:_footnoteStep(dl)
             dl.footnote_stats.fallback = dl.footnote_stats.fallback + 1
             logger.warn("footnote transform validation failed; keeping original chapter:",
                 "chapter_uid=", uid, "error=", log_error(validation_error))
+            if dl.resumable then
+                Content.save_full_download_rendered_chapter(
+                    dl.workspace, chapter, job.index, original)
+            else
+                dl.bodies[uid] = original
+            end
         end
     else
         dl.footnote_stats.fallback = dl.footnote_stats.fallback + 1
         logger.warn("footnote transform failed; keeping original chapter:",
             "chapter_uid=", uid, "error=", log_error(transformed))
+        if dl.resumable then
+            Content.save_full_download_rendered_chapter(
+                dl.workspace, chapter, job.index, original)
+        else
+            dl.bodies[uid] = original
+        end
     end
     self:_perf(dl, "footnotes", started, "chapter_uid=", uid,
         "ok=", tostring(ok), "fallback=", tostring(not ok))
@@ -1047,6 +1059,14 @@ function Downloader:_step(dl)
             local cover_url = WeRead.normalize_cover_url(dl.book.cover)
             if cover_url and cover_url ~= "" then
                 pcall(function() cover_data = self.client:get_binary(cover_url) end)
+            end
+            if dl.resumable then
+                for chapter_index, chapter in ipairs(dl.chapters) do
+                    if not Content.full_download_rendered_chapter_exists(
+                        dl.workspace, chapter, chapter_index) then
+                        error("missing rendered chapter " .. tostring(chapter_index))
+                    end
+                end
             end
             return Content.save_book_epub(
                 self.settings, dl.book,

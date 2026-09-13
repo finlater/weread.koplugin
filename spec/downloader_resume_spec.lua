@@ -17,6 +17,8 @@ local saved_chapters
 local checkpoint_checks = 0
 local cleanup_count = 0
 local fail_next_save = false
+local rendered_chapters_complete = true
+local save_book_calls = 0
 
 package.preload["ui/widget/confirmbox"] = function()
     return { new = function(_self, options) return options end }
@@ -126,11 +128,15 @@ package.preload["weread.lib.content"] = function()
         end,
         reset_full_download_rendered_text = function() end,
         save_full_download_rendered_chapter = function() end,
+        full_download_rendered_chapter_exists = function()
+            return rendered_chapters_complete
+        end,
         load_full_download_chapter = function(_workspace, chapter)
             return "<p>checkpoint " .. tostring(chapter.chapterUid) .. "</p>"
         end,
         full_download_workspace_assets = function() return {} end,
         save_book_epub = function(_settings, _book, chapters, bodies)
+            save_book_calls = save_book_calls + 1
             if fail_next_save then error("injected package failure") end
             saved_chapters = chapters
             streamed_bodies = bodies
@@ -214,6 +220,37 @@ downloader:_step{
 }
 expect(cleanup_count == cleanup_before_failure,
     "failed EPUB packaging removed resumable chapter checkpoints")
+
+local saves_before_missing_rendered = save_book_calls
+rendered_chapters_complete = false
+downloader:_step{
+    book = { book_id = "book", title = "Book" },
+    chapters = chapters,
+    selected = chapters,
+    bodies = {},
+    assets = {},
+    state = { css = "body{}" },
+    suffix = "full",
+    index = 3,
+    total = 2,
+    failed = {},
+    resumable = true,
+    workspace = {
+        path = "/cache/book/.weread-download-resume-full",
+        text_dir = "/cache/book/.weread-download-resume-full/text",
+        rendered_text_dir = "/cache/book/.weread-download-resume-full/rendered-text",
+        asset_dir = "/cache/book/.weread-download-resume-full/images",
+    },
+    workspace_verified = true,
+    footnotes_done = true,
+    annotation_failed_batches = 0,
+    started_at = 1000,
+}
+rendered_chapters_complete = true
+expect(save_book_calls == saves_before_missing_rendered,
+    "packaging started without every rendered chapter")
+expect(cleanup_count == cleanup_before_failure,
+    "missing rendered chapter removed resumable checkpoints")
 
 local batch_dl = { index = 1, total = 1000, completed = {} }
 for chapter_index = 1, batch_dl.total do
