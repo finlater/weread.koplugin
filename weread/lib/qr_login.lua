@@ -171,9 +171,9 @@ function QRLogin:_poll_protocol(uid, otp)
         error("Missing QR login UID")
     end
 
-    local url = LOGIN_INFO_URL .. "?uid=" .. WeRead.urlencode(uid) .. "&otp"
+    local url = LOGIN_INFO_URL .. "?uid=" .. WeRead.urlencode(uid) .. "&otp="
     if type(otp) == "string" and otp ~= "" then
-        url = url .. "=" .. WeRead.urlencode(otp)
+        url = url .. WeRead.urlencode(otp)
     end
 
     local headers = {
