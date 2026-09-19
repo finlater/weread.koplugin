@@ -122,14 +122,35 @@ local function clear_auth_store(store)
 end
 
 function Settings:new()
-    local data_dir = DataStorage:getFullDataDir() .. "/weread"
+    local Environment = require("weread.lib.mock_environment")
+    local environment = Environment.active()
+    local mock_endpoint
+    if environment.enabled then
+        -- Invalid saved configuration must never silently select production.
+        mock_endpoint = assert(Environment.endpoint(environment))
+    end
+    local name = mock_endpoint and "weread-mock" or "weread"
+    local data_dir = DataStorage:getFullDataDir() .. "/" .. name
     ensure_dir(data_dir)
     local obj = {
         data_dir = data_dir,
         default_cache_dir = data_dir .. "/cache",
-        settings_file = DataStorage:getSettingsDir() .. "/weread.lua",
+        settings_file = DataStorage:getSettingsDir() .. "/" .. name .. ".lua",
+        mock_endpoint = mock_endpoint,
+        collection_name = name,
     }
     obj.store = LuaSettings:open(obj.settings_file)
+    if mock_endpoint then
+        obj.store:saveSetting("auth_schema_version", Settings.AUTH_SCHEMA_VERSION)
+        obj.store:saveSetting("api_key", "mock-api-key")
+        obj.store:saveSetting("cookies", { wr_skey = "mock-only", wr_vid = "900000" })
+        obj.store:saveSetting("account", { name = "Mock", user_vid = "900000", login_method = "mock" })
+        obj.store:saveSetting("wr_ticket", "")
+        obj.store:saveSetting("wr_wrpa", "")
+        -- A test must not move downloaded files into a production cache.
+        obj.store:saveSetting("download_dir", "")
+        obj.store:flush()
+    end
     -- cache_dir is the download root; defaults to <data_dir>/cache unless overridden.
     local download_dir = obj.store:readSetting("download_dir", "")
     obj.cache_dir = (type(download_dir) == "string" and download_dir ~= "") and download_dir or obj.default_cache_dir
@@ -324,6 +345,7 @@ end
 
 -- Pass nil or "" to reset to the default download directory.
 function Settings:set_download_dir(path)
+    if self.mock_endpoint then return self.cache_dir end
     if type(path) ~= "string" or path == "" then
         self:set("download_dir", "")
         self.cache_dir = self.default_cache_dir

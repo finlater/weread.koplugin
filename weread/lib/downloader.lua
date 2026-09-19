@@ -1228,7 +1228,7 @@ function Downloader:_step(dl)
         if not dl.single_chapter and not dl.separate_chapters then
             pcall(function()
                 local ReadCollection = require("readcollection")
-                local COLLECTION_NAME = "weread"
+                local COLLECTION_NAME = self.settings.collection_name or "weread"
                 if not ReadCollection.coll then
                     ReadCollection:_read()
                 end

@@ -156,7 +156,7 @@ function M:moveBooksToNewDir(movable, new_dir)
             -- remove + add is more reliable while the new file is on disk.
             pcall(function()
                 local ReadCollection = require("readcollection")
-                local name = "weread"
+                local name = self.settings.collection_name or "weread"
                 if not ReadCollection.coll then
                     ReadCollection:_read()
                 end
@@ -749,7 +749,7 @@ function M:clearBookCache(book_id)
     if path_to_remove then
         pcall(function()
             local ReadCollection = require("readcollection")
-            local name = "weread"
+            local name = self.settings.collection_name or "weread"
             if not ReadCollection.coll then
                 ReadCollection:_read()
             end
@@ -766,7 +766,7 @@ function M:clearAllMPCache()
     local books = self.settings:get("books", {})
     pcall(function()
         local ReadCollection = require("readcollection")
-        local name = "weread"
+        local name = self.settings.collection_name or "weread"
         if not ReadCollection.coll then
             ReadCollection:_read()
         end
@@ -795,7 +795,7 @@ function M:clearAllCache()
     local books = self.settings:get("books", {})
     pcall(function()
         local ReadCollection = require("readcollection")
-        local name = "weread"
+        local name = self.settings.collection_name or "weread"
         if not ReadCollection.coll then
             ReadCollection:_read()
         end

@@ -272,6 +272,25 @@ function Client:request(opts)
     local diagnostic_api = req_opts.diagnostic_api
     req_opts.diagnostic_api = nil
 
+    if self.settings.mock_endpoint then
+        -- Only this plugin's requests are redirected. Never forward credentials
+        -- or let an unavailable mock fall back to the original destination.
+        req_opts.url = self.settings.mock_endpoint .. "/__proxy?url=" .. WeRead.urlencode(opts.url)
+        local mock_headers = {}
+        for key, value in pairs(req_opts.headers or {}) do
+            local name = tostring(key):lower()
+            if name == "content-type" or name == "content-length"
+                or name == "accept" or name == "user-agent" then
+                mock_headers[key] = value
+            end
+        end
+        req_opts.headers = mock_headers
+        -- LuaSocket falls back to http.PROXY for nil/false. Point this request
+        -- at the mock itself so a global Internet proxy cannot intercept it.
+        req_opts.proxy = self.settings.mock_endpoint
+        is_handle_cookie = false
+    end
+
     local results = { pcall(http.request, req_opts) }
     socketutil:reset_timeout()
     if not results[1] then
@@ -317,6 +336,19 @@ function Client:request(opts)
     end
 
     return response, code, resp_headers or {}, status
+end
+
+function Client:test_mock_connection(config)
+    local endpoint, err = require("weread.lib.mock_environment").endpoint(config)
+    if not endpoint then error(err) end
+    local probe = Client:new({ get = function(_self, _key, default) return default end })
+    local text, code = probe:request({
+        url = endpoint .. "/health", proxy = endpoint, timeout = { 3, 3 }, skip_cookie = true,
+    })
+    if code ~= 200 or probe:json_decode(text).service ~= "weread-mock" then
+        error("The address did not respond as a WeRead mock server")
+    end
+    return endpoint
 end
 
 function Client:request_follow(opts, max_redirects)

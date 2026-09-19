@@ -15,6 +15,7 @@ Run these before every PR:
 bash scripts/run_lua_specs.sh
 bash scripts/check_lua_namespace.sh
 luacheck main.lua _meta.lua weread spec
+python3 scripts/test_mock_weread.py
 ```
 
 `run_lua_specs.sh` executes every top-level `spec/*_spec.lua` with LuaJIT.
@@ -87,3 +88,19 @@ When updating the pinned KOReader commit, update all three locations together:
 - `scripts/run_koreader_integration.sh`;
 - `.github/workflows/koreader-integration.yml`;
 - this document.
+
+## Release UI acceptance / 发版前界面验收
+
+Before every release, follow [macOS simulator release testing](macos-release-testing.md).
+It defines isolated candidate-package setup, synthetic inputs, core and
+change-dependent cases, ComputerUse steps, pass criteria, evidence, and the
+remaining Kindle checks. This is a release acceptance procedure; the existing
+PluginLoader runner does not execute that UI matrix automatically.
+
+每次发版先按 [macOS 模拟器发版前测试](macos-release-testing.md) 执行并记录结果。
+脚本替身测试、真实离屏渲染、ComputerUse 窗口操作与真实服务验证应分别报告；
+不能将未执行或缺少夹具的场景标成通过。自动测试使用合成内容，不访问真实账号。
+
+已有 [本地 WeRead mock 服务](mock-weread.md)，提供无第三方依赖的 HTTP 服务、
+隔离候选包启动器和 `--smoke` 真实下载/渲染检查。基础服务契约进入普通 CI；
+ComputerUse 操作流程与故障注入命令见该文档。

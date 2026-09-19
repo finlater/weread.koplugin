@@ -49,6 +49,9 @@ package.preload["luasettings"] = function()
         end,
     }
 end
+package.preload["weread.lib.mock_environment"] = function()
+    return { active = function() return { enabled = false } end }
+end
 local created_dirs = {}
 package.preload["libs/libkoreader-lfs"] = function()
     return {

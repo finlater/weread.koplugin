@@ -84,6 +84,8 @@ function M:showInputDialog(dialog)
 end
 
 function M:isNetworkOnline()
+    -- The LAN server may be reachable without Internet/DNS connectivity.
+    if self.settings and self.settings.mock_endpoint then return self:isNetworkConnected() end
     local ok, NetworkMgr = pcall(require, "ui/network/manager")
     if not ok or not NetworkMgr or not NetworkMgr.isOnline then
         return true
@@ -103,7 +105,7 @@ end
 function M:isNetworkConnected()
     local ok, NetworkMgr = pcall(require, "ui/network/manager")
     if not ok or not NetworkMgr or not NetworkMgr.isConnected then
-        return self:isNetworkOnline()
+        return self.settings and self.settings.mock_endpoint and true or self:isNetworkOnline()
     end
     local ok_connected, connected = pcall(function()
         return NetworkMgr:isConnected()

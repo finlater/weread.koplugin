@@ -44,6 +44,9 @@ jobs:
             python3 -m py_compile scripts/*.py
           fi
 
+      - name: Offline mock service checks
+        run: python3 scripts/test_mock_weread.py
+
       - name: Release package smoke test
         run: bash scripts/package_release.sh /tmp/weread.koplugin-release-test.zip
 

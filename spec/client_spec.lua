@@ -88,6 +88,30 @@ local settings = {
 }
 local client = Client:new(settings)
 
+local mock = Client:new({
+    mock_endpoint = "http://192.168.31.111:8765",
+    get = settings.get,
+    merge_set_cookie = function() error("mock must not persist server credentials") end,
+})
+responses[#responses + 1] = { body = "mock", code = 200, headers = { ["set-cookie"] = "ignored=value" } }
+mock:request({ url = "https://weread.qq.com/web/test", headers = {
+    Authorization = "Bearer sentinel", ["x-wr-ticket"] = "sentinel", ["x-wrpa-0"] = "sentinel",
+    ["Content-Type"] = "application/json", Cookie = "sentinel=value", Host = "weread.qq.com",
+} })
+expect(requests[1].url == "http://192.168.31.111:8765/__proxy?url=https%3A%2F%2Fweread.qq.com%2Fweb%2Ftest",
+    "mock did not route to the LAN endpoint")
+expect(requests[1].headers.Authorization == nil and requests[1].headers.Cookie == nil
+    and requests[1].headers["x-wr-ticket"] == nil and requests[1].headers["x-wrpa-0"] == nil
+    and requests[1].headers.Host == nil, "credentials or original Host leaked to mock")
+expect(requests[1].headers["Content-Type"] == "application/json" and requests[1].redirect == false,
+    "mock changed payload type or allowed redirects")
+expect(requests[1].proxy == mock.settings.mock_endpoint, "mock inherited the global HTTP proxy")
+responses[#responses + 1] = { raise = "connection refused" }
+local mock_ok = pcall(mock.request, mock, { url = "https://weread.qq.com/web/test" })
+expect(not mock_ok and #requests == 2 and requests[2].url:find("192.168.31.111", 1, true),
+    "mock failure fell back to production")
+requests, timeout_calls, reset_count = {}, {}, 0
+
 responses[#responses + 1] = {
     body = "ok",
     code = 200,

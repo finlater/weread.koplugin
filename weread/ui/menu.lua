@@ -56,7 +56,7 @@ end
 
 function M:addToMainMenu(menu_items)
     menu_items.weread = {
-        text = _("WeRead"),
+        text = self.settings.mock_endpoint and _("WeRead [MOCK]") or _("WeRead"),
         sorting_hint = "tools",
         sub_item_table_func = function()
             return self:getMainMenuItems()
@@ -68,6 +68,7 @@ function M:getMainMenuItems()
     local items = {
         {
             text_func = function()
+                if self.settings.mock_endpoint then return _("Mock account (no QR login)") end
                 local account = self.settings:get("account", {})
                 if account.login_method == "qr" and tonumber(account.login_time or 0) > 0 then
                     local name = type(account.name) == "string" and account.name or ""
@@ -77,6 +78,7 @@ function M:getMainMenuItems()
                 return _("QR code login")
             end,
             keep_menu_open = true,
+            enabled_func = function() return not self.settings.mock_endpoint end,
             callback = self:safeCallback(_("QR login"), function(touchmenu_instance)
                 self._login_menu_instance = touchmenu_instance
                 local account = self.settings:get("account", {})
@@ -282,6 +284,7 @@ function M:getSettingsMenuItems()
                         text_func = function()
                             return T(_("Cache directory: %1"), BD.dirpath(self.settings:get_download_dir()))
                         end,
+                        enabled_func = function() return not self.settings.mock_endpoint end,
                         keep_menu_open = true,
                         callback = self:safeCallback(_("Cache directory"), function(touchmenu_instance)
                             self:showDownloadDirPicker(touchmenu_instance)
@@ -662,6 +665,7 @@ function M:getSettingsMenuItems()
                     },
                     {
                         text = _("Renew cookie now"),
+                        enabled_func = function() return not self.settings.mock_endpoint end,
                         keep_menu_open = true,
                         callback = self:safeCallback(_("Renew cookie now"), function()
                             self:renewCookieWithUI()
@@ -669,10 +673,22 @@ function M:getSettingsMenuItems()
                     },
                     {
                         text = _("Clear account data"),
+                        enabled_func = function() return not self.settings.mock_endpoint end,
                         keep_menu_open = true,
                         callback = self:safeCallback(_("Clear account data"), function()
                             self:confirmClearAccount()
                         end),
+                    },
+                }
+            end,
+        },
+        {
+            text = _("Advanced options"),
+            sub_item_table_func = function()
+                return {
+                    {
+                        text = _("Mock service"),
+                        sub_item_table_func = function() return self:getMockMenuItems() end,
                     },
                 }
             end,
@@ -686,12 +702,94 @@ function M:getSettingsMenuItems()
     }
 end
 
+function M:getMockMenuItems()
+    local Environment = require("weread.lib.mock_environment")
+    local function save(config, menu)
+        local ok, err = Environment.save(config)
+        if not ok then self:showInfo(_(err)); return end
+        if menu then menu:updateItems() end
+        self:showInfo(_("Saved. Restart KOReader to apply. Until then, the current environment remains active."))
+    end
+    local function edit(key, title, menu)
+        local config = Environment.read()
+        local InputDialog = require("ui/widget/inputdialog")
+        local dialog
+        dialog = InputDialog:new{
+            title = title,
+            input = tostring(config[key]),
+            input_type = key == "port" and "number" or "text",
+            buttons = { {
+                { text = _("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
+                { text = _("Save"), is_enter_default = true, callback = function()
+                    config[key] = dialog:getInputText():match("^%s*(.-)%s*$")
+                    local endpoint, err = Environment.endpoint(config)
+                    if not endpoint then self:showInfo(_(err)); return end
+                    UIManager:close(dialog)
+                    save(config, menu)
+                end },
+            } },
+        }
+        self:showInputDialog(dialog)
+    end
+    return {
+        {
+            text = self.settings.mock_endpoint and T(_("Active: Mock · %1"), self.settings.mock_endpoint)
+                or _("Active: Real WeRead service"),
+            enabled = false,
+        },
+        {
+            text = _("Enable mock after restart"),
+            checked_func = function() return Environment.read().enabled end,
+            keep_menu_open = true,
+            callback = function(menu)
+                local config = Environment.read()
+                config.enabled = not config.enabled
+                save(config, menu)
+            end,
+        },
+        {
+            text_func = function() return T(_("Server IP: %1"), Environment.read().host) end,
+            keep_menu_open = true,
+            callback = function(menu) edit("host", _("Mock server IP"), menu) end,
+        },
+        {
+            text_func = function() return T(_("Server port: %1"), Environment.read().port) end,
+            keep_menu_open = true,
+            callback = function(menu) edit("port", _("Mock server port"), menu) end,
+        },
+        {
+            text = _("Test connection"),
+            keep_menu_open = true,
+            callback = function()
+                local config = Environment.read()
+                local Trapper = require("ui/trapper")
+                Trapper:wrap(function()
+                    local completed, result = Trapper:dismissableRunInSubprocess(function()
+                        local ok, value = pcall(function()
+                            return require("weread.lib.client"):test_mock_connection(config)
+                        end)
+                        return { ok = ok, value = value }
+                    end, _("Testing mock connection..."))
+                    if not completed then return end
+                    if result and result.ok then
+                        self:showInfo(T(_("Mock connection succeeded: %1"), result.value))
+                    else
+                        logger.warn("mock connection failed:", result and tostring(result.value) or "unknown")
+                        self:showInfo(T(_("Mock connection failed: %1\nCheck the IP, port, Wi-Fi and server. No fallback to the real service."),
+                            Environment.endpoint(config) or tostring(config.host)))
+                    end
+                end)
+            end,
+        },
+    }
+end
+
 -- Open the local WeRead collection.
 -- From FileManager: open in place. From the reader: leave the book first and
 -- open via FileManager — showing the collection on top of ReaderUI leaves the
 -- document underneath, so navigating up/closing the shelf drops back into it.
 function M:showWereadCollection()
-    local COLLECTION_NAME = "weread"
+    local COLLECTION_NAME = self.settings.collection_name or "weread"
     local FileManager = require("apps/filemanager/filemanager")
     local ReadCollection = require("readcollection")
 
