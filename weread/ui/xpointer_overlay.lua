@@ -60,6 +60,13 @@ function Overlay:invalidate()
     self.visible = {}
 end
 
+function Overlay:invalidateLayout()
+    self._annotation_refresh_context = nil
+    self._annotation_refresh_generation = nil
+    self._annotation_refresh_page = nil
+    self:invalidate()
+end
+
 function Overlay:resetLayout()
     self._ordered_prefix_ends = nil
     self:invalidate()
@@ -105,7 +112,8 @@ end
 
 local function merge_lines(boxes)
     -- Merge overlapping line spans before painting, so intersections never
-    -- darken. Reuse these spans with the page's cached screen rectangles.
+    -- darken. This depends only on the cached page rectangles, so it can be
+    -- reused for repeated repaints of the same page.
     local lines = {}
     for _, entry in ipairs(boxes) do
         local rect = entry.rect

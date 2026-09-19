@@ -190,6 +190,28 @@ end
 host:chooseAnnotationChapters()
 assert(picker_options.model.current.chapter.chapterUid == "110",
     "chapter picker did not locate the current local chapter")
+-- A normal sync handles only the chapter at the current reading position;
+-- explicit selections from the chapter picker remain untouched.
+local synced_chapters
+host.startUnifiedAnnotationSync = Controller.startUnifiedAnnotationSync
+local original_run_annotation_job = host._runAnnotationJob
+host._runAnnotationJob = function(_self, _context, options) synced_chapters = options.chapters end
+host:startUnifiedAnnotationSync({ offline = true })
+assert(#synced_chapters == 1 and synced_chapters[1].chapterUid == "110",
+    "default annotation sync did not limit work to the current chapter")
+host:startUnifiedAnnotationSync({ offline = true, all_chapters = true })
+assert(#synced_chapters == #context.chapters,
+    "explicit whole-book sync did not retain every chapter")
+context.ranges["110"].end_xpointer = "1150"
+host.ui.document.getXPointer = function() return "1200" end
+synced_chapters = nil
+local notices_before_gap = #notices
+host:startUnifiedAnnotationSync({ offline = true })
+assert(synced_chapters == nil and #notices == notices_before_gap + 1,
+    "an unmapped reader position silently synced the preceding chapter")
+context.ranges["110"].end_xpointer = nil
+host.ui.document.getXPointer = function() return "1120" end
+host._runAnnotationJob = original_run_annotation_job
 -- Matching one selected chapter must activate its projection immediately;
 -- waiting for every mapped chapter leaves valid underlines invisible.
 context.chapters = { { chapterUid = "1" }, { chapterUid = "2" } }
@@ -208,141 +230,26 @@ store:put("book", "display", "single", nil)
 host:onUnifiedAnnotationsReady()
 assert(store:get("book", "display", "single") == true,
     "an existing partial projection was not activated when reopening the book")
--- Opening a book never matches positions. Downloads need both switches and
--- must remain in the worker, including old checkpoints and refresh attempts.
+-- Opening a book may display saved projections, but it never starts a sync.
 do
-    local preferences, online = {}, true
-    local launched, network, overlays, cancel_count = {}, {}, 0, 0
+    local sync_starts = 0
     local automatic_context = {
         path = "automatic", book_id = "automatic", document_key = "automatic",
         binding = { automatic = true }, store = store, statuses = {}, ranges = {},
-        chapters = { { chapterUid = "partial" }, { chapterUid = "cached" }, { chapterUid = "new" } },
+        chapters = { { chapterUid = "cached" } },
     }
     local automatic = setmetatable({
         _reader_session_gen = 1,
-        settings = {
-            get = function(_self, key, default) return key == "cache" and preferences or default end,
-            set = function() end, flush = function() end,
-        },
-        ui = { document = { file = "automatic",
-            findAllText = function() error("automatic position matching") end } },
-        client = {
-            get_chapter_underlines = function(_self, _book, uid)
-                network[#network + 1] = "underlines:" .. uid
-                return true, { underlines = {} }
-            end,
-            build_chapter_review_batches = function(_self, ranges)
-                local batches = {}
-                for _, range in ipairs(ranges) do batches[#batches + 1] = { { range = range } } end
-                return batches
-            end,
-            get_chapter_reviews_batch = function(_self, _book, _uid, batch)
-                network[#network + 1] = "thoughts:" .. batch[1].range
-                return true, { reviews = {} }
-            end,
-        },
+        _annotationBinding = function() return automatic_context.binding end,
+        _hasSavedAutomaticAnnotationData = function() return true end,
         _prepareAnnotationContext = function() return automatic_context end,
+        _annotationSummary = function() return { located = 0 } end,
         _usesUnifiedAnnotations = function() return true end,
-        _refreshAnnotationOverlay = function() overlays = overlays + 1 end,
-        isNetworkConnected = function() return online end,
+        _refreshAnnotationOverlay = function() end,
+        _runAnnotationJob = function() sync_starts = sync_starts + 1 end,
     }, { __index = Controller })
-    local worker_available = true
-    automatic.prefetch_worker = {
-        available = function() return worker_available end,
-        start = function(_self, options)
-            launched[#launched + 1] = options
-            options.on_launch(123, 96 * 1024)
-            return true, options
-        end,
-        cancel = function(_self, handle)
-            cancel_count = cancel_count + 1
-            handle.on_done({ ok = false, cancelled = true })
-            return true
-        end,
-    }
-    store:put("automatic", "meta", "enabled", true)
-    store:put("automatic", "download", "partial", { revision = "1", next_batch = 2,
-        underlines = { { range = "0-1", markText = "a" }, { range = "2-3", markText = "b" } } }, "partial")
-    store:put("automatic", "batch", "partial:1", {}, "partial")
-    store:put("automatic", "source_status", "cached", { revision = "1" }, "cached")
-    store:put("automatic", "matching", "automatic:cached", { next_index = 17 }, "cached")
-    local queued_before = #scheduled
-    for _, switches in ipairs({ { false, false }, { true, false }, { false, true } }) do
-        preferences.auto_prefetch_next_chapter, preferences.prefetch_annotations = unpack(switches)
-        automatic:onUnifiedAnnotationsReady()
-        automatic:prefetchChapterAnnotations({ book_id = "automatic" }, { chapterUid = "new" })
-        automatic:_runAnnotationJob(automatic_context, { background = true })
-        assert(#launched == 0 and #network == 0 and #scheduled == queued_before,
-            "disabled automatic work reached a worker or the UI scheduler")
-    end
-    preferences.auto_prefetch_next_chapter, preferences.prefetch_annotations = true, true
-    online = false
     automatic:onUnifiedAnnotationsReady()
-    assert(#launched == 0)
-    online = true
-    automatic:onUnifiedAnnotationsReady()
-    assert(#launched == 1 and #network == 0 and #scheduled == queued_before and overlays == 5)
-    local result = launched[1].task({ checkCancelled = function() end,
-        emit = function(state) assert(state.stage ~= "match") end, sleep = function() end })
-    launched[1].on_done({ ok = true, value = result })
-    assert(#network == 1 and network[1] == "thoughts:2-3",
-        "automatic resume redownloaded completed batches or started untouched chapters")
-    assert(store:get("automatic", "source_status", "partial")
-        and not store:get("automatic", "download", "partial")
-        and not store:get("automatic", "projection", "automatic:partial")
-        and store:get("automatic", "matching", "automatic:cached").next_index == 17,
-        "automatic download changed document positions or lost a matching checkpoint")
-    automatic:onUnifiedAnnotationsReady()
-    assert(#launched == 1, "completed source triggered automatic matching")
-
-    -- An interrupted refresh keeps the old source, but still needs resuming.
-    store:put("automatic", "refresh", "cached", true, "cached")
-    automatic:onUnifiedAnnotationsReady()
-    assert(#launched == 2)
-    automatic:_runAnnotationJob(automatic_context, { background = true })
-    automatic:setAnnotationPrefetchEnabled(false)
-    assert(cancel_count == 1 and not automatic._external_annotation_sync
-        and not automatic._annotation_pending_prefetch and #launched == 2,
-        "disabling thought prefetch allowed queued automatic work to launch")
-
-    preferences.prefetch_annotations = true
-    automatic:onUnifiedAnnotationsReady()
-    automatic:_runAnnotationJob(automatic_context, { background = true })
-    preferences.auto_prefetch_next_chapter = false
-    automatic:cancelAnnotationPrefetch()
-    assert(cancel_count == 2 and not automatic._external_annotation_sync
-        and not automatic._annotation_pending_prefetch,
-        "disabling chapter prefetch did not cancel annotations")
-    assert(store:get("automatic", "refresh", "cached")
-        and store:get("automatic", "source_status", "partial"), "cancellation discarded saved data")
-
-    preferences.auto_prefetch_next_chapter = true
-    worker_available = false
-    automatic:onUnifiedAnnotationsReady()
-    assert(#launched == 3 and #network == 1 and #scheduled == queued_before
-        and not automatic._external_annotation_sync, "worker unavailable fell back to the UI thread")
-    worker_available = true
-    store:put("automatic", "manual_only", "automatic", true)
-    automatic:onUnifiedAnnotationsReady()
-    assert(#launched == 3, "opening after clearing started an automatic refresh")
-    store:put("automatic", "manual_only", "automatic", nil)
-
-    -- Changing preferences must not cancel a manual operation, including one
-    -- already waiting for the background child to exit.
-    automatic.prefetch_worker.cancel = function() return true end
-    automatic:onUnifiedAnnotationsReady()
-    automatic:_runAnnotationJob(automatic_context, { offline = true })
-    automatic:setAnnotationPrefetchEnabled(false)
-    assert(automatic._annotation_pending_prefetch
-        and not automatic._annotation_pending_prefetch.options.prefetch)
-    launched[4].on_done({ ok = false, cancelled = true })
-    local manual = automatic._external_annotation_sync
-    assert(manual and not manual.prefetch)
-    automatic:cancelAnnotationPrefetch()
-    assert(automatic._external_annotation_sync == manual and not manual.cancelled)
-    automatic:_cancelUnifiedAnnotationSync()
-    drain()
-    assert(prevented == allowed, "automatic cancellation leaked a standby guard")
+    assert(sync_starts == 0, "opening a book started an automatic annotation sync")
 end
 -- Clearing is the explicit refresh path: shared annotations and every file's
 -- coordinates are removed book-wide, even for chapters absent from the current

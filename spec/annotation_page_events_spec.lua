@@ -11,7 +11,7 @@ end
 local Controller = require("weread.ui.annotation_sync_controller")
 local Lifecycle = require("weread.lib.reader_lifecycle")
 local Overlay = require("weread.ui.xpointer_overlay")
-local page, reads, comparisons, updates = 11, 0, 0, 0
+local page, stop_offset, reads, comparisons, updates = 11, 1, 0, 0, 0
 local context = { book_id = "fixture", document_key = "fixture", binding = {}, chapters = {}, ranges = {} }
 for index = 1, 5000 do
     local uid = tostring(index)
@@ -31,12 +31,12 @@ local host = { _annotation_context = context, _xpointer_overlay = Overlay:new(),
         getXPointer = function() return page end,
         getCurrentPage = function() return page end,
         getPageCount = function() return 50010 end,
-        getPageXPointer = function(_, value) return value end,
+        getPageXPointer = function(_, value) return value + stop_offset end,
         compareXPointers = function(_, a, b)
             comparisons = comparisons + 1
             return a == b and 0 or a < b and 1 or -1
         end,
-    } },
+    }, view = { view_mode = "page" } },
 }
 for _, module in ipairs({ Controller, Lifecycle }) do for key, value in pairs(module) do host[key] = value end end
 local function loaded()
@@ -45,6 +45,15 @@ local function loaded()
     return table.concat(ids, ",")
 end
 host:_refreshAnnotationOverlay(); assert(loaded() == "1,2")
+comparisons = 0
+host:onPosUpdate()
+assert(comparisons == 0, "duplicate same-page event repeated chapter lookup")
+stop_offset = 10
+host._xpointer_overlay:invalidateLayout()
+host:onPosUpdate()
+assert(loaded() == "1,2,3",
+    "layout invalidation with an unchanged page did not refresh visible chapters")
+stop_offset = 1
 page = 51; host:onPageUpdate(); assert(loaded() == "4,5,6" and updates == 1)
 page = 21; host:onPageUpdate(); assert(loaded() == "1,2,3")
 page = 40001; comparisons = 0; host:onPosUpdate()

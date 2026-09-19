@@ -105,7 +105,9 @@ end
 
 function M:onReaderReady()
     self._reader_session_gen = (self._reader_session_gen or 0) + 1
-    local perf = PluginUtil.reader_open_perf
+    local perf = PluginUtil.reader_open_perf or function(_stage, started)
+        return started or 0
+    end
     local opened = perf("reader_ready_begin", nil, "session=", self._reader_session_gen)
     self:_teardownThoughtInterception()
     self:_installReaderHighlightTapGuard()
@@ -115,6 +117,14 @@ function M:onReaderReady()
     -- the whole book table on every screen tap.
     self._current_weread_book_id = weread_book_id
     if weread_book_id then
+        local startup_session_gen = self._reader_session_gen
+        UIManager:scheduleIn(0.15, function()
+            if startup_session_gen ~= self._reader_session_gen
+                or self._current_weread_book_id ~= weread_book_id then
+                return
+            end
+            self:showTransientInfo(_("Preparing WeRead book…"), 1.5)
+        end)
         -- Always register the tap interception: even when annotations are hidden
         -- we must intercept taps on thought links to suppress the native footnote
         -- popup. Visibility is decided inside _onThoughtTap / applyAnnotationVisibility.

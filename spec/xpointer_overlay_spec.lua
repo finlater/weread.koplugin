@@ -55,6 +55,9 @@ expect(draw_calls == 12, "visible underline was not drawn as short dashes")
 expect(overlay.last_metrics.candidates == 1 and overlay.last_metrics.boxes == 1,
     "paint metrics do not describe the visible page")
 expect(overlay.last_metrics.cache_hit == false, "first paint unexpectedly hit cache")
+local cached_page = overlay.cache["1:4"]
+expect(cached_page and cached_page.lines and #cached_page.lines == 1,
+    "page cache did not retain merged drawing spans")
 
 local hit = overlay:hitTest({ x = 20, y = 25 })
 expect(hit and hit.id == "visible", "tap did not resolve the visible overlay record")
@@ -67,6 +70,8 @@ expect(overlay.last_metrics.cache_hit == true, "second paint did not report cach
 expect(sort_calls == 1, "page repaint repeated underline sorting")
 expect(draw_calls == 24 and overlay:hitTest({ x = 20, y = 25 }).id == "visible",
     "cached lines changed drawing or thought hit targets")
+expect(overlay.cache["1:4"].lines == cached_page.lines,
+    "cached page rebuilt its drawing spans during repaint")
 
 -- Unified projections are ordered by their start XPointer. Build the interval
 -- prefix once, then page turns should skip records before/after the page while
@@ -175,6 +180,11 @@ local invalidations = 0
 local host = {
     _xpointer_overlay = {
         invalidate = function() invalidations = invalidations + 1 end,
+        invalidateLayout = function(self)
+            self._annotation_refresh_page = nil
+            self:invalidate()
+        end,
+        _annotation_refresh_page = 1,
     },
 }
 for name, method in pairs(Controller) do
@@ -183,6 +193,8 @@ end
 Controller.onUpdatePos(host)
 expect(invalidations == 1,
     "UpdatePos did not invalidate cached boxes after typography reflow")
+expect(host._xpointer_overlay._annotation_refresh_page == nil,
+    "UpdatePos retained the page-level annotation refresh guard")
 Controller.onDocumentRerendered(host)
 expect(invalidations == 2,
     "DocumentRerendered did not retain the layout invalidation fallback")
@@ -278,11 +290,12 @@ expect(sync_calls == 1,
 local Unified = require("weread.ui.annotation_sync_controller")
 for name, method in pairs(Unified) do bind_host[name] = method end
 local local_book_items = bind_host:getXPointerOverlayPrototypeMenuItems()
-expect(#local_book_items == 4, "unified annotation management is not concise")
+expect(#local_book_items == 5, "unified annotation management is missing an action")
 expect(local_book_items[1].text == "Linked WeRead book: 测试书"
     and local_book_items[2].text == "Continue matching"
-    and local_book_items[3].text == "Choose chapters to match"
-    and local_book_items[4].text == "Clear underlines and thoughts",
-    "management did not distinguish resume from clearing file coordinates")
+    and local_book_items[3].text == "Sync current chapter"
+    and local_book_items[4].text == "Choose chapters to match"
+    and local_book_items[5].text == "Clear underlines and thoughts",
+    "management did not distinguish whole-book, chapter, and clearing actions")
 
 print(("xpointer_overlay_spec: %d checks"):format(checks))

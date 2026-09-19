@@ -220,7 +220,13 @@ function M:getXPointerOverlayPrototypeMenuItems()
 end
 
 function M:_invalidateXPointerOverlayLayout()
-    if self._xpointer_overlay then self._xpointer_overlay:invalidate() end
+    if self._xpointer_overlay then
+        if self._xpointer_overlay.invalidateLayout then
+            self._xpointer_overlay:invalidateLayout()
+        else
+            self._xpointer_overlay:invalidate()
+        end
+    end
 end
 
 -- CREngine emits UpdatePos after every layout-affecting typography change

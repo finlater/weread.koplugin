@@ -215,6 +215,22 @@ function M:_annotationChapterIndex(context, point)
     return high > 0 and starts[high].index or nil
 end
 
+function M:_currentAnnotationChapter(context)
+    if not context or #context.chapters == 0 then return nil end
+    local document = self.ui and self.ui.document
+    if document and type(document.getXPointer) == "function" then
+        local ok, point = pcall(document.getXPointer, document)
+        local index = ok and self:_annotationChapterIndex(context, point)
+        local chapter = index and context.chapters[index]
+        local range = chapter and context.ranges[Chapters.uid(chapter)]
+        if chapter and (not range or not range.end_xpointer
+            or compare_xpointers(document, point, range.end_xpointer) == 1) then
+            return chapter
+        end
+    end
+    if #context.chapters == 1 then return context.chapters[1] end
+end
+
 function M:_refreshAnnotationOverlay()
     local context, overlay = self._annotation_context, self._xpointer_overlay
     if not context or not overlay or overlay.enabled == false then return end
@@ -234,6 +250,22 @@ function M:_refreshAnnotationOverlay()
         end
     end
     local document = self.ui.document
+    -- A page turn normally emits both PageUpdate and PosUpdate. In paged mode
+    -- both callbacks see the same stable page, so the latter must not repeat
+    -- chapter boundary comparisons before the overlay paint cache can be used.
+    local view = overlay.view or self.ui.view
+    local page = document.getCurrentPage and document:getCurrentPage()
+    local generation = context.generation or 0
+    if view and view.view_mode == "page" and page ~= nil then
+        if overlay._annotation_refresh_context == context
+            and overlay._annotation_refresh_generation == generation
+            and overlay._annotation_refresh_page == page then
+            return
+        end
+        overlay._annotation_refresh_context = context
+        overlay._annotation_refresh_generation = generation
+        overlay._annotation_refresh_page = page
+    end
     local current = document:getXPointer()
     local function chapter_at(point)
         return self:_annotationChapterIndex(context, point) or 1
@@ -251,7 +283,7 @@ function M:_refreshAnnotationOverlay()
         -- A missing page anchor must not load the rest of a large book.
         last = stop and chapter_at(stop) or (at_end and #context.chapters or active)
     end
-    local window = tostring(active) .. ":" .. tostring(last) .. ":" .. tostring(context.generation or 0)
+    local window = tostring(active) .. ":" .. tostring(last) .. ":" .. tostring(generation)
     if overlay._annotation_window == window then return end
     local records = {}
     for index = math.max(1, active - 1), math.min(#context.chapters, last + 1) do
@@ -590,6 +622,18 @@ function M:startUnifiedAnnotationSync(options)
             self:showInfo(_("No matching chapters found. Check the bound book and local chapter titles."))
             return
         end
+        local chapters = options.chapters
+        if options.all_chapters == true then
+            chapters = context.chapters
+        end
+        if not chapters then
+            local current = self:_currentAnnotationChapter(context)
+            chapters = current and { current } or {}
+        end
+        if #chapters == 0 then
+            self:showInfo(_("No matching chapters found. Check the bound book and local chapter titles."))
+            return
+        end
         context.store:put(context.book_id, "meta", "enabled", true)
         context.store:put(context.book_id, "manual_only", context.document_key, nil)
         local cache = self.settings:get("cache")
@@ -597,7 +641,10 @@ function M:startUnifiedAnnotationSync(options)
         self.settings:set("cache", cache)
         self.settings:flush()
         if self._xpointer_overlay then self._xpointer_overlay:setEnabled(true) end
-        self:_runAnnotationJob(context, options)
+        local job_options = {}
+        for key, value in pairs(options) do job_options[key] = value end
+        job_options.chapters = chapters
+        self:_runAnnotationJob(context, job_options)
     end
     if options.offline then return start() end
     if not self:requireLogin(true, true) then return end
@@ -621,7 +668,7 @@ function M:ensureAnnotationDisplay()
     if summary and summary.chapters > 0 then return false end
     local ConfirmBox = require("ui/widget/confirmbox")
     UIManager:show(ConfirmBox:new{
-        text = T(_("Match underlines and thoughts for “%1”?\nOnly chapters in this file are processed. Automatic downloads require both chapter prefetch and annotation prefetch; position matching is always manual."), binding.title or binding.book_id),
+        text = T(_("Match underlines and thoughts for “%1”?\nOnly the current chapter is processed. Choose chapters to match more."), binding.title or binding.book_id),
         ok_text = _("Start matching"), cancel_text = _("Later"),
         ok_callback = function()
             local cache = self.settings:get("cache")
@@ -651,32 +698,9 @@ function M:onUnifiedAnnotationsReady()
     self._unified_annotations_active = self:_usesUnifiedAnnotations()
     started = perf("annotation_display_state", started)
     self:_refreshAnnotationOverlay()
-    started = perf("saved_annotation_overlay", started)
-    if self:canPrefetchAnnotations()
-        and context.store:get(context.book_id, "meta", "enabled")
-        and not context.store:get(context.book_id, "manual_only", context.document_key) then
-        -- Resume downloads only with both prefetch switches enabled. Saved
-        -- source data never triggers automatic document-position matching.
-        local pending = {}
-        local partials = context.store:list(context.book_id, "download")
-        local refreshes = context.store:list(context.book_id, "refresh")
-        for _, chapter in ipairs(context.chapters) do
-            local uid = Chapters.uid(chapter)
-            if partials[uid] or refreshes[uid] then
-                pending[#pending + 1] = chapter
-            end
-        end
-        if #context.chapters == 1 and #pending == 0 and context.binding.automatic
-            and not context.store:get(context.book_id, "source_status", Chapters.uid(context.chapters[1])) then
-            pending = context.chapters
-        end
-        perf("annotation_prefetch_selection", started, "pending_chapters=", #pending,
-            "mapped_chapters=", #context.chapters)
-        if #pending > 0 then self:_runAnnotationJob(context, {
-            background = true, prefetch = true, chapters = pending }) end
-    else
-        perf("annotation_prefetch_disabled", started)
-    end
+    perf("saved_annotation_overlay", started)
+    -- Opening a book only displays saved projections. Downloading or matching
+    -- is always initiated from an explicit menu action.
 end
 
 function M:prefetchChapterAnnotations(book, chapter)
@@ -849,6 +873,12 @@ function M:getUnifiedAnnotationMenuItems()
                 return T(_("Continue matching · %1/%2 chapters, %3 underlines"),
                     tostring(summary.chapters), tostring(#context.chapters), tostring(summary.located))
             end, text = _("Continue matching"), callback = function()
+            self:startUnifiedAnnotationSync({
+                all_chapters = true,
+                offline = not self:isNetworkConnected(),
+            })
+        end },
+        { text = _("Sync current chapter"), callback = function()
             self:startUnifiedAnnotationSync({ offline = not self:isNetworkConnected() }) end },
         { text = _("Choose chapters to match"), callback = function()
             self:chooseAnnotationChapters()

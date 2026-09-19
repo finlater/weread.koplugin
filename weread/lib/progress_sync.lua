@@ -72,6 +72,7 @@ function ProgressSync:new(options)
             context.keep_local()
         end,
         notify = options.notify or function() end,
+        on_status = options.on_status or function() end,
         now = options.now or os.time,
         state = "idle",
         generation = 0,
@@ -142,7 +143,10 @@ function ProgressSync:_local_fraction()
 end
 
 function ProgressSync:capture_local()
-    local book_id = self.detect_book()
+    -- Recheck the document binding before using a cached catalog. The reader
+    -- can replace a document at the same path before its lifecycle callback
+    -- resets `current_book_id`.
+    local book_id = self.detect_book() or self.current_book_id
     if not book_id or is_mp_book(book_id) then
         return nil, "document_not_weread"
     end
@@ -556,6 +560,12 @@ function ProgressSync:_pull(options)
         if options.manual then self.notify("authentication_required", {}) end
         return false
     end
+    if options.opening == true then
+        self.on_status("checking_progress", {
+            book_id = context.book_id,
+            position = copy(local_position),
+        })
+    end
     if not self.is_online() then
         self.state = "offline"
         if options.manual then
@@ -713,7 +723,7 @@ function ProgressSync:on_reader_ready()
             self.state = "unverified"
             return
         end
-        self:_pull({ manual = false })
+        self:_pull({ manual = false, opening = true })
     end)
 end
 
@@ -737,7 +747,10 @@ function ProgressSync:on_close_document()
             self.dirty = true
         end
         if self.dirty then
-            self:_upload_snapshot(position, "document_close", false)
+            local started = self:_upload_snapshot(position, "document_close", false)
+            if started then
+                self.on_status("uploading_on_close", { position = copy(position) })
+            end
         end
     end
     self.generation = self.generation + 1
