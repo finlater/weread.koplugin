@@ -23,7 +23,9 @@ local function annotation_progress(state)
     local count = tonumber(state.count) or 0
     local fraction = count > 0 and math.max(0, math.min(1, current / count)) or 0
     if state.stage == "thoughts" then
-        return completed + fraction * 0.5
+        return completed + fraction * 0.25
+    elseif state.stage == "persist" then
+        return completed + 0.25 + fraction * 0.25
     elseif state.stage == "source" then
         return completed + 0.5
     elseif state.stage == "match" then
@@ -541,6 +543,10 @@ function M:_runAnnotationJob(context, options)
                 title = T(_("Downloading thoughts %1/%2 · chapter %3/%4"),
                     tostring(state.current or 0), tostring(state.count or 0),
                     tostring(state.index), tostring(state.total))
+            elseif state.stage == "persist" then
+                title = T(_("Saving thoughts %1/%2 · chapter %3/%4"),
+                    tostring(state.current or 0), tostring(state.count or 0),
+                    tostring(state.index), tostring(state.total))
             elseif state.stage == "match" then
                 title = T(_("Matching underlines %1/%2 · chapter %3/%4"),
                     tostring(state.current or 0), tostring(state.count or 0),
@@ -597,7 +603,10 @@ function M:startUnifiedAnnotationSync(options)
         self.settings:set("cache", cache)
         self.settings:flush()
         if self._xpointer_overlay then self._xpointer_overlay:setEnabled(true) end
-        self:_runAnnotationJob(context, options)
+        local job_options = {}
+        for key, value in pairs(options) do job_options[key] = value end
+        job_options.reset_legacy = true
+        self:_runAnnotationJob(context, job_options)
     end
     if options.offline then return start() end
     if not self:requireLogin(true, true) then return end
@@ -660,11 +669,21 @@ function M:onUnifiedAnnotationsReady()
         local pending = {}
         local partials = context.store:list(context.book_id, "download")
         local refreshes = context.store:list(context.book_id, "refresh")
+        local sources = context.store:list(context.book_id, "source_status")
+        local legacy = false
         for _, chapter in ipairs(context.chapters) do
             local uid = Chapters.uid(chapter)
             if partials[uid] or refreshes[uid] then
                 pending[#pending + 1] = chapter
             end
+            if sources[uid] and sources[uid].persistence_version
+                ~= require("weread.lib.annotation_sync").PERSISTENCE_VERSION then
+                legacy = true
+            end
+        end
+        if legacy and type(self.showTransientInfo) == "function" then
+            self:showTransientInfo(
+                _("Thought data format has been upgraded. Match again to download current data."), 3)
         end
         if #context.chapters == 1 and #pending == 0 and context.binding.automatic
             and not context.store:get(context.book_id, "source_status", Chapters.uid(context.chapters[1])) then

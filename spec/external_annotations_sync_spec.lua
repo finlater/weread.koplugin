@@ -128,8 +128,8 @@ assert(json.encode(store:get("book", "source", "1")) == source_before
     and json.encode(store:list("book", "thought")) == thoughts_before,
     "cached matching changed shared source or popup data")
 
--- Legacy completed downloads have a source snapshot but no per-range popup
--- rows. They must still materialize thoughts when first projected offline.
+-- Legacy completed downloads may contain a large inline thought payload. An
+-- ordinary open must preserve it rather than decode, clear, or replace it.
 helper.legacy_checkpoints["/legacy.epub"] = {
     book_id = "book", started_at = 123, chapters = {
         { chapter_uid = "7", complete = true, underlines = { { range = "1-2", markText = "alpha" } },
@@ -141,9 +141,9 @@ helper.legacy_checkpoints["/legacy.epub"] = {
 store:importLegacy("book", "/legacy.epub", "legacy-document")
 assert(not store:get("book", "thought", "7:1-2"))
 assert(finish(new("legacy-document", { { chapterUid = "7" } }, { offline = true })))
-assert(store:get("book", "thought", "7:1-2")[1].content == "legacy thought"
-    and store:get("book", "projection", "legacy-document:7").stats.located == 1 and #calls == count,
-    "optimization skipped legacy thought migration")
+assert(not store:get("book", "thought", "7:1-2")
+    and store:get("book", "source", "7").reviews[1] and #calls == count,
+    "ordinary legacy handling decoded or replaced the old thought payload")
 
 -- Matcher upgrades must invalidate only the document projection. Downloaded
 -- chapter data remains reusable and is projected again without network work.
@@ -192,14 +192,16 @@ assert(done == nil and reason == Sync.NETWORK_REQUIRED and offline.index == 2)
 assert(store:get("book", "projection", "offline-resume:3") and #calls == count)
 assert(not store:get("book", "source", "4"))
 
--- Disconnecting during the scheduled delay must not dispatch an HTTP request.
-local connected = true
-local interrupted = new("disconnect", { { chapterUid = "4" } }, { is_online = function() return connected end })
+-- A transient link-state false negative during the scheduled delay must not
+-- interrupt a request that can still reach the WeRead endpoint.
+local interrupted = new("disconnect", { { chapterUid = "8" } }, {
+    is_online = function() return false end,
+})
 local running, state = interrupted:step()
 assert(running == false and state.stage == "underlines")
-connected = false
-done, reason = finish(interrupted)
-assert(done == nil and reason == Sync.NETWORK_REQUIRED and #calls == count)
+done = finish(interrupted)
+assert(done and #calls > count,
+    "transient link state interrupted a successful annotation request")
 
 -- A saved partial thoughts batch still needs the network; its checkpoint stays.
 local partial = new("partial-offline", { { chapterUid = "4" } })
@@ -262,5 +264,94 @@ empty = true
 assert(finish(new("selected-refresh", { chapters[1] }, { clear_existing = true, refresh = true })))
 assert(store:get("book", "status", "selected-refresh:1").stats.total == 0,
     "successful zero-thought chapter must be recorded as retrieved")
+
+-- A large single gateway batch is normalized in bounded chunks. Interrupting
+-- after the first chunk leaves both the raw batch and its local checkpoint,
+-- then resuming finishes without repeating either network request.
+local bulk_calls = 0
+local bulk_client = {
+    get_chapter_underlines = function()
+        bulk_calls = bulk_calls + 1
+        local underlines = {}
+        for i = 1, 101 do
+            underlines[i] = { range = tostring(i) .. "-" .. tostring(i), markText = "bulk" }
+        end
+        return true, { underlines = underlines }
+    end,
+    build_chapter_review_batches = function(_self, ranges)
+        return { ranges }
+    end,
+    get_chapter_reviews_batch = function(_self, _book, _uid, batch)
+        bulk_calls = bulk_calls + 1
+        local reviews = {}
+        for _, range in ipairs(batch) do
+            local page_reviews = {}
+            for i = 1, 20 do
+                page_reviews[i] = { review = { content = "bulk thought", author = {} } }
+            end
+            reviews[#reviews + 1] = { range = range, pageReviews = page_reviews }
+        end
+        return true, { reviews = reviews }
+    end,
+}
+local bulk_store = helper.new()
+local bulk_batch_reads = 0
+local bulk_get = bulk_store.get
+bulk_store.get = function(self, book_id, kind, key)
+    if kind == "batch" and key == "bulk:1" then bulk_batch_reads = bulk_batch_reads + 1 end
+    return bulk_get(self, book_id, kind, key)
+end
+local function bulk_job()
+    return Sync:new({ store = bulk_store, client = bulk_client, book_id = "bulk",
+        chapters = { { chapterUid = "bulk" } } })
+end
+local bulk = bulk_job()
+for _ = 1, 20 do
+    assert(bulk:step() ~= nil)
+    local stage = bulk_store:get("bulk", "download", "bulk")
+    if stage and stage.next_persist_review == 101 then break end
+end
+local bulk_stage = bulk_store:get("bulk", "download", "bulk")
+assert(bulk_stage and bulk_stage.next_persist_batch == 1 and bulk_stage.next_persist_review == 101,
+    "large thought batch was not checkpointed after 100 ranges")
+assert(bulk_batch_reads == 1,
+    "a segmented batch was decoded more than once in one coroutine run")
+assert(bulk_store:get("bulk", "batch", "bulk:1") and bulk_store:get("bulk", "thought", "bulk:100-100"),
+    "checkpoint lost staged reviews or normalized thoughts")
+bulk.cancelled = true
+bulk_batch_reads = 0
+assert(finish(bulk_job()) and bulk_calls == 2,
+    "resume repeated a saved large annotation batch")
+assert(bulk_batch_reads == 1,
+    "resumed persistence decoded its remaining batch more than once")
+local bulk_source = bulk_store:get("bulk", "source", "bulk")
+assert(bulk_source and #(bulk_source.reviews or {}) == 0
+    and bulk_store:get("bulk", "thought", "bulk:101-101")
+    and not bulk_store:get("bulk", "batch", "bulk:1"),
+    "large annotation source retained raw reviews after persistence")
+
+-- A completed cache from before per-range persistence is preserved during
+-- ordinary/automatic runs. Only an explicit user sync replaces it without
+-- decoding the potentially oversized source payload.
+local legacy_store = helper.new()
+legacy_store:put("book", "source", "legacy", {
+    book_id = "book", chapter_uid = "legacy", underlines = { { range = "1-2" } },
+    reviews = { { range = "1-2", pageReviews = { { review = { content = "old" } } } } },
+}, "legacy")
+legacy_store:put("book", "source_status", "legacy", { revision = "old", total = 1 }, "legacy")
+local legacy_job = Sync:new({ store = legacy_store, client = client, book_id = "book",
+    chapters = { { chapterUid = "legacy" } }, offline = true })
+done, reason = finish(legacy_job)
+assert(done and reason == nil
+    and legacy_store:get("book", "source", "legacy").reviews[1],
+    "automatic legacy handling erased the old source")
+count = #calls
+assert(finish(Sync:new({ store = legacy_store, client = client, book_id = "book",
+    chapters = { { chapterUid = "legacy" } }, reset_legacy = true })))
+local migrated_status = legacy_store:get("book", "source_status", "legacy")
+assert(calls[count + 1] == "ulegacy" and migrated_status.persistence_version
+        == Sync.PERSISTENCE_VERSION
+    and #(legacy_store:get("book", "source", "legacy").reviews or {}) == 0,
+    "legacy source was not replaced by bounded persistence")
 helper.cleanup()
 print("external_annotations_sync_spec: resume, cross-file reuse, empty updates and offline prefetch passed")

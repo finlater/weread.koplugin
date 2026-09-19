@@ -3,9 +3,18 @@
 local External = require("weread.lib.external_annotations")
 local Chapters = require("weread.lib.annotation_chapters")
 local Source = require("weread.lib.annotation_source")
+local Annotations = require("weread.lib.annotations")
 local Sync = {}
 Sync.__index = Sync
 Sync.NETWORK_REQUIRED = "annotation_network_required"
+Sync.PERSISTENCE_VERSION = 1
+
+-- Gateway batches normally contain 30 ranges. Keep the local write path
+-- bounded too, in case a future endpoint response is larger than expected.
+-- A single oversized thought is retained rather than silently truncated.
+local MAX_PERSIST_RANGES = 100
+local MAX_PERSIST_THOUGHTS = 2000
+local MAX_PERSIST_BYTES = 256 * 1024
 
 local function unique_underlines(rows)
     local seen, result = {}, {}
@@ -17,6 +26,33 @@ local function unique_underlines(rows)
         end
     end
     return result
+end
+
+local function underlines_by_range(rows)
+    local result = {}
+    for _, row in ipairs(rows or {}) do
+        result[tostring(row.range or "")] = row
+    end
+    return result
+end
+
+local function thought_ranges(source)
+    local result = {}
+    for _, row in ipairs(source and source.underlines or {}) do
+        result[tostring(row.range or "")] = true
+    end
+    return next(result) and result or nil
+end
+
+local function popup_items_bytes(items)
+    local bytes = 32
+    for _, item in ipairs(items or {}) do
+        bytes = bytes + 64
+        for _, key in ipairs({ "abstract", "author", "content" }) do
+            bytes = bytes + #(tostring(item[key] or ""))
+        end
+    end
+    return bytes
 end
 
 function Sync:new(options)
@@ -34,7 +70,11 @@ function Sync:yield(stage, delay, detail)
 end
 
 function Sync:requireNetwork()
-    if self.offline or (self.is_online and not self.is_online()) then
+    -- `offline` is captured before the job starts. Do not poll KOReader's
+    -- link-state API while a request is running: it can momentarily report
+    -- disconnected although the HTTP route remains usable. Actual request
+    -- results and retries are the authoritative signal after startup.
+    if self.offline then
         error(Sync.NETWORK_REQUIRED, 0)
     end
 end
@@ -85,6 +125,26 @@ function Sync:run()
         local range_key = Chapters.rangeKey(self.ranges and self.ranges[uid])
         local refreshing = store:get(book_id, "refresh", uid)
         local source_status = store:get(book_id, "source_status", uid)
+        if source_status and not refreshing
+            and source_status.persistence_version ~= Sync.PERSISTENCE_VERSION then
+            -- Do not decode a legacy chapter snapshot just to convert it: it
+            -- may contain the oversized review payload this format replaces.
+            -- Automatic paths leave it untouched; an explicit user sync
+            -- performs the bounded rebuild below.
+            if not self.reset_legacy then
+                self:yield("legacy")
+                goto next_chapter
+            end
+            self:requireNetwork()
+            store:write(book_id, {
+                { kind = "source", key = uid }, { kind = "source_status", key = uid },
+                { kind = "download", key = uid }, { kind = "batch", uid = uid },
+                { kind = "thought", uid = uid }, { kind = "refresh", key = uid },
+                { kind = "matching", uid = uid }, { kind = "projection", uid = uid },
+                { kind = "status", uid = uid },
+            })
+            source_status = nil
+        end
         if source_status and not refreshing then
             local status = self.document_key and store:get(book_id, "status",
                 store:projectionKey(self.document_key, uid))
@@ -98,6 +158,7 @@ function Sync:run()
                 goto next_chapter
             end
         end
+        local previous_source = refreshing and store:get(book_id, "source", uid)
         local source = not refreshing and store:get(book_id, "source", uid)
         -- Numeric generations are committed together with their per-range
         -- thoughts below. Legacy imports have not materialized those yet.
@@ -108,6 +169,7 @@ function Sync:run()
             started = self.perf("chapter_source_cache", started,
                 "chapter_uid=", uid, "cache_hit=", source ~= nil)
         end
+        local stale_thoughts, persisted_thoughts = nil, nil
         if not source then
             local stage = store:get(book_id, "download", uid)
             if not stage then
@@ -119,7 +181,8 @@ function Sync:run()
                     end
                     return ok, data, err
                 end, { stage = "underlines" })
-                stage = { underlines = unique_underlines(result.underlines), next_batch = 1 }
+                stage = { underlines = unique_underlines(result.underlines), next_batch = 1,
+                    previous_thoughts = thought_ranges(previous_source) }
             end
             if not stage.revision then
                 -- A persistent generation avoids hashing megabytes of thought
@@ -157,13 +220,66 @@ function Sync:run()
                     current = downloaded, count = #ranges,
                 })
             end
+
+            -- Raw responses remain resumable staging data only. Convert one
+            -- saved batch at a time to compact per-range popup records, then
+            -- remove that raw batch in the same transaction as its checkpoint.
+            -- This never builds a chapter-sized review object in memory or in
+            -- a single SQLite payload.
+            local by_range = underlines_by_range(stage.underlines)
+            local persist_batch = stage.next_persist_batch or 1
+            local persist_review = stage.next_persist_review or 1
+            local persist_rows
+            while persist_batch <= #batches do
+                if not persist_rows then
+                    persist_rows = store:get(book_id, "batch", uid .. ":" .. persist_batch)
+                    assert(persist_rows, "Missing saved thoughts batch")
+                end
+                local changes, range_count, thought_count, byte_count = {}, 0, 0, 0
+                while persist_review <= #persist_rows do
+                    local review = persist_rows[persist_review]
+                    local items = Annotations.buildThoughtPopupItems(review)
+                    local item_bytes = popup_items_bytes(items)
+                    local would_exceed = range_count > 0 and (range_count >= MAX_PERSIST_RANGES
+                        or thought_count + #items > MAX_PERSIST_THOUGHTS
+                        or byte_count + item_bytes > MAX_PERSIST_BYTES)
+                    if would_exceed then break end
+                    local range = tostring(review.range or "")
+                    local underline = by_range[range]
+                    if underline and External.quote_for(underline, {}) == "" then
+                        local quote = External.quote_for(underline, { review })
+                        if quote ~= "" then underline.markText = quote end
+                    end
+                    changes[#changes + 1] = { kind = "thought", key = uid .. ":" .. range,
+                        uid = uid, value = items }
+                    if stage.previous_thoughts then
+                        stage.persisted_thoughts = stage.persisted_thoughts or {}
+                        stage.persisted_thoughts[range] = true
+                    end
+                    range_count = range_count + 1
+                    thought_count = thought_count + #items
+                    byte_count = byte_count + item_bytes
+                    persist_review = persist_review + 1
+                end
+                if persist_review > #persist_rows then
+                    changes[#changes + 1] = { kind = "batch", key = uid .. ":" .. persist_batch }
+                    persist_batch, persist_review = persist_batch + 1, 1
+                    persist_rows = nil
+                end
+                stage.next_persist_batch = persist_batch
+                stage.next_persist_review = persist_review
+                changes[#changes + 1] = { kind = "download", key = uid, uid = uid, value = stage }
+                store:write(book_id, changes)
+                local persisted = 0
+                for batch_index = 1, persist_batch - 1 do
+                    persisted = persisted + #(batches[batch_index] or {})
+                end
+                self:yield("persist", nil, {
+                    current = math.min(persisted, #ranges), count = #ranges,
+                })
+            end
             source = { book_id = book_id, chapter_uid = uid,
                 underlines = stage.underlines, reviews = {} }
-            for batch_index = 1, #batches do
-                local rows = store:get(book_id, "batch", uid .. ":" .. batch_index)
-                assert(rows, "Missing saved thoughts batch")
-                for _, review in ipairs(rows) do source.reviews[#source.reviews + 1] = review end
-            end
             local missing = false
             for _, row in ipairs(source.underlines) do
                 if External.quote_for(row, source.reviews) == "" then missing = true; break end
@@ -188,6 +304,8 @@ function Sync:run()
             end
             source.revision = stage.revision
             if self.perf then started = self.perf("chapter_source_ready", started, "chapter_uid=", uid) end
+            stale_thoughts = stage.previous_thoughts
+            persisted_thoughts = stage.persisted_thoughts
         end
         local projection, document_key = nil, self.document_key
         if self.document then
@@ -250,14 +368,15 @@ function Sync:run()
             changes = {
                 { kind = "source", key = uid, uid = uid, value = source },
                 { kind = "source_status", key = uid, uid = uid,
-                    value = { revision = source.revision, total = #source.underlines } },
+                    value = { revision = source.revision, total = #source.underlines,
+                        persistence_version = Sync.PERSISTENCE_VERSION } },
                 { kind = "download", key = uid }, { kind = "batch", uid = uid },
-                { kind = "refresh", key = uid }, { kind = "thought", uid = uid },
+                { kind = "refresh", key = uid },
             }
-            for _, review in ipairs(source.reviews or {}) do
-                local range = tostring(review.range or "")
-                changes[#changes + 1] = { kind = "thought", key = uid .. ":" .. range, uid = uid,
-                    value = require("weread.lib.annotations").buildThoughtPopupItems(review) }
+            for range in pairs(stale_thoughts or {}) do
+                if not (persisted_thoughts and persisted_thoughts[range]) then
+                    changes[#changes + 1] = { kind = "thought", key = uid .. ":" .. range }
+                end
             end
         end
         if document_key then

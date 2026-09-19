@@ -124,12 +124,14 @@ cache.show_annotations = true
 local titles = table.concat(progress_titles, "\n")
 assert(titles:find("Downloading thoughts 1/1 · chapter 1/1", 1, true),
     "thought download progress did not expose item counts")
+assert(titles:find("Saving thoughts 1/1 · chapter 1/1", 1, true),
+    "thought persistence did not expose item counts")
 assert(titles:find("Matching underlines 1/1 · chapter 1/1", 1, true),
     "matching progress did not expose item counts")
 local thought_progress_moved = false
 for _, update in ipairs(progress_updates) do
     if update.title == "Downloading thoughts 1/1 · chapter 1/1"
-        and update.progress == 0.5 then
+        and update.progress == 0.25 then
         thought_progress_moved = true
         break
     end
@@ -157,6 +159,28 @@ host:setAnnotationPrefetchEnabled(false)
 host:prefetchChapterAnnotations({ book_id = "book" }, { chapterUid = "3" })
 drain()
 assert(calls == 2)
+-- A legacy completed source is retained until an explicit user sync. Prefetch
+-- must not decode it or start an automatic network-backed rebuild.
+host:setAnnotationPrefetchEnabled(true)
+store:put("book", "source", "3", { chapter_uid = "3", underlines = {}, reviews = {} }, "3")
+store:put("book", "source_status", "3", { revision = "legacy", total = 0 }, "3")
+host:prefetchChapterAnnotations({ book_id = "book" }, { chapterUid = "3" })
+drain()
+assert(calls == 2 and not store:get("book", "source_status", "3").persistence_version,
+    "prefetch rebuilt an old completed source automatically")
+context.chapters, context.ranges = { { chapterUid = "3" } }, {}
+store:put("book", "meta", "enabled", true)
+    local legacy_notice, calls_before_legacy = nil, calls
+    local original_transient_info = host.showTransientInfo
+    host.showTransientInfo = function(_self, message) legacy_notice = message end
+    host:onUnifiedAnnotationsReady()
+    drain()
+    assert(calls == calls_before_legacy
+        and legacy_notice == "Thought data format has been upgraded. Match again to download current data.",
+        "opening an old cache did not stay local with a rematch notice")
+    host.showTransientInfo = original_transient_info
+    store:put("book", "source", "3", nil)
+    store:put("book", "source_status", "3", nil)
 -- Multi-select keeps source catalog order, including noncontiguous choices.
 context.chapters = { { chapterUid = "1" }, { chapterUid = "2" }, { chapterUid = "3" } }
 local picker_options, chosen
