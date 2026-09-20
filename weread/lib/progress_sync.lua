@@ -72,6 +72,7 @@ function ProgressSync:new(options)
             context.keep_local()
         end,
         notify = options.notify or function() end,
+        on_status = options.on_status or function() end,
         now = options.now or os.time,
         state = "idle",
         generation = 0,
@@ -141,21 +142,39 @@ function ProgressSync:_local_fraction()
     return nil
 end
 
-function ProgressSync:capture_local()
-    local book_id = self.detect_book()
-    if not book_id or is_mp_book(book_id) then
-        return nil, "document_not_weread"
+function ProgressSync:_detect_document_book(document, path)
+    local cached = self.document_binding
+    if cached and cached.document == document and cached.path == path then
+        return cached.book_id
     end
-    book_id = tostring(book_id)
+    local book_id = self.detect_book()
+    book_id = book_id and tostring(book_id) or nil
+    self.document_binding = {
+        document = document,
+        path = path,
+        book_id = book_id,
+    }
+    return book_id
+end
+
+function ProgressSync:capture_local()
     local document = self.get_document()
     local path = document_path(document)
     if not document or not path then return nil, "document_unavailable" end
+    -- A page update only needs the binding established for this exact document
+    -- object and path. A replacement document, even at the same path, is
+    -- detected again before its catalog can be reused.
+    local book_id = self:_detect_document_book(document, path)
+    if not book_id or is_mp_book(book_id) then
+        return nil, "document_not_weread"
+    end
     local cached = self.document_context
     local book
     local chapters
     local current_chapter
     local is_full_book
-    if cached and cached.book_id == book_id and cached.path == path then
+    if cached and cached.document == document
+        and cached.book_id == book_id and cached.path == path then
         book = cached.book
         chapters = cached.chapters
         current_chapter = cached.current_chapter
@@ -171,6 +190,7 @@ function ProgressSync:capture_local()
         _index, current_chapter, is_full_book =
             self.get_file_context(book, path)
         self.document_context = {
+            document = document,
             book_id = book_id,
             book = book,
             chapters = chapters,
@@ -565,6 +585,12 @@ function ProgressSync:_pull(options)
         end
         return false
     end
+    if options.opening == true then
+        self.on_status("checking_progress", {
+            book_id = context.book_id,
+            position = copy(local_position),
+        })
+    end
 
     local generation = self.generation
     self.pulling = true
@@ -686,13 +712,15 @@ function ProgressSync:on_reader_ready()
     self.local_position = nil
     self.remote_position = nil
     self.document_context = nil
+    self.document_binding = nil
     self.verified = false
     self.dirty = false
     self.state = "waiting"
 
     self.scheduler:scheduleIn(OPEN_DELAY_SECONDS, function()
         if generation ~= self.generation then return end
-        local book_id = self.detect_book()
+        local document = self.get_document()
+        local book_id = self:_detect_document_book(document, document_path(document))
         if not book_id or is_mp_book(book_id) then
             self.state = "unsupported"
             return
@@ -713,7 +741,7 @@ function ProgressSync:on_reader_ready()
             self.state = "unverified"
             return
         end
-        self:_pull({ manual = false })
+        self:_pull({ manual = false, opening = true })
     end)
 end
 
@@ -737,7 +765,10 @@ function ProgressSync:on_close_document()
             self.dirty = true
         end
         if self.dirty then
-            self:_upload_snapshot(position, "document_close", false)
+            local started = self:_upload_snapshot(position, "document_close", false)
+            if started then
+                self.on_status("uploading_on_close", { position = copy(position) })
+            end
         end
     end
     self.generation = self.generation + 1
@@ -746,6 +777,7 @@ function ProgressSync:on_close_document()
     self.local_position = nil
     self.remote_position = nil
     self.document_context = nil
+    self.document_binding = nil
 end
 
 function ProgressSync:on_suspend()

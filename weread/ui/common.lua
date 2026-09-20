@@ -2,6 +2,7 @@
 local BD = require("ui/bidi")
 local ConfirmBox = require("ui/widget/confirmbox")
 local InfoMessage = require("ui/widget/infomessage")
+local Notification = require("ui/widget/notification")
 local logger = require("weread.lib.logger")
 local Menu = require("ui/widget/menu")
 local UIManager = require("ui/uimanager")
@@ -37,6 +38,16 @@ end
 
 function M:showTransientInfo(text, timeout)
     UIManager:show(InfoMessage:new{
+        text = text,
+        timeout = timeout or 2,
+    })
+end
+
+-- Automatic status prompts must not consume the reader's first input event:
+-- Notification closes on any event and lets it continue to the widget below,
+-- unlike the modal InfoMessage.
+function M:showNotification(text, timeout)
+    UIManager:show(Notification:new{
         text = text,
         timeout = timeout or 2,
     })

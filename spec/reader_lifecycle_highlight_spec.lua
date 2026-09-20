@@ -9,7 +9,14 @@ end
 package.preload["weread.lib.protocol"] = function()
     return { is_mp_book = function() return false end }
 end
-package.preload["ui/uimanager"] = function() return {} end
+local scheduled = {}
+package.preload["ui/uimanager"] = function()
+    return {
+        scheduleIn = function(_self, delay, callback)
+            scheduled[#scheduled + 1] = { delay = delay, callback = callback }
+        end,
+    }
+end
 package.preload["weread.lib.plugin_util"] = function()
     return {
         tr = function(text) return text end,
@@ -64,6 +71,40 @@ expect(reader_highlight.onTap == original, "document close restores native handl
 host.ui.highlight = nil
 expect(not host:_installReaderHighlightTapGuard(),
     "missing ReaderHighlight module degrades safely")
+
+scheduled = {}
+local notices, transient_infos = {}, {}
+local ready_host = {
+    ui = { highlight = { onTap = function() end } },
+    settings = { get = function(_self, key)
+        if key == "cache" then return { show_annotations = false } end
+        if key == "read_report" then return { enabled = false } end
+    end },
+    progress_sync = { on_reader_ready = function() end },
+    downloader = { cancelPrefetch = function() end },
+    read_report = { on_reader_ready = function() return false end },
+    detectWeReadBook = function() return "book" end,
+    _teardownThoughtInterception = function() end,
+    _setupThoughtInterception = function() end,
+    _setupXPointerOverlayPrototype = function() end,
+    maybePrefetchNextChapter = function() end,
+    showNotification = function(_self, text, timeout)
+        notices[#notices + 1] = { text = text, timeout = timeout }
+    end,
+    showTransientInfo = function(_self, text, timeout)
+        transient_infos[#transient_infos + 1] = { text = text, timeout = timeout }
+    end,
+}
+for key, value in pairs(Lifecycle) do ready_host[key] = value end
+ready_host.detectWeReadBook = function() return "book" end
+ready_host.maybePrefetchNextChapter = function() end
+ready_host:onReaderReady()
+expect(#scheduled == 2 and scheduled[1].delay == 0.15,
+    "WeRead book preparation is scheduled after the initial paint")
+scheduled[1].callback()
+expect(#notices == 1 and notices[1].text == "Preparing WeRead book…"
+    and notices[1].timeout == 1.5 and #transient_infos == 0,
+    "WeRead book preparation uses a non-modal notification")
 
 print(string.format(
     "reader_lifecycle_highlight_spec: %d checks, %d failure(s)",

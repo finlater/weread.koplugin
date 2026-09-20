@@ -548,6 +548,9 @@ function M:getSettingsMenuItems()
                             cache.ignore_edge_thought_taps = not (cache.ignore_edge_thought_taps ~= false)
                             self.settings:set("cache", cache)
                             self.settings:flush()
+                            if self._updateXPointerOverlayTouchZone then
+                                self:_updateXPointerOverlayTouchZone()
+                            end
                             logger.info(
                                 "ignore_edge_thought_taps changed:",
                                 "enabled=", tostring(cache.ignore_edge_thought_taps)
@@ -1157,6 +1160,9 @@ function M:showEdgeTapRatioPicker(touchmenu_instance)
                     cache.edge_tap_ratio = ratio
                     self.settings:set("cache", cache)
                     self.settings:flush()
+                    if self._updateXPointerOverlayTouchZone then
+                        self:_updateXPointerOverlayTouchZone()
+                    end
                     logger.info("edge_tap_ratio changed:", "ratio=", tostring(ratio))
                     if touchmenu_instance then
                         touchmenu_instance:updateItems()

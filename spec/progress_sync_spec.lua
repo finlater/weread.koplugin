@@ -4,6 +4,7 @@
 
 package.path = "./?.lua;" .. package.path
 local ProgressSync = require("weread.lib.progress_sync")
+local PositionMapper = require("weread.lib.position_mapper")
 
 local failures, checks = 0, 0
 local current_test
@@ -79,6 +80,7 @@ local function fixture(remote, options)
     local uploads = {}
     local jumps = {}
     local notifications = {}
+    local statuses = {}
     local client = {
         get_progress = function()
             return { book = remote }
@@ -120,6 +122,9 @@ local function fixture(remote, options)
         notify = function(code, data)
             notifications[#notifications + 1] = { code = code, data = data }
         end,
+        on_status = function(code, data)
+            statuses[#statuses + 1] = { code = code, data = data }
+        end,
         is_online = options.is_online,
         now = options.now,
     }
@@ -145,6 +150,7 @@ local function fixture(remote, options)
         uploads = uploads,
         jumps = jumps,
         notifications = notifications,
+        statuses = statuses,
         queue = queue,
         step = step,
         drain = drain,
@@ -153,6 +159,7 @@ end
 
 test("page turns reuse word counts and document changes rebuild them", function()
     local word_reads = 0
+    local detection_reads = 0
     local function chapter(uid, words)
         return setmetatable({ chapterUid = uid }, { __index = function(_, key)
             if key == "wordCount" then
@@ -164,6 +171,10 @@ test("page turns reuse word counts and document changes rebuild them", function(
     local catalog = {}
     for index = 1, 5000 do catalog[index] = chapter(index, 10) end
     local f = fixture(nil, { get_chapters = function() return catalog end })
+    f.sync.detect_book = function()
+        detection_reads = detection_reads + 1
+        return "book"
+    end
     f.values.sync.pull_on_open = false
     f.sync:on_reader_ready()
     f.drain()
@@ -173,19 +184,32 @@ test("page turns reuse word counts and document changes rebuild them", function(
         f.sync:on_page_update()
     end
     eq(word_reads, 5000, "page turns do not reread chapter word counts")
+    eq(detection_reads, 1, "page turns repeated document book detection")
     eq(f.sync.local_position.chapter_uid, 4001, "page turn chapter")
     eq(f.sync.local_position.chapter_offset, 0, "page turn offset")
 
     catalog = { chapter(44, 200), chapter(55, 800) }
-    f.document.page = 50
-    f.sync.detect_book = function() return "other" end
+    local replacement = {
+        file = f.document.file,
+        page = 50,
+        getCurrentPage = f.document.getCurrentPage,
+        getPageCount = f.document.getPageCount,
+    }
+    f.sync.get_document = function() return replacement end
+    local replacement_detections = 0
+    f.sync.detect_book = function()
+        replacement_detections = replacement_detections + 1
+        return "other"
+    end
     local position = assert(f.sync:capture_local())
     eq(word_reads, 5002, "changed book rebuilds catalog even at the same path")
+    eq(replacement_detections, 1,
+        "replacement document at the same path was not detected again")
     eq(position.book_id, "other", "fresh book detection is preserved")
     eq(position.chapter_uid, 55, "new book chapter")
     eq(position.chapter_offset, 300, "new book offset")
 
-    f.document.file = "/cache/other/chapter.epub"
+    replacement.file = "/cache/other/chapter.epub"
     f.sync.get_file_context = function() return 1, catalog[1], false end
     position = assert(f.sync:capture_local())
     eq(word_reads, 5004, "changed file rebuilds catalog")
@@ -217,6 +241,8 @@ test("matching open progress verifies the reporting gate", function()
     eq(reason, nil, "no gate reason")
     eq(position.chapter_uid, 22, "live chapter")
     eq(position.chapter_offset, 150, "live offset")
+    eq(#f.statuses, 1, "automatic open announces its real cloud check")
+    eq(f.statuses[1].code, "checking_progress", "open status describes the check")
 end)
 
 test("nearby progress within two percent is treated as aligned", function()
@@ -274,6 +300,9 @@ test("page change uploads once on close", function()
     eq(#f.uploads, 1, "close uploads once")
     eq(f.uploads[1].percent, 50, "close uploads current percent")
     eq(f.uploads[1].chapter_uid, 33, "close uploads current chapter")
+    eq(#f.statuses, 2, "open check and real close upload are both announced")
+    eq(f.statuses[2].code, "uploading_on_close",
+        "close status is shown only after upload starts")
     eq(f.values.books.book.pending_upload_position, nil,
         "successful upload clears pending snapshot")
 end)
@@ -344,6 +373,24 @@ test("suspend captures movement even without a page event", function()
     f.sync:on_suspend()
     eq(#f.uploads, 1, "suspend uploads captured movement")
     eq(f.uploads[1].percent, 40, "suspend uses current page")
+end)
+
+test("first capture reuses its newly built position catalog", function()
+    local f = fixture({
+        bookId = "book", progress = 25, chapterUid = 22,
+        chapterIdx = 2, chapterOffset = 150, updateTime = 10,
+    })
+    local original = PositionMapper.local_to_remote
+    local received_catalog
+    PositionMapper.local_to_remote = function(chapter_list, fraction, options)
+        received_catalog = options.catalog
+        return original(chapter_list, fraction, options)
+    end
+    local position = f.sync:capture_local()
+    PositionMapper.local_to_remote = original
+    eq(received_catalog == f.sync.document_context.position_catalog, true,
+        "first capture rebuilt instead of reusing its position catalog")
+    eq(position.chapter_uid, 22, "first capture position remains correct")
 end)
 
 test("single chapter cloud choice waits for target chapter then jumps", function()
@@ -499,6 +546,7 @@ test("offline automatic pull schedules a delayed retry", function()
     eq(#f.queue, 1, "offline automatic pull queues one retry")
     eq(f.queue[1].delay, PULL_RETRY_DELAY_SECONDS, "retry waits for the link")
     eq(#f.notifications, 0, "automatic retry stays silent")
+    eq(#f.statuses, 0, "an offline open must not announce a progress check")
 end)
 
 test("automatic pull retries stop at the attempt limit", function()

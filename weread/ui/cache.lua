@@ -729,7 +729,7 @@ function M:clearBookAnnotationData(book_id, book)
         and tostring(self._annotation_context.book_id) == tostring(book_id) then
         self._annotation_context = nil
         self._unified_annotations_active = nil
-        if self._xpointer_overlay then self._xpointer_overlay:setRecords({}) end
+        if self._xpointer_overlay then self._xpointer_overlay:clearAnnotationState() end
     end
     return true
 end
