@@ -245,21 +245,23 @@ function Annotations.buildThoughtPopupItems(range_review)
 
     local items = {}
     for i, pr in ipairs(range_review.pageReviews) do
-        local review = pr.review or {}
-        local author = review.author or {}
-        local abstract = nil
-        if i == 1 then
-            abstract = review.abstract or review.contextAbstract
-            if type(abstract) ~= "string" or abstract == "" then
-                abstract = nil
+        if type(pr) == "table" then
+            local review = type(pr.review) == "table" and pr.review or {}
+            local author = type(review.author) == "table" and review.author or {}
+            local abstract = nil
+            if i == 1 then
+                abstract = review.abstract or review.contextAbstract
+                if type(abstract) ~= "string" or abstract == "" then
+                    abstract = nil
+                end
             end
+            items[#items + 1] = {
+                abstract = abstract,
+                author = tostring(author.nick or author.name or "匿名"),
+                content = tostring(review.content or ""),
+                likes_count = tonumber(pr.likesCount) or 0,
+            }
         end
-        items[#items + 1] = {
-            abstract = abstract,
-            author = tostring(author.nick or author.name or "匿名"),
-            content = tostring(review.content or ""),
-            likes_count = tonumber(pr.likesCount) or 0,
-        }
     end
     return items
 end

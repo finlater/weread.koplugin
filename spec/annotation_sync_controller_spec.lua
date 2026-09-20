@@ -124,12 +124,14 @@ cache.show_annotations = true
 local titles = table.concat(progress_titles, "\n")
 assert(titles:find("Downloading thoughts 1/1 · chapter 1/1", 1, true),
     "thought download progress did not expose item counts")
+assert(titles:find("Saving thoughts 1/1 · chapter 1/1", 1, true),
+    "thought persistence did not expose item counts")
 assert(titles:find("Matching underlines 1/1 · chapter 1/1", 1, true),
     "matching progress did not expose item counts")
 local thought_progress_moved = false
 for _, update in ipairs(progress_updates) do
     if update.title == "Downloading thoughts 1/1 · chapter 1/1"
-        and update.progress == 0.5 then
+        and update.progress == 0.25 then
         thought_progress_moved = true
         break
     end
@@ -157,6 +159,38 @@ host:setAnnotationPrefetchEnabled(false)
 host:prefetchChapterAnnotations({ book_id = "book" }, { chapterUid = "3" })
 drain()
 assert(calls == 2)
+-- A legacy completed source is retained until an explicit user sync. Prefetch
+-- must not decode it or start an automatic network-backed rebuild.
+host:setAnnotationPrefetchEnabled(true)
+store:put("book", "source", "3", { chapter_uid = "3", underlines = {}, reviews = {} }, "3")
+store:put("book", "source_status", "3", { revision = "legacy", total = 0 }, "3")
+host:prefetchChapterAnnotations({ book_id = "book" }, { chapterUid = "3" })
+drain()
+assert(calls == 2 and not store:get("book", "source_status", "3").persistence_version,
+    "prefetch rebuilt an old completed source automatically")
+context.chapters, context.ranges = { { chapterUid = "3" } }, {}
+store:put("book", "meta", "enabled", true)
+    local legacy_notice, calls_before_legacy = nil, calls
+    local original_transient_info = host.showTransientInfo
+    host.showTransientInfo = function(_self, message) legacy_notice = message end
+    host:onUnifiedAnnotationsReady()
+    drain()
+    assert(calls == calls_before_legacy
+        and legacy_notice == "Thought data format has been upgraded. Match again to download current data.",
+        "opening an old cache did not stay local with a rematch notice")
+    -- Prefetch defaults to off; the upgrade notice must not depend on it.
+    host:setAnnotationPrefetchEnabled(false)
+    legacy_notice = nil
+    local calls_before_off_notice = calls
+    host:onUnifiedAnnotationsReady()
+    drain()
+    assert(calls == calls_before_off_notice
+        and legacy_notice == "Thought data format has been upgraded. Match again to download current data.",
+        "opening an old cache with prefetch disabled did not show the rematch notice")
+    host:setAnnotationPrefetchEnabled(true)
+    host.showTransientInfo = original_transient_info
+    store:put("book", "source", "3", nil)
+    store:put("book", "source_status", "3", nil)
 -- Multi-select keeps source catalog order, including noncontiguous choices.
 context.chapters = { { chapterUid = "1" }, { chapterUid = "2" }, { chapterUid = "3" } }
 local picker_options, chosen
@@ -662,5 +696,96 @@ do
     assert(spawned > killed and prevented == allowed)
     WorkerSettings.capture = capture
 end
+
+-- A user-initiated sync must actually rebuild a legacy (pre-persistence)
+-- chapter instead of silently skipping it: regression for `reset_legacy`
+-- never reaching the Sync job. The worker block above left its auth-keyed
+-- settings and request-tracking client behind, so restore plain fixtures.
+package.loaded["ffi/util"], package.loaded["ui/trapper"] = nil, nil
+host.settings = { get = function() return cache end, set = function() end, flush = function() end }
+host.client = {
+    get_chapter_underlines = function() calls = calls + 1
+        return true, { underlines = { { range = "0-1", markText = "a" } } } end,
+    build_chapter_review_batches = function(_self, ranges)
+        return { { { range = ranges[1] } } }
+    end,
+    get_chapter_reviews_batch = function()
+        return true, { reviews = {} }
+    end,
+}
+context = { path = "single", book_id = "legacy-sync", document_key = "single", store = store,
+    binding = { book_id = "legacy-sync", title = "fixture" }, statuses = {},
+    chapters = { { chapterUid = "9" } }, ranges = {} }
+host._annotation_context = context
+store:put("legacy-sync", "source", "9", {
+    book_id = "legacy-sync", chapter_uid = "9",
+    underlines = { { range = "1-2", markText = "alpha" } },
+    reviews = { { range = "1-2", pageReviews = { { review = { content = "old thought" } } } } },
+}, "9")
+store:put("legacy-sync", "source_status", "9", { revision = "legacy", total = 1 }, "9")
+local legacy_persistence_version = require("weread.lib.annotation_sync").PERSISTENCE_VERSION
+local calls_before_explicit_sync = calls
+host:startUnifiedAnnotationSync({ offline = false })
+drain()
+local rebuilt_legacy_source = store:get("legacy-sync", "source", "9")
+assert(calls > calls_before_explicit_sync
+        and rebuilt_legacy_source and #(rebuilt_legacy_source.reviews or {}) == 0
+        and store:get("legacy-sync", "source_status", "9").persistence_version == legacy_persistence_version,
+    "an explicit sync did not rebuild the legacy chapter with bounded persistence")
+
+-- A store busy with a cancelled prefetch worker finishing its last write must
+-- not abort the reader-ready path: the display flag write is best effort.
+host:setAnnotationPrefetchEnabled(false)
+context.statuses = {
+    [store:projectionKey(context.document_key, "9")] = { stats = { total = 1, located = 1 } },
+}
+local original_put = store.put
+store.put = function() error("ljsqlite3[busy] database is locked") end
+local ready_ok = pcall(function() host:onUnifiedAnnotationsReady() end)
+store.put = original_put
+assert(ready_ok, "a failed display flag write aborted the reader-ready path")
+
+-- Pausing an explicit legacy rebuild before its first network request must
+-- drop the deleted projection from the in-memory summary and refresh the
+-- overlay: the legacy deletion path only notified the controller for
+-- `clear_existing` before this fix.
+do
+    context = { path = "single", book_id = "legacy-pause", document_key = "single", store = store,
+        binding = { book_id = "legacy-pause", title = "fixture" }, statuses = {},
+        chapters = { { chapterUid = "9" } }, ranges = {}, generation = 1 }
+    host._annotation_context = context
+    local pause_key = store:projectionKey("single", "9")
+    store:put("legacy-pause", "source", "9", {
+        book_id = "legacy-pause", chapter_uid = "9",
+        underlines = { { range = "1-2", markText = "alpha" } },
+        reviews = { { range = "1-2", pageReviews = { { review = { content = "old thought" } } } } },
+    }, "9")
+    store:put("legacy-pause", "source_status", "9", { revision = "legacy", total = 1 }, "9")
+    store:put("legacy-pause", "projection", pause_key,
+        { records = { { range = "1-2", markText = "alpha" } } }, "9")
+    store:put("legacy-pause", "status", pause_key,
+        { revision = "legacy", matcher_version = 1, range_key = "" }, "9")
+    context.statuses[pause_key] = { stats = { total = 1, located = 1 } }
+    host._xpointer_overlay.records = { { range = "1-2", markText = "alpha" } }
+    host._xpointer_overlay._annotation_window = "1:1:1"
+    local calls_before_pause = calls
+    host:startUnifiedAnnotationSync({ offline = false })
+    assert(#scheduled >= 1, "the legacy rebuild scheduled no task callback")
+    table.remove(scheduled, 1)()
+    assert(calls == calls_before_pause,
+        "the paused legacy rebuild contacted the network before its checkpoint")
+    assert(store:get("legacy-pause", "projection", pause_key) == nil,
+        "the legacy projection was not deleted from the store")
+    host:_refreshAnnotationOverlay()
+    local paused_summary = host:_annotationSummary(context)
+    assert(context.statuses[pause_key] == nil
+            and paused_summary.chapters == 0 and paused_summary.located == 0
+            and #host._xpointer_overlay.records == 0,
+        "a paused legacy rebuild left stale statuses or overlay records behind")
+    host:_cancelUnifiedAnnotationSync()
+    drain()
+    assert(prevented == allowed, "standby guard leaked after the paused legacy rebuild")
+end
+
 helper.cleanup()
-print("annotation_sync_controller_spec: consent, completion, cancellation, sessions and prefetch passed")
+print("annotation_sync_controller_spec: consent, completion, cancellation, sessions, prefetch and legacy rebuild passed")

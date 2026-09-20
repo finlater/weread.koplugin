@@ -23,7 +23,9 @@ local function annotation_progress(state)
     local count = tonumber(state.count) or 0
     local fraction = count > 0 and math.max(0, math.min(1, current / count)) or 0
     if state.stage == "thoughts" then
-        return completed + fraction * 0.5
+        return completed + fraction * 0.25
+    elseif state.stage == "persist" then
+        return completed + 0.25 + fraction * 0.25
     elseif state.stage == "source" then
         return completed + 0.5
     elseif state.stage == "match" then
@@ -449,11 +451,17 @@ function M:_runAnnotationJob(context, options)
         document = not options.prefetch and self.ui.document or nil,
         document_key = not options.prefetch and context.document_key or nil,
         refresh = options.refresh or options.clear_existing, clear_existing = options.clear_existing,
+        reset_legacy = options.reset_legacy,
         offline = options.offline, async_network = request.trapper ~= nil,
         is_online = function() return self:isNetworkConnected() end,
-        on_reset = function()
-            for _, chapter in ipairs(options.chapters or context.chapters) do
-                context.statuses[context.store:projectionKey(context.document_key, Chapters.uid(chapter))] = nil
+        on_reset = function(uid)
+            if uid then
+                context.statuses[context.store:projectionKey(context.document_key, uid)] = nil
+            else
+                for _, chapter in ipairs(options.chapters or context.chapters) do
+                    context.statuses[context.store:projectionKey(context.document_key,
+                        Chapters.uid(chapter))] = nil
+                end
             end
             context.generation = (context.generation or 0) + 1
             self:_refreshAnnotationOverlay()
@@ -548,6 +556,10 @@ function M:_runAnnotationJob(context, options)
                 title = T(_("Downloading thoughts %1/%2 · chapter %3/%4"),
                     tostring(state.current or 0), tostring(state.count or 0),
                     tostring(state.index), tostring(state.total))
+            elseif state.stage == "persist" then
+                title = T(_("Saving thoughts %1/%2 · chapter %3/%4"),
+                    tostring(state.current or 0), tostring(state.count or 0),
+                    tostring(state.index), tostring(state.total))
             elseif state.stage == "match" then
                 title = T(_("Matching underlines %1/%2 · chapter %3/%4"),
                     tostring(state.current or 0), tostring(state.count or 0),
@@ -604,7 +616,10 @@ function M:startUnifiedAnnotationSync(options)
         self.settings:set("cache", cache)
         self.settings:flush()
         if self._xpointer_overlay then self._xpointer_overlay:setEnabled(true) end
-        self:_runAnnotationJob(context, options)
+        local job_options = {}
+        for key, value in pairs(options) do job_options[key] = value end
+        job_options.reset_legacy = true
+        self:_runAnnotationJob(context, job_options)
     end
     if options.offline then return start() end
     if not self:requireLogin(true, true) then return end
@@ -653,12 +668,32 @@ function M:onUnifiedAnnotationsReady()
     -- Recover partial chapter selections created by older builds that wrote a
     -- projection but waited for the whole document before marking it usable.
     if self:_annotationSummary(context).located > 0 then
-        context.store:put(context.book_id, "display", context.document_key, true)
+        -- Best effort: a cancelled prefetch worker may still hold the store's
+        -- write lock, and a failed flag write must not abort the reader-ready
+        -- path.
+        local marked, mark_err = pcall(function()
+            context.store:put(context.book_id, "display", context.document_key, true)
+        end)
+        if not marked then logger.warn("annotation display flag:", mark_err) end
     end
     self._unified_annotations_active = self:_usesUnifiedAnnotations()
     started = perf("annotation_display_state", started)
     self:_refreshAnnotationOverlay()
     started = perf("saved_annotation_overlay", started)
+    local sources = context.store:list(context.book_id, "source_status")
+    local legacy = false
+    for _, chapter in ipairs(context.chapters) do
+        local uid = Chapters.uid(chapter)
+        if sources[uid] and sources[uid].persistence_version
+            ~= require("weread.lib.annotation_sync").PERSISTENCE_VERSION then
+            legacy = true
+            break
+        end
+    end
+    if legacy and type(self.showTransientInfo) == "function" then
+        self:showTransientInfo(
+            _("Thought data format has been upgraded. Match again to download current data."), 3)
+    end
     if self:canPrefetchAnnotations()
         and context.store:get(context.book_id, "meta", "enabled")
         and not context.store:get(context.book_id, "manual_only", context.document_key) then
