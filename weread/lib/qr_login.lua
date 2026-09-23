@@ -191,7 +191,7 @@ function QRLogin:_poll_protocol(uid, otp)
         headers = headers,
     }, "getLoginInfo")
     if not data then
-        if is_timeout_error(request_error) or request_error == "request failed" then
+        if is_timeout_error(request_error) or request_error == "request failed" or request_error == "closed" then
             return { transport_pending = true }
         end
         error(request_error)
