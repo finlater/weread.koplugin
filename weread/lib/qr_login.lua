@@ -191,10 +191,9 @@ function QRLogin:_poll_protocol(uid, otp)
         headers = headers,
     }, "getLoginInfo")
     if not data then
-        if is_timeout_error(request_error) or request_error == "request failed" then
-            return { transport_pending = true }
-        end
-        error(request_error)
+        -- No HTTP status means the socket failed. Keep polling until the QR session expires.
+        logger.dbg("getLoginInfo transport pending:", tostring(request_error))
+        return { transport_pending = true }
     end
     self.login_cookies = merge_response_cookies(self.login_cookies, response_headers)
     return data
