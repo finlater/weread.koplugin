@@ -71,6 +71,41 @@ Response:
 
 On success, persist the returned `Set-Cookie` values. Avoid duplicated host-only and domain cookies for the same name; stale duplicate `wr_skey` can cause `登录超时`.
 
+### 1.3 QR Login Chains
+
+QR login runs one of two chains. Both finish with the same downstream
+`/api/userInfo` → `/api/skills/apikeyGet` → credential persistence, and both
+use `X-Vid`/`X-Skey` headers on later Web API calls.
+
+Weblogin chain (preferred; gives the session a per-device identity):
+
+1. `POST /web/login/getuid` (JSON `{}`) → `{uid}`.
+2. Show `https://weread.qq.com/web/confirm?pf=2&uid=<uid>` (`pf=2` = non-iOS).
+3. Poll `POST /web/login/getinfo` (JSON `{uid}`). This long poll blocks ~55s
+   while unscanned; poll on a wall-clock budget (≥300s), not a fixed count.
+   Success = the payload carries `vid` + `skey` + `code` (there is no `succeed`
+   field, and `vid` arrives as a JSON integer that must be coerced to string).
+4. `POST /wrwebsimplenjlogic/api/weblogin?platform=desktop` with
+   `{vid, skey, code, isAutoLogout:0, pf, cgiKey:<random 100-999>, fp}` →
+   `{accessToken, refreshToken, vid}` plus `Set-Cookie`
+   (`wr_pf`/`wr_rt`/`wr_skey`/`wr_vid`). Only this legacy variant returns
+   credentials; the ink-style `POST /web/login/weblogin` variant answers
+   `needRemoteLoginVerify`.
+5. `POST /web/login/session/init` with
+   `{vid, skey:<accessToken>, rt:<refreshToken>, pf, ql:0}` → additional
+   `Set-Cookie` (`wr_ql`).
+6. Persist the merged cookies and set `wr_fp = fp`. `fp` is a per-device
+   SHA-256 fingerprint of a persistent random seed; distinct `fp` values let
+   sessions coexist across devices instead of replacing each other.
+
+Classic chain (fallback only when the ink entry `/web/login/getuid` is
+unavailable): `GET /api/auth/getLoginUid`, then
+`GET /api/auth/getLoginInfo?uid=<uid>&otp=<otp>` — the original plugin flow,
+unchanged. Its `uid` namespace is separate from the ink one, so the two are
+never mixed: if the weblogin chain starts but credential issuance is rejected,
+the login fails with a retry prompt and no cross-namespace classic attempt is
+made. Validated with `scripts/verify_weblogin_identity.py`.
+
 ## 2. Official Skill Interfaces
 
 All endpoints below are called through:
@@ -1094,6 +1129,39 @@ Fix:
 
 - Check cookie jar has WeRead cookies.
 - Check cookie domain is `.weread.qq.com`.
+
+### `{"errCode": -2013, "errMsg": "鉴权失败"}`
+
+Meaning:
+
+- Authentication failed. Most commonly the Web session was replaced because
+  the same account logged in on another device, so the current session is no
+  longer accepted.
+- Distinct from `-2012` (login timeout / stale cookies) and `-2010` (user
+  missing).
+
+Fix:
+
+- The plugin classifies it as `session_replaced` (`Client:auth_error_kind`,
+  also attached to decoded bodies as `_auth_kind`).
+- Call `POST /web/login/renewal` with the full login cookie set
+  (`wr_vid`/`wr_skey`/`wr_rt`/`wr_ql`/`wr_pf`/`wr_gid`). A rejected renewal may
+  still return replacement credentials via `Set-Cookie` (`wr_skey`/`wr_gid`) or
+  the body (`skey`/`accessToken`); adopt them and retry the original request.
+- When no replacement credentials are returned, the session is truly gone and
+  a fresh QR login is required.
+
+Related auth error codes and their plugin classification:
+
+| `errCode` | `auth_error_kind` | Meaning |
+| --- | --- | --- |
+| `-2013` | `session_replaced` | 鉴权失败: session replaced / kicked by another device |
+| `-2010` | `credential_invalid` | 用户不存在: credentials no longer valid |
+| `-2012` | `login_timeout` | 登录超时: expired or conflicting cookies |
+| `-12013` | `wechat_auth_expired` | WeChat login authorization expired |
+
+Unknown codes are never classified; they keep the previous log-and-continue
+behavior.
 
 ### Content endpoint returns `{}`
 

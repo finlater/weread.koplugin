@@ -113,6 +113,10 @@ expect(values.api_key == "" and next(values.cookies) == nil
     "legacy authentication data was not invalidated")
 expect(values.account.name == "" and values.auth_schema_version == 1,
     "authentication schema migration was incomplete")
+expect(settings:get("session_generation") == 0,
+    "session generation should default to zero")
+expect(settings:get("device_seed") == "",
+    "device identity seed should default to empty")
 expect(values.books["42"].cache_dir == "/cache/42",
     "authentication migration changed the book index")
 expect(values.config_loaded == nil, "legacy setting was not removed")
@@ -166,9 +170,18 @@ expect(values.download_dir == "/external/books",
 expect(settings:set_download_dir("") == "/data/weread/cache",
     "download directory did not reset to default")
 
+settings:update_auth({ session_generation = 7 })
+expect(values.session_generation == 7,
+    "session generation was not persisted through update_auth")
+
+settings:set("device_seed", "device-seed-value")
 settings:reset_account()
 expect(values.api_key == "" and next(values.cookies) == nil
     and values.account.name == "",
     "account reset left credentials behind")
+expect(values.session_generation == 0,
+    "account reset left session generation behind")
+expect(values.device_seed == "device-seed-value",
+    "account reset must preserve the device identity seed")
 
 print(("settings_spec: %d checks"):format(checks))

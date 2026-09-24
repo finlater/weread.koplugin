@@ -3,6 +3,7 @@ local logger = require("weread.lib.logger")
 local socketutil = require("socketutil")
 local http = require("socket.http")
 local Cookie = require("weread.lib.cookie")
+local SessionState = require("weread.lib.session_state")
 local WeRead = require("weread.lib.protocol")
 
 local ok_json, json = pcall(require, "json")
@@ -11,6 +12,28 @@ if not ok_json then
 end
 
 local DEFAULT_TIMEOUT_SECONDS = 15
+
+-- Known WeRead authentication error codes. Classification is intentionally
+-- closed: unknown codes keep the existing log-and-continue behavior so a
+-- server-side code change can never be mistaken for a session failure.
+local AUTH_ERRORS = {
+    [-2013]  = "session_replaced",    -- 鉴权失败: session replaced / kicked by another device
+    [-2010]  = "credential_invalid",  -- 用户不存在: credentials are no longer valid
+    [-2012]  = "login_timeout",       -- 登录超时: expired or conflicting cookies
+    [-12013] = "wechat_auth_expired", -- WeChat login authorization expired
+}
+
+-- Kinds that mean the server no longer accepts this session even though its
+-- cookies still exist locally. `login_timeout` (-2012) is the signal the kicked
+-- case produces on API calls. `wechat_auth_expired` is excluded: it needs the
+-- user to redo the WeChat authorization rather than a plain session reset. A
+-- successful cookie renewal (or QR login) clears this state.
+local SESSION_ERRORS = {
+    session_replaced = true,
+    credential_invalid = true,
+    login_timeout = true,
+}
+
 local Client = {}
 Client.__index = Client
 
@@ -32,6 +55,36 @@ local function scalar_header_value(headers, name)
         return tostring(value[1])
     end
     return value
+end
+
+-- A rejected renewal still counts as recoverable when the server hands back a
+-- non-empty replacement session key, either as a login cookie or a body token.
+-- An empty value is a cookie deletion (logged out), not a replacement.
+local function set_cookie_has_replacement(set_cookie)
+    if not set_cookie then return false end
+    local lines = type(set_cookie) == "table" and set_cookie or { set_cookie }
+    for _i, line in ipairs(lines) do
+        if type(line) == "string"
+            and (line:find("wr_skey=[^;]") or line:find("wr_gid=[^;]")) then
+            return true
+        end
+    end
+    return false
+end
+
+-- A kicked session's rejection revokes the login and asks for cookie deletion:
+-- the Set-Cookie lines carry EMPTY values for wr_skey/wr_gid. Verified against a
+-- real kicked session (2026-09-23); adopting such cookies never restores access.
+local function set_cookie_clears_login(set_cookie)
+    if not set_cookie then return false end
+    local lines = type(set_cookie) == "table" and set_cookie or { set_cookie }
+    for _i, line in ipairs(lines) do
+        if type(line) == "string"
+            and (line:match("wr_skey=([^;]*)") == "" or line:match("wr_gid=([^;]*)") == "") then
+            return true
+        end
+    end
+    return false
 end
 
 local function http_error(client, code, text, headers)
@@ -218,9 +271,23 @@ function Client:decode_http_json(text, context)
             and tonumber(data.succ) ~= 1
         if (err_code ~= nil and tonumber(err_code) ~= 0) or failed_succ then
             log_response("API response reported an error:", context, text)
+            -- Only known auth codes are classified; the log records the category
+            -- name, never any credential value.
+            local kind = AUTH_ERRORS[tonumber(err_code)]
+            if kind then
+                logger.err("auth error classified:", kind)
+                data._auth_kind = kind
+                if SESSION_ERRORS[kind] then
+                    SessionState.mark_invalid(kind)
+                end
+            end
         end
     end
     return data
+end
+
+function Client:auth_error_kind(code)
+    return AUTH_ERRORS[tonumber(code)]
 end
 
 function Client:request(opts)
@@ -480,7 +547,7 @@ function Client:post_json(url, data, opts)
             ["Origin"] = "https://weread.qq.com",
             ["Referer"] = referer or "https://weread.qq.com/",
         }})
-    local text, code, resp_headers = self:request(req_opts)
+    local text, code, resp_headers, status = self:request(req_opts)
     if code and code >= 200 and code < 300 then
         return self:decode_http_json(text, {
             method = "POST",
@@ -490,7 +557,7 @@ function Client:post_json(url, data, opts)
             headers = resp_headers,
         }), code, resp_headers
     end
-    error(http_error(self, code, text, resp_headers))
+    error(http_error(self, code or status, text, resp_headers))
 end
 
 function Client:get_text(url, opts)
@@ -553,6 +620,9 @@ function Client:get_binary(url, opts)
 end
 
 function Client:renew_cookie()
+    local settings = self.settings
+    local generation = tonumber(settings:get("session_generation", 0)) or 0
+
     local result, code, resp_headers = self:post_json("https://weread.qq.com/web/login/renewal", {
         rq = "%2Fweb%2Fbook%2Fread",
         ql = false,
@@ -561,15 +631,67 @@ function Client:renew_cookie()
         -- success; failed renewals must leave the current credential set intact.
         persist_response_cookies = false,
     })
-    if not WeRead.is_success_response(result) then
-        error("Cookie renewal response did not include succ=1")
+
+    -- Stale-response guard: if another flow advanced the session while this
+    -- request was in flight, its older response must write nothing -- not even a
+    -- clearing Set-Cookie. Re-check before any branch mutates credentials.
+    local current_generation = tonumber(settings:get("session_generation", 0)) or 0
+    if current_generation ~= generation then
+        logger.err(
+            "ignoring stale cookie renewal response:",
+            "request_generation=", tostring(generation),
+            "current_generation=", tostring(current_generation)
+        )
+        return nil, "stale"
     end
-    local updates = {}
+
+    local succeeded = WeRead.is_success_response(result)
     local set_cookie = header_value(resp_headers, "set-cookie")
-    if set_cookie then
+    local replacement_token, has_cookie_replacement
+    if not succeeded then
+        has_cookie_replacement = set_cookie_has_replacement(set_cookie)
+        if not has_cookie_replacement and type(result) == "table" then
+            local token = result.skey
+            if type(token) ~= "string" or token == "" then
+                token = result.accessToken
+            end
+            if type(token) == "string" and token ~= "" then
+                replacement_token = token
+            end
+        end
+        if not has_cookie_replacement and not replacement_token then
+            if set_cookie_clears_login(set_cookie) then
+                -- Obey the server's logout instruction so a revoked session is
+                -- not silently kept. merge_set_cookie deletes empty-valued
+                -- cookies; wr_ticket/wr_wrpa stay untouched.
+                settings:update_auth({
+                    cookies = Cookie.merge_set_cookie(
+                        settings:get("cookies", {}), set_cookie),
+                }, { replace_cookies = true })
+            end
+            local error_code = type(result) == "table"
+                and (result.errCode or result.errcode) or nil
+            local kind = error_code ~= nil
+                and self:auth_error_kind(error_code) or nil
+            SessionState.mark_invalid(kind or "session_replaced")
+            error("Cookie renewal response did not include succ=1")
+        end
+    end
+
+    local updates = {}
+    if succeeded then
+        if set_cookie then
+            updates.cookies = Cookie.merge_set_cookie(settings:get("cookies", {}), set_cookie)
+        end
+    elseif has_cookie_replacement then
         updates.cookies = Cookie.merge_set_cookie(
-            self.settings:get("cookies", {}),
+            Cookie.merge(settings:get("cookies", {}), {}),
             set_cookie
+        )
+    else
+        updates.cookies = Cookie.merge(
+            settings:get("cookies", {}),
+            { wr_skey = replacement_token }
         )
     end
     local wr_ticket = scalar_header_value(resp_headers, "x-wr-ticket")
@@ -580,7 +702,9 @@ function Client:renew_cookie()
     if wr_wrpa and wr_wrpa ~= "" then
         updates.wr_wrpa = wr_wrpa
     end
-    self.settings:update_auth(updates, { replace_cookies = true })
+    updates.session_generation = generation + 1
+    settings:update_auth(updates, { replace_cookies = true })
+    SessionState.clear()
     return result, code, resp_headers
 end
 

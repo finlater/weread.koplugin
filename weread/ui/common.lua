@@ -4,6 +4,7 @@ local ConfirmBox = require("ui/widget/confirmbox")
 local InfoMessage = require("ui/widget/infomessage")
 local logger = require("weread.lib.logger")
 local Menu = require("ui/widget/menu")
+local SessionState = require("weread.lib.session_state")
 local UIManager = require("ui/uimanager")
 
 local PluginUtil = require("weread.lib.plugin_util")
@@ -14,6 +15,9 @@ local display_error = PluginUtil.display_error
 local unpack_args = PluginUtil.unpack_args
 
 local M = {}
+
+local SESSION_RECOVERY_COOLDOWN_SECONDS = 60
+M.last_session_recovery_at = 0
 
 function M:safeCallback(label, callback)
     return function(...)
@@ -179,11 +183,54 @@ function M:showList(title, items, empty_text, options)
     return menu
 end
 
+function M:recoverSession()
+    local now = os.time()
+    if now - M.last_session_recovery_at < SESSION_RECOVERY_COOLDOWN_SECONDS then
+        return false
+    end
+    if not self:isNetworkConnected() then
+        return false
+    end
+    M.last_session_recovery_at = now
+    self:runOnlineTask(_("Restoring WeRead session..."), function()
+        local ok = pcall(function()
+            return self.client:renew_cookie()
+        end)
+        if ok and not SessionState.is_invalid() then
+            self:showTransientInfo(_("WeRead session restored. Please try again."), 2)
+            return
+        end
+        if SessionState.should_notify() then
+            SessionState.mark_notified()
+            self:showTransientInfo(
+                _("WeRead session has expired. Please scan the QR code again."), 2)
+            UIManager:scheduleIn(0.2, function()
+                self.qr_login:start()
+            end)
+        end
+    end)
+    return true
+end
+
 function M:requireLogin(require_cookie, require_api_key)
     local missing_cookie = require_cookie and not self.settings:is_cookie_configured()
     local missing_api_key = require_api_key and not self.settings:is_api_configured()
     if not missing_cookie and not missing_api_key then
-        return true
+        if not (require_cookie and SessionState.is_invalid()) then
+            return true
+        end
+        if self:recoverSession() then
+            return false
+        end
+        if SessionState.should_notify() then
+            SessionState.mark_notified()
+            self:showTransientInfo(
+                _("WeRead session has expired. Please scan the QR code again."), 2)
+            UIManager:scheduleIn(0.2, function()
+                self.qr_login:start()
+            end)
+        end
+        return false
     end
     self:showTransientInfo(_("Please scan the QR code to log in first."), 2)
     UIManager:scheduleIn(0.2, function()
@@ -209,10 +256,24 @@ function M:renewCookieWithUI()
     if not self:requireLogin(true, false) then
         return
     end
-    self:runNetworkAction(_("Renew cookie"), function()
-        self.client:renew_cookie()
-        logger.info("cookie renewed")
-        return _("WeRead cookie renewed.")
+    self:runOnlineTask(_("Renew cookie"), function()
+        local ok, err = pcall(function()
+            self.client:renew_cookie()
+        end)
+        if ok then
+            logger.info("cookie renewed")
+            self:showInfo(_("WeRead cookie renewed."))
+            return
+        end
+        logger.err("renew cookie failed:", log_error(err))
+        if SessionState.is_invalid() and SessionState.should_notify() then
+            SessionState.mark_notified()
+            self:showInfo(
+                _("WeRead session has expired. Please scan the QR code again."))
+        else
+            self:showInfo(T(_("%1 failed:\n%2"), _("Renew cookie"),
+                display_error(err)))
+        end
     end)
 end
 
@@ -226,12 +287,14 @@ function M:showAccountStatus()
     local login_method = account.login_method == "qr" and _("QR login") or _("Unknown")
     local cookie_status = self.settings:is_cookie_configured() and _("configured") or _("missing")
     local api_status = self.settings:is_api_configured() and _("configured") or _("missing")
+    local session_status = SessionState.is_invalid() and _("expired") or _("valid")
     self:showInfo(T(
-        _("Account: %1\nLogin method: %2\nCookie: %3\nOfficial API key: %4\nCache directory:\n%5"),
+        _("Account: %1\nLogin method: %2\nCookie: %3\nOfficial API key: %4\nSession: %5\nCache directory:\n%6"),
         account_name,
         login_method,
         cookie_status,
         api_status,
+        session_status,
         BD.dirpath(self.settings.cache_dir)
     ))
 end

@@ -21,6 +21,7 @@ local Content = require("weread.lib.content")
 local DownloadDialog = require("weread.ui.download_dialog")
 local Footnotes = require("weread.lib.footnotes")
 local I18n = require("weread.lib.i18n")
+local SessionState = require("weread.lib.session_state")
 local StandbyGuard = require("weread.lib.standby_guard")
 local WeRead = require("weread.lib.protocol")
 local WorkerSettings = require("weread.lib.worker_settings")
@@ -171,6 +172,11 @@ function Downloader:_notifyCompletion(dl, ok, value)
     if not dl or dl.completion_notified then return end
     dl.completion_notified = true
     if type(dl.on_complete) ~= "function" then return end
+    -- An invalidated server session must reuse the existing login prompt.
+    -- Detect it from process-local session state; error strings are never parsed.
+    if ok ~= true and SessionState.is_invalid() then
+        value = "authentication_required"
+    end
     local called, err = pcall(dl.on_complete, ok == true, value)
     if not called then
         logger.warn("download completion callback failed:",
@@ -681,7 +687,8 @@ function Downloader:start(book, chapters, suffix, options)
                 dl.progress_dialog = nil
             end
             if type(options.on_complete) == "function" then
-                pcall(options.on_complete, false, err_init)
+                pcall(options.on_complete, false, SessionState.is_invalid()
+                    and "authentication_required" or err_init)
             end
             dl.completion_notified = true
             self:_finishJob(dl)

@@ -65,6 +65,11 @@ package.preload["weread.lib.protocol"] = function()
     return {
         USER_AGENT = "WeRead client spec",
         SKILL_VERSION = "test-skill",
+        is_success_response = function(result, field)
+            if type(result) ~= "table" then return false end
+            local value = result[field or "succ"]
+            return value == true or tonumber(value) == 1
+        end,
         urlencode = function(value)
             return tostring(value):gsub("([^%w%-_%.~])", function(ch)
                 return string.format("%%%02X", ch:byte())
@@ -74,6 +79,7 @@ package.preload["weread.lib.protocol"] = function()
 end
 
 local Client = require("weread.lib.client")
+local SessionState = require("weread.lib.session_state")
 local merged_cookies = {}
 local settings = {
     get = function(_self, key, default)
@@ -379,5 +385,245 @@ ok = pcall(function()
 end)
 expect(not ok and io.open(download_path .. ".part", "rb") == nil,
     "oversized file download did not remove its partial output")
+
+-- --- Auth error classification -------------------------------------------
+
+responses, logs = {}, {}
+client.json_decode = function() return { errCode = -2013, errMsg = "鉴权失败" } end
+local classified = client:decode_http_json('{"errCode":-2013,"errMsg":"鉴权失败"}', {
+    method = "POST",
+    url = "https://weread.qq.com/web/book/read",
+    code = 200,
+    headers = { ["content-type"] = "application/json" },
+})
+expect(classified._auth_kind == "session_replaced",
+    "session replacement was not classified")
+expect(SessionState.is_invalid() == true
+    and SessionState.reason() == "session_replaced",
+    "classified session error did not mark the session invalid")
+expect(client:auth_error_kind(-2013) == "session_replaced"
+    and client:auth_error_kind(-2010) == "credential_invalid"
+    and client:auth_error_kind(-2012) == "login_timeout"
+    and client:auth_error_kind(-12013) == "wechat_auth_expired",
+    "known auth error codes were misclassified")
+expect(client:auth_error_kind(-9999) == nil and client:auth_error_kind(nil) == nil,
+    "unknown auth codes must stay unclassified")
+local classification_log = table.concat(logs, "\n")
+expect(classification_log:find("auth error classified", 1, true)
+    and classification_log:find("session_replaced", 1, true),
+    "auth classification was not logged")
+
+logs = {}
+client.json_decode = function() return { errCode = -9999, errMsg = "unknown" } end
+local unknown_result = client:decode_http_json('{"errCode":-9999}', {
+    method = "GET", url = "https://weread.qq.com/web/x", code = 200,
+})
+expect(unknown_result._auth_kind == nil and unknown_result.errCode == -9999,
+    "unknown error code must not be classified")
+
+-- --- Cookie renewal hardening --------------------------------------------
+
+local function new_renew_settings(initial)
+    local values = initial or {}
+    return {
+        values = values,
+        update_calls = {},
+        get = function(self, key, default)
+            local value = self.values[key]
+            if value == nil then return default end
+            return value
+        end,
+        set = function(self, key, value) self.values[key] = value end,
+        flush = function(self) self.flush_count = (self.flush_count or 0) + 1 end,
+        update_auth = function(self, credentials, options)
+            self.update_calls[#self.update_calls + 1] = {
+                credentials = credentials, options = options,
+            }
+            for key, value in pairs(credentials) do
+                self.values[key] = value
+            end
+        end,
+    }
+end
+
+responses = {}
+local adopt_settings = new_renew_settings({
+    session_generation = 2,
+    cookies = { wr_skey = "old-key-12345678", wr_vid = "999" },
+})
+local adopt_client = Client:new(adopt_settings)
+adopt_client.json_encode = function() return "{}" end
+adopt_client.json_decode = function() return { errCode = -2013, errMsg = "鉴权失败" } end
+responses[#responses + 1] = {
+    body = '{"errCode":-2013}',
+    code = 200,
+    headers = { ["set-cookie"] = "wr_skey=XXX-replacement-key-12345; Path=/; HttpOnly" },
+}
+local adopted_ok, adopted_result = pcall(function()
+    return adopt_client:renew_cookie()
+end)
+expect(adopted_ok and type(adopted_result) == "table" and adopted_result.errCode == -2013,
+    "replacement-key renewal was not adopted as success")
+expect(#adopt_settings.update_calls == 1
+    and adopt_settings.update_calls[1].options.replace_cookies == true,
+    "replacement credentials were not persisted atomically")
+expect(adopt_settings.values.cookies.wr_skey == "XXX-replacement-key-12345"
+    and adopt_settings.values.cookies.wr_vid == "999",
+    "replacement credentials did not merge into the credential set")
+expect(adopt_settings.values.session_generation == 3,
+    "session generation was not bumped after adoption")
+expect(SessionState.is_invalid() == false and SessionState.reason() == nil,
+    "adopted renewal did not clear the invalid session state")
+
+local body_settings = new_renew_settings({
+    session_generation = 0,
+    cookies = { wr_skey = "old-key-12345678" },
+})
+local body_client = Client:new(body_settings)
+body_client.json_encode = function() return "{}" end
+body_client.json_decode = function()
+    return { errCode = -2013, skey = "body-replacement-98765" }
+end
+responses[#responses + 1] = { body = '{"errCode":-2013,"skey":"body-replacement-98765"}', code = 200 }
+pcall(function() return body_client:renew_cookie() end)
+expect(body_settings.values.cookies.wr_skey == "body-replacement-98765",
+    "body replacement session key was not adopted")
+
+local fail_settings = new_renew_settings({
+    session_generation = 1,
+    cookies = { wr_skey = "old-key-12345678" },
+})
+local fail_client = Client:new(fail_settings)
+fail_client.json_encode = function() return "{}" end
+fail_client.json_decode = function() return { errCode = -2013, errMsg = "鉴权失败" } end
+responses[#responses + 1] = { body = '{"errCode":-2013}', code = 200 }
+local fail_ok = pcall(function() return fail_client:renew_cookie() end)
+expect(not fail_ok, "rejected renewal without replacement did not fail")
+expect(#fail_settings.update_calls == 0
+    and fail_settings.values.cookies.wr_skey == "old-key-12345678",
+    "rejected renewal without a clear instruction polluted credentials")
+
+-- A kicked rejection empties the login cookies; obey it, then still fail.
+local kick_settings = new_renew_settings({
+    session_generation = 4,
+    cookies = {
+        wr_skey = "old-key-12345678",
+        wr_vid = "old-vid",
+        wr_rt = "old-refresh",
+    },
+    wr_ticket = "keep-ticket",
+    wr_wrpa = "keep-wrpa",
+})
+local kick_client = Client:new(kick_settings)
+kick_client.json_encode = function() return "{}" end
+kick_client.json_decode = function() return { errCode = -2013, errMsg = "鉴权失败" } end
+responses[#responses + 1] = {
+    body = '{"errCode":-2013}',
+    code = 200,
+    headers = { ["set-cookie"] = {
+        "wr_pf=; Path=/; Domain=.weread.qq.com",
+        "wr_rt=; Path=/; Domain=.weread.qq.com",
+        "wr_skey=; Path=/; Domain=.weread.qq.com",
+        "wr_vid=; Path=/; Domain=.weread.qq.com",
+    } },
+}
+local kick_ok = pcall(function() return kick_client:renew_cookie() end)
+expect(not kick_ok, "a clearing rejection must still fail the renewal")
+expect(kick_settings.values.cookies.wr_skey == nil
+    and kick_settings.values.cookies.wr_vid == nil
+    and kick_settings.values.cookies.wr_rt == nil,
+    "revoked cookies were not removed from the credential set")
+expect(kick_settings.values.wr_ticket == "keep-ticket"
+    and kick_settings.values.wr_wrpa == "keep-wrpa",
+    "clearing cookies must not touch wr_ticket/wr_wrpa")
+expect(SessionState.is_invalid() == true,
+    "a clearing rejection must mark the session invalid")
+
+local stale_settings = new_renew_settings({ cookies = { wr_skey = "old-key-12345678" } })
+local generation_reads = { 5, 6 }
+stale_settings.get = function(self, key, default)
+    if key == "session_generation" then
+        local value = table.remove(generation_reads, 1)
+        if value == nil then return default end
+        return value
+    end
+    local value = self.values[key]
+    if value == nil then return default end
+    return value
+end
+local stale_client = Client:new(stale_settings)
+stale_client.json_encode = function() return "{}" end
+stale_client.json_decode = function() return { succ = 1 } end
+responses[#responses + 1] = {
+    body = '{"succ":1}',
+    code = 200,
+    headers = { ["set-cookie"] = "wr_skey=XXX-stale-replacement-12345; Path=/" },
+}
+local stale_ok, stale_result, stale_err = pcall(function()
+    return stale_client:renew_cookie()
+end)
+expect(stale_ok and stale_result == nil and stale_err == "stale",
+    "stale renewal response was not ignored")
+expect(#stale_settings.update_calls == 0
+    and stale_settings.values.cookies.wr_skey == "old-key-12345678",
+    "stale renewal overwrote or mutated credentials")
+
+-- A stale clearing rejection must write nothing, not even the clearing Set-Cookie.
+local stale_clear_settings = new_renew_settings({
+    cookies = { wr_skey = "old-key-12345678", wr_vid = "old-vid", wr_rt = "old-refresh" },
+})
+local stale_clear_reads = { 7, 8 }
+stale_clear_settings.get = function(self, key, default)
+    if key == "session_generation" then
+        local value = table.remove(stale_clear_reads, 1)
+        if value == nil then return default end
+        return value
+    end
+    local value = self.values[key]
+    if value == nil then return default end
+    return value
+end
+local stale_clear_client = Client:new(stale_clear_settings)
+stale_clear_client.json_encode = function() return "{}" end
+stale_clear_client.json_decode = function() return { errCode = -2013, errMsg = "鉴权失败" } end
+responses[#responses + 1] = {
+    body = '{"errCode":-2013}',
+    code = 200,
+    headers = { ["set-cookie"] = {
+        "wr_skey=; Path=/; Domain=.weread.qq.com",
+        "wr_vid=; Path=/; Domain=.weread.qq.com",
+        "wr_rt=; Path=/; Domain=.weread.qq.com",
+    } },
+}
+local clear_stale_ok, clear_stale_result, clear_stale_err = pcall(function()
+    return stale_clear_client:renew_cookie()
+end)
+expect(clear_stale_ok and clear_stale_result == nil and clear_stale_err == "stale",
+    "a stale clearing rejection must be ignored as stale")
+expect(#stale_clear_settings.update_calls == 0,
+    "a stale clearing rejection must not write credentials")
+expect(stale_clear_settings.values.cookies.wr_skey == "old-key-12345678"
+    and stale_clear_settings.values.cookies.wr_vid == "old-vid"
+    and stale_clear_settings.values.cookies.wr_rt == "old-refresh",
+    "a stale clearing rejection must leave credentials intact")
+
+-- A successful renewal clears a session that was marked invalid.
+SessionState.mark_invalid("login_timeout")
+local clear_settings = new_renew_settings({
+    session_generation = 0,
+    cookies = { wr_skey = "old-key-12345678" },
+})
+local clear_client = Client:new(clear_settings)
+clear_client.json_encode = function() return "{}" end
+clear_client.json_decode = function() return { succ = 1 } end
+responses[#responses + 1] = {
+    body = '{"succ":1}',
+    code = 200,
+    headers = { ["set-cookie"] = "wr_skey=XXX-renewed-key-12345678; Path=/" },
+}
+local clear_ok = pcall(function() return clear_client:renew_cookie() end)
+expect(clear_ok, "successful renewal raised an error")
+expect(SessionState.is_invalid() == false and SessionState.reason() == nil,
+    "a successful renewal did not clear the invalid session state")
 
 print(("client_spec: %d checks"):format(checks))

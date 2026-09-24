@@ -89,6 +89,35 @@ local function response_body(result)
     return result
 end
 
+-- Kinds that mean the server no longer accepts the session even though its
+-- cookies exist locally. Mirrors SESSION_ERRORS in weread/lib/client.lua so the
+-- read-report outcome classification cannot drift from the auth classifier.
+local AUTHENTICATION_ERROR_KINDS = {
+    session_replaced = true,
+    credential_invalid = true,
+    login_timeout = true,
+}
+
+-- A replaced session must surface as an authentication failure rather than a
+-- generic server rejection. Only known codes classify; unknown codes return nil.
+local function response_auth_kind(client, result)
+    local body = response_body(result)
+    if type(body) == "table" and body._auth_kind then
+        return body._auth_kind
+    end
+    local code
+    if type(body) == "table" then
+        code = body.errCode or body.errcode
+    end
+    if code == nil and type(result) == "table" then
+        code = result.errCode or result.errcode
+    end
+    if code ~= nil and client and type(client.auth_error_kind) == "function" then
+        return client:auth_error_kind(code)
+    end
+    return nil
+end
+
 local function table_keys(value)
     if type(value) ~= "table" then
         return ""
@@ -823,6 +852,7 @@ function ReadReport:_run_pipeline(book_id, opts)
     end
 
     local failure = response_summary(self.client, result, http_code)
+    local last_result = result
     local refresh_ok, refreshed = pcall(function()
         return self:ensure_context(book_id, true)
     end)
@@ -832,6 +862,7 @@ function ReadReport:_run_pipeline(book_id, opts)
             return self:_send(
                 book_id, refreshed, opts.position, opts.elapsed_seconds)
         end)
+        last_result = retry_result
         outcome.book = self:_context_snapshot(refreshed)
         local retry_accepted, retry_body = response_accepted(retry_result, retry_code)
         if retry_ok and retry_accepted then
@@ -848,8 +879,9 @@ function ReadReport:_run_pipeline(book_id, opts)
     end
 
     if not opts.allow_renewal then
+        local kind = response_auth_kind(self.client, last_result)
         outcome.error = failure
-        outcome.error_kind = "server"
+        outcome.error_kind = AUTHENTICATION_ERROR_KINDS[kind] and "authentication" or "server"
         outcome.error_prefix = "read report server rejected:"
         return outcome
     end
@@ -892,7 +924,10 @@ function ReadReport:_run_pipeline(book_id, opts)
     outcome.error = failure .. "; final=" .. (final_ok
         and response_summary(self.client, final_result, final_code)
         or tostring(final_result))
-    outcome.error_kind = final_ok and "server" or "transport"
+    local final_kind = response_auth_kind(self.client, final_result)
+    outcome.error_kind = final_ok
+        and (AUTHENTICATION_ERROR_KINDS[final_kind] and "authentication" or "server")
+        or "transport"
     outcome.error_prefix = "read report final retry failed:"
     return outcome
 end

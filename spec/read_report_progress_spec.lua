@@ -201,6 +201,32 @@ test("report context backfills SQLite from catalog.json", function()
     eq(written_catalog, disk_catalog, "catalog.json backfills SQLite")
 end)
 
+local function auth_kind_outcome(auth_kind, err_code)
+    local report = setmetatable({}, ReadReport)
+    report.client = {
+        auth_error_kind = function() return auth_kind end,
+    }
+    report.ensure_context = function() return { book_id = "book" } end
+    report._context_snapshot = function() return {} end
+    report._send = function() return { errCode = err_code } end
+    return report:_run_pipeline("book", { allow_renewal = false }).error_kind
+end
+
+test("login_timeout is classified as an authentication failure", function()
+    eq(auth_kind_outcome("login_timeout", -2012), "authentication",
+        "login_timeout (-2012) classifies as authentication")
+end)
+
+test("credential_invalid is classified as an authentication failure", function()
+    eq(auth_kind_outcome("credential_invalid", -2010), "authentication",
+        "credential_invalid (-2010) classifies as authentication")
+end)
+
+test("unknown auth kinds still classify as server failures", function()
+    eq(auth_kind_outcome(nil, nil), "server",
+        "an unclassified failure stays a server failure")
+end)
+
 print(string.format(
     "read_report_progress_spec: %d checks, %d failure(s)", checks, failures))
 os.exit(failures == 0 and 0 or 1)

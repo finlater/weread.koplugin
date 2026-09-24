@@ -14,6 +14,13 @@ local defaults = {
     cookies = {},
     wr_ticket = "",
     wr_wrpa = "",
+    -- Session generation guards cookie renewal against stale responses from a
+    -- previous session. Bounded scalar, so it belongs in settings.
+    session_generation = 0,
+    -- Per-device identity seed for the weblogin fingerprint. Persists across
+    -- accounts; clear_auth_store intentionally leaves it untouched so a device
+    -- keeps its identity when the account changes.
+    device_seed = "",
     account = {
         name = "",
         user_vid = "",
@@ -118,6 +125,7 @@ local function clear_auth_store(store)
     store:saveSetting("cookies", {})
     store:saveSetting("wr_ticket", "")
     store:saveSetting("wr_wrpa", "")
+    store:saveSetting("session_generation", defaults.session_generation)
     store:saveSetting("account", deepcopy(defaults.account))
 end
 
@@ -308,6 +316,11 @@ function Settings:update_auth(credentials, options)
             self:set(key, value)
             changed = true
         end
+    end
+    local generation = tonumber(credentials.session_generation)
+    if generation ~= nil then
+        self:set("session_generation", generation)
+        changed = true
     end
     if type(credentials.account) == "table" then
         self:set("account", deepcopy(credentials.account))

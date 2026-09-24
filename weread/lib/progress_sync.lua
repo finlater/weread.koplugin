@@ -1,4 +1,5 @@
 local PositionMapper = require("weread.lib.position_mapper")
+local WeRead = require("weread.lib.protocol")
 
 local logger = require("weread.lib.logger").scoped("ProgressSync")
 
@@ -29,6 +30,20 @@ end
 
 local function is_mp_book(book_id)
     return tostring(book_id or ""):sub(1, 7) == "MP_WXS_"
+end
+
+local function auth_response_kind(client, result)
+    if type(result) ~= "table" then
+        return nil
+    end
+    if result._auth_kind then
+        return result._auth_kind
+    end
+    local code = result.errCode or result.errcode
+    if code ~= nil and type(client.auth_error_kind) == "function" then
+        return client:auth_error_kind(code)
+    end
+    return nil
 end
 
 local function document_path(document)
@@ -244,14 +259,17 @@ function ProgressSync:_clear_verified(reason)
     end
 end
 
-function ProgressSync:_fetch_remote(book_id, chapters)
+function ProgressSync:_fetch_remote(book_id, chapters, opts)
+    opts = opts or {}
     local gateway
     local web
     local gateway_error
     local web_error
+    local auth_kind = nil
     if self.settings:is_api_configured() then
         local ok, result = pcall(self.client.get_progress, self.client, book_id)
         if ok then
+            auth_kind = auth_kind or auth_response_kind(self.client, result)
             gateway, gateway_error = PositionMapper.normalize_remote(
                 result, book_id, "gateway", chapters)
         else
@@ -262,6 +280,7 @@ function ProgressSync:_fetch_remote(book_id, chapters)
         local ok, result = pcall(
             self.client.get_web_progress, self.client, book_id)
         if ok then
+            auth_kind = auth_kind or auth_response_kind(self.client, result)
             web, web_error = PositionMapper.normalize_remote(
                 result, book_id, "web", chapters)
         else
@@ -274,6 +293,22 @@ function ProgressSync:_fetch_remote(book_id, chapters)
         SOURCE_CONFLICT_THRESHOLD_PERCENT
     )
     if not selected then
+        -- A login-timeout response is recoverable: renew once and refetch
+        -- before reporting the pull as failed. A refused renewal marks the
+        -- session state itself, which is what surfaces the scan prompt.
+        local recoverable = auth_kind
+            and auth_kind ~= "wechat_auth_expired"
+            and not opts.auth_retried
+        if recoverable then
+            local renewed_ok, renewed = pcall(function()
+                return self.client:renew_cookie()
+            end)
+            if renewed_ok and WeRead.is_success_response(renewed) then
+                log("info", "remote progress refetched after cookie renewal:",
+                    "kind=", tostring(auth_kind))
+                return self:_fetch_remote(book_id, chapters, { auth_retried = true })
+            end
+        end
         return nil, gateway_error or web_error or "remote_unavailable"
     end
     return selected

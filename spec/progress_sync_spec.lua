@@ -628,6 +628,63 @@ test("a fresh automatic pull replaces an older retry chain", function()
     eq(#f.queue, 1, "replacement chain remains active")
 end)
 
+test("an expired session is renewed once and the pull retried", function()
+    local remote = {
+        bookId = "book", progress = 25, chapterUid = 22, chapterIdx = 2,
+        chapterOffset = 150, updateTime = 10,
+    }
+    local gateway_calls, web_calls, renewals = 0, 0, 0
+    local f = fixture(nil)
+    f.sync.client.get_progress = function()
+        gateway_calls = gateway_calls + 1
+        if gateway_calls == 1 then
+            return { errCode = -2012, errMsg = "登录超时", _auth_kind = "login_timeout" }
+        end
+        return { book = remote }
+    end
+    f.sync.client.get_web_progress = function()
+        web_calls = web_calls + 1
+        if web_calls == 1 then
+            return { errCode = -2012, errMsg = "登录超时", _auth_kind = "login_timeout" }
+        end
+        return remote
+    end
+    f.sync.client.renew_cookie = function()
+        renewals = renewals + 1
+        return { succ = 1 }
+    end
+    f.sync:on_reader_ready()
+    f.drain()
+    eq(renewals, 1, "expired session renewed once")
+    eq(gateway_calls, 2, "gateway progress refetched after renewal")
+    eq(web_calls, 2, "web progress refetched after renewal")
+    eq(f.sync:status().verified, true, "renewed session verifies the reporting gate")
+end)
+
+test("a refused renewal keeps the pull failed without retrying", function()
+    local gateway_calls, renewals = 0, 0
+    local auth_failure = { errCode = -2012, errMsg = "登录超时", _auth_kind = "login_timeout" }
+    local f = fixture(nil)
+    f.sync.client.get_progress = function()
+        gateway_calls = gateway_calls + 1
+        return auth_failure
+    end
+    f.sync.client.get_web_progress = function()
+        return auth_failure
+    end
+    f.sync.client.renew_cookie = function()
+        renewals = renewals + 1
+        error("Cookie renewal response did not include succ=1")
+    end
+    f.sync:on_reader_ready()
+    f.drain()
+    eq(renewals, 1, "renewal attempted once")
+    eq(gateway_calls, 1, "no refetch when the renewal is refused")
+    eq(not f.sync:status().verified, true, "reporting gate stays unverified")
+    local _, reason = f.sync:position_for_report("book")
+    eq(reason, "progress_unverified", "gate reports the unverified reason")
+end)
+
 print(string.format(
     "progress_sync_spec: %d checks, %d failure(s)", checks, failures))
 os.exit(failures == 0 and 0 or 1)

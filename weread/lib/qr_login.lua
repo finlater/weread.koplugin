@@ -1,9 +1,11 @@
 local Cookie = require("weread.lib.cookie")
 local Device = require("device")
+local DeviceIdentity = require("weread.lib.device_identity")
 local I18n = require("weread.lib.i18n")
 local InputDialog = require("ui/widget/inputdialog")
 local logger = require("weread.lib.logger").scoped("QRLogin")
 local QRMessage = require("ui/widget/qrmessage")
+local SessionState = require("weread.lib.session_state")
 local T = require("ffi/util").template
 local UIManager = require("ui/uimanager")
 local WeRead = require("weread.lib.protocol")
@@ -16,11 +18,21 @@ local BASE_URL = "https://weread.qq.com"
 local SKILLS_PAGE_URL = BASE_URL .. "/r/weread-skills"
 local LOGIN_UID_URL = BASE_URL .. "/api/auth/getLoginUid"
 local LOGIN_INFO_URL = BASE_URL .. "/api/auth/getLoginInfo"
+local WEB_GETUID_URL = BASE_URL .. "/web/login/getuid"
+local WEB_GETINFO_URL = BASE_URL .. "/web/login/getinfo"
+local LEGACY_WEBLOGIN_URL = BASE_URL .. "/wrwebsimplenjlogic/api/weblogin"
+local SESSION_INIT_URL = BASE_URL .. "/web/login/session/init"
 local USER_INFO_URL = BASE_URL .. "/api/userInfo"
 local API_KEY_URL = BASE_URL .. "/api/skills/apikeyGet?only_show=1"
 local LOGIN_SESSION_TIMEOUT_SECONDS = 300
 local POLL_BLOCK_TIMEOUT_SECONDS = 5
 local POLL_TOTAL_TIMEOUT_SECONDS = 8
+-- Deliberately short timeouts for a long-polling endpoint: _poll runs
+-- synchronously on the UI event loop, so a long timeout would freeze the QR
+-- dialog for ~a minute. Timeouts count as "pending" and the next poll picks up
+-- the payload (classic-flow pattern).
+local INK_POLL_BLOCK_TIMEOUT_SECONDS = 5
+local INK_POLL_TOTAL_TIMEOUT_SECONDS = 8
 
 local QRLogin = {}
 QRLogin.__index = QRLogin
@@ -78,6 +90,57 @@ local function sleep_seconds(seconds)
     end
 end
 
+-- Coerce a JSON scalar to its text form. The weblogin credential payload sends
+-- `vid` as a JSON integer, so a string-only extraction would discard it.
+local function scalar_text(value)
+    local kind = type(value)
+    if kind == "string" then
+        return value
+    end
+    if kind == "number" then
+        return string.format("%.0f", value)
+    end
+    return ""
+end
+
+-- Success predicate for /web/login/getinfo: the payload carries usable
+-- credentials only when vid, skey and code are all present. There is no
+-- `succeed` field on this endpoint.
+local function ink_login_payload(data)
+    if type(data) ~= "table" then
+        return nil
+    end
+    local vid = scalar_text(data.vid)
+    local skey = scalar_text(data.skey)
+    if vid ~= "" and skey ~= "" and data.code ~= nil then
+        return vid, skey, data.code
+    end
+    return nil
+end
+
+local function ink_logic_kind(data)
+    if type(data) ~= "table" then
+        return "waiting"
+    end
+    local logic = tostring(data.logicCode or data.logic_code or ""):upper()
+    if logic:find("NEED_OTP", 1, true) then
+        return "need_otp"
+    end
+    if logic:find("OTP_NOT_MATCH", 1, true) or logic:find("MISMATCH", 1, true) then
+        return "otp_mismatch"
+    end
+    if logic:find("EXPIRED", 1, true) then
+        return "expired"
+    end
+    if logic:find("TIMEOUT", 1, true) then
+        return "timeout"
+    end
+    if logic:find("CANCEL", 1, true) or logic:find("FAIL", 1, true) then
+        return "ended"
+    end
+    return "waiting"
+end
+
 function QRLogin:new(host, client, settings)
     return setmetatable({
         host = host,
@@ -85,6 +148,7 @@ function QRLogin:new(host, client, settings)
         settings = settings,
         generation = 0,
         login_cookies = nil,
+        login_mode = nil,
         qr_dialog = nil,
         programmatic_close = false,
         started_at = nil,
@@ -125,8 +189,54 @@ function QRLogin:_request_json(url, opts, stage)
     return data, headers
 end
 
+function QRLogin:_post_login_json(url, payload, headers, timeout)
+    local request_headers = {}
+    for key, value in pairs(headers or {}) do
+        request_headers[key] = value
+    end
+    if request_headers["Cookie"] == nil then
+        local cookie_header = Cookie.to_header(self.login_cookies or {})
+        if cookie_header ~= "" then
+            request_headers["Cookie"] = cookie_header
+        end
+    end
+    local call = { pcall(function()
+        return self.client:post_json(url, payload, {
+            skip_cookie = true,
+            timeout = timeout,
+            headers = request_headers,
+        })
+    end) }
+    if not call[1] then
+        local message = error_text(call[2] or "request failed")
+        if message:lower():find("http nil", 1, true) then
+            -- No HTTP response = transport failure; pollers retry on this
+            -- marker (mirrors the classic _request_json "request failed" path).
+            return nil, nil, "request failed"
+        end
+        return nil, nil, message
+    end
+    return call[2], call[4] or {}, nil
+end
+
+function QRLogin:_classic_getuid()
+    local headers = {
+        ["Accept"] = "application/json, text/plain, */*",
+        ["Referer"] = SKILLS_PAGE_URL,
+    }
+    local cookie_header = Cookie.to_header(self.login_cookies or {})
+    if cookie_header ~= "" then
+        headers["Cookie"] = cookie_header
+    end
+    return self:_request_json(LOGIN_UID_URL, {
+        method = "GET",
+        timeout = { 10, 20 },
+        headers = headers,
+    }, "getLoginUid")
+end
+
 function QRLogin:_begin_protocol()
-    local login_cookies = {}
+    self.login_cookies = {}
     local _, page_code, page_headers = self.client:request_follow({
         url = SKILLS_PAGE_URL,
         method = "GET",
@@ -138,31 +248,31 @@ function QRLogin:_begin_protocol()
             ["Referer"] = BASE_URL .. "/",
         },
     })
-    login_cookies = merge_response_cookies(login_cookies, page_headers)
+    self.login_cookies = merge_response_cookies(self.login_cookies, page_headers)
     if not page_code or page_code < 200 or page_code >= 300 then
         error("Unable to open WeRead login page (HTTP " .. tostring(page_code) .. ")")
     end
 
-    local headers = {
+    -- Prefer the weblogin chain, which carries a per-device fingerprint. Only
+    -- when it cannot even issue a uid do we fall back to the classic chain.
+    local uid_data, uid_headers = self:_post_login_json(WEB_GETUID_URL, {}, {
         ["Accept"] = "application/json, text/plain, */*",
-        ["Referer"] = SKILLS_PAGE_URL,
-    }
-    local cookie_header = Cookie.to_header(login_cookies)
-    if cookie_header ~= "" then
-        headers["Cookie"] = cookie_header
+        ["Referer"] = BASE_URL .. "/",
+    }, { 10, 20 })
+    self.login_cookies = merge_response_cookies(self.login_cookies, uid_headers)
+    local uid = type(uid_data) == "table" and scalar_text(uid_data.uid) or ""
+    if uid ~= "" then
+        self.login_mode = "ink"
+        return uid
     end
 
-    local data, response_headers = self:_request_json(LOGIN_UID_URL, {
-        method = "GET",
-        timeout = { 10, 20 },
-        headers = headers,
-    }, "getLoginUid")
-    login_cookies = merge_response_cookies(login_cookies, response_headers)
+    logger.warn("weblogin getuid unavailable; falling back to the classic login chain")
+    local data, response_headers = self:_classic_getuid()
+    self.login_cookies = merge_response_cookies(self.login_cookies, response_headers)
     if type(data.uid) ~= "string" or data.uid == "" then
         error("WeRead did not return a valid login UID")
     end
-
-    self.login_cookies = login_cookies
+    self.login_mode = "classic"
     return data.uid
 end
 
@@ -200,6 +310,54 @@ function QRLogin:_poll_protocol(uid, otp)
     return data
 end
 
+function QRLogin:_poll_ink(uid, otp)
+    if type(uid) ~= "string" or uid == "" then
+        error("Missing QR login UID")
+    end
+
+    local payload = { uid = uid }
+    if type(otp) == "string" and otp ~= "" then
+        payload.otp = otp
+    end
+    local headers = {
+        ["Accept"] = "application/json, text/plain, */*",
+        ["Referer"] = BASE_URL .. "/",
+    }
+    local cookie_header = Cookie.to_header(self.login_cookies or {})
+    if cookie_header ~= "" then
+        headers["Cookie"] = cookie_header
+    end
+
+    local data, response_headers, request_error = self:_post_login_json(
+        WEB_GETINFO_URL,
+        payload,
+        headers,
+        { INK_POLL_BLOCK_TIMEOUT_SECONDS, INK_POLL_TOTAL_TIMEOUT_SECONDS }
+    )
+    if not data then
+        if is_timeout_error(request_error) or request_error == "request failed" then
+            return { transport_pending = true }
+        end
+        error(request_error)
+    end
+    if type(data) ~= "table" then
+        error("WeRead returned an invalid JSON response")
+    end
+    self.login_cookies = merge_response_cookies(self.login_cookies, response_headers)
+    return data
+end
+
+function QRLogin:_poll_once(uid, otp)
+    if self.login_mode == "ink" then
+        return self:_poll_ink(uid, otp)
+    end
+    return self:_poll_protocol(uid, otp)
+end
+
+function QRLogin:_ink_login_payload(data)
+    return ink_login_payload(data)
+end
+
 function QRLogin:_authenticated_get(url, cookies, web_login_vid, access_token, stage)
     for attempt = 1, 3 do
         local ok, data, response_headers = pcall(function()
@@ -225,6 +383,115 @@ function QRLogin:_authenticated_get(url, cookies, web_login_vid, access_token, s
         logger.warn(stage, "temporarily unauthorized; retrying:", tostring(attempt))
         sleep_seconds(0.5)
     end
+end
+
+function QRLogin:_run_weblogin_chain(getinfo, identity)
+    local vid = scalar_text(getinfo.vid)
+    local skey = scalar_text(getinfo.skey)
+    local code = getinfo.code
+    if vid == "" or skey == "" or code == nil then
+        return nil
+    end
+    local pf = type(getinfo.pf) == "number" and getinfo.pf or 2
+    local headers = {
+        ["Accept"] = "application/json, text/plain, */*",
+        ["Referer"] = BASE_URL .. "/",
+    }
+
+    -- Only the legacy /wrwebsimplenjlogic variant yields credentials; the
+    -- ink-style /web/login/weblogin variant answers needRemoteLoginVerify.
+    local data, response_headers = self:_post_login_json(
+        LEGACY_WEBLOGIN_URL .. "?platform=desktop",
+        {
+            vid = vid,
+            skey = skey,
+            code = code,
+            isAutoLogout = 0,
+            pf = pf,
+            cgiKey = math.random(100, 999),
+            fp = identity.fp,
+        },
+        headers,
+        { 10, 20 }
+    )
+    local weblogin_cookies = merge_response_cookies({}, response_headers)
+    if data then
+        self.login_cookies = merge_response_cookies(self.login_cookies, response_headers)
+    else
+        logger.warn("legacy weblogin request failed")
+    end
+
+    local access_token = type(data) == "table" and scalar_text(data.accessToken) or ""
+    local refresh_token = type(data) == "table" and scalar_text(data.refreshToken) or ""
+    local yielded = (access_token ~= "" and scalar_text(data.vid) ~= "")
+        or scalar_text(weblogin_cookies.wr_skey) ~= ""
+        or scalar_text(weblogin_cookies.wr_vid) ~= ""
+    if not yielded then
+        return nil
+    end
+
+    local token = access_token
+    if token == "" then
+        token = scalar_text((self.login_cookies or {}).wr_skey)
+    end
+    if token ~= "" then
+        local init_headers = {
+            ["Accept"] = "application/json, text/plain, */*",
+            ["Referer"] = BASE_URL .. "/",
+        }
+        local init_data, init_response_headers = self:_post_login_json(SESSION_INIT_URL, {
+            vid = vid,
+            skey = token,
+            pf = pf,
+            ql = 0,
+            rt = refresh_token ~= "" and refresh_token
+                or scalar_text((self.login_cookies or {}).wr_rt),
+        }, init_headers, { 10, 20 })
+        if init_data then
+            self.login_cookies = merge_response_cookies(self.login_cookies, init_response_headers)
+        else
+            logger.warn("weblogin session init request failed")
+        end
+    end
+
+    local cookies = self.login_cookies or {}
+    local final_vid = scalar_text(cookies.wr_vid)
+    if final_vid == "" then
+        final_vid = vid
+    end
+    local final_skey = scalar_text(cookies.wr_skey)
+    if final_skey == "" then
+        final_skey = access_token
+    end
+    if final_skey == "" then
+        final_skey = skey
+    end
+    local final_refresh = refresh_token
+    if final_refresh == "" then
+        final_refresh = scalar_text(cookies.wr_rt)
+    end
+    if final_vid == "" or final_skey == "" then
+        return nil
+    end
+
+    self.login_cookies = cookies
+    self.login_cookies.wr_fp = identity.fp
+    return {
+        succeed = true,
+        webLoginVid = final_vid,
+        accessToken = final_skey,
+        refreshToken = final_refresh,
+    }
+end
+
+function QRLogin:_resolve_ink_result(getinfo)
+    local identity = DeviceIdentity.ensure(self.settings)
+    local result = self:_run_weblogin_chain(getinfo, identity)
+    if result then
+        return result
+    end
+    logger.warn("weblogin credential issuance failed; login cannot continue")
+    return nil
 end
 
 function QRLogin:_complete_protocol(login_result, generation)
@@ -291,13 +558,16 @@ function QRLogin:_complete_protocol(login_result, generation)
         login_method = "qr",
         login_time = os.time(),
     }
+    local session_generation = tonumber(self.settings:get("session_generation", 0)) or 0
     self.settings:update_auth({
         cookies = cookies,
         api_key = api_key,
         wr_ticket = "",
         wr_wrpa = "",
         account = account,
+        session_generation = session_generation + 1,
     }, { replace_cookies = true })
+    SessionState.clear()
     if self.host.onWeReadAccountChanged then
         self.host:onWeReadAccountChanged()
     end
@@ -319,6 +589,7 @@ end
 function QRLogin:cancel()
     self.generation = self.generation + 1
     self.login_cookies = nil
+    self.login_mode = nil
     self.started_at = nil
     self:_close_qr_dialog(true)
 end
@@ -350,13 +621,22 @@ function QRLogin:start()
     end)
 end
 
+function QRLogin:_confirm_url(uid)
+    local url = BASE_URL .. "/web/confirm?uid=" .. WeRead.urlencode(uid)
+    if self.login_mode == "ink" then
+        -- The official e-ink client confirms with pf=2 (non-iOS).
+        url = BASE_URL .. "/web/confirm?pf=2&uid=" .. WeRead.urlencode(uid)
+    end
+    return url
+end
+
 function QRLogin:_show_qr(uid, generation)
     local screen_width = Device.screen:getWidth()
     local screen_height = Device.screen:getHeight()
     local qr_size = math.floor(math.min(screen_width, screen_height) * 0.72)
     local dialog
     dialog = QRMessage:new{
-        text = BASE_URL .. "/web/confirm?uid=" .. WeRead.urlencode(uid),
+        text = self:_confirm_url(uid),
         -- QRMessage centers its framed content on the screen. Keeping the frame
         -- smaller than the viewport makes it a dismissible popup instead of a
         -- full-screen QR surface; tapping the modal surface (or pressing a key)
@@ -402,7 +682,7 @@ function QRLogin:_poll(uid, generation, otp)
     end
 
     local ok, result = pcall(function()
-        return self:_poll_protocol(uid, otp or "")
+        return self:_poll_once(uid, otp or "")
     end)
     if generation ~= self.generation then
         return
@@ -422,6 +702,36 @@ function QRLogin:_poll(uid, generation, otp)
         self:_schedule_poll(uid, generation)
         return
     end
+
+    if self.login_mode == "ink" then
+        if ink_login_payload(result) then
+            self:_close_qr_dialog(true)
+            self:_complete(nil, generation, function()
+                return self:_resolve_ink_result(result)
+            end)
+            return
+        end
+        local kind = ink_logic_kind(result)
+        if kind == "need_otp" then
+            self:_close_qr_dialog(true)
+            self:_show_otp(uid, generation)
+        elseif kind == "otp_mismatch" then
+            self:_close_qr_dialog(true)
+            self:_show_otp(uid, generation, _("Incorrect verification code."))
+        elseif kind == "expired" or kind == "timeout" then
+            self:_close_qr_dialog(true)
+            self:cancel()
+            self.host:showInfo(_("The QR code has expired. Please try again."))
+        elseif kind == "ended" then
+            self:_close_qr_dialog(true)
+            self:cancel()
+            self.host:showTransientInfo(_("QR login cancelled."), 2)
+        else
+            self:_schedule_poll(uid, generation)
+        end
+        return
+    end
+
     if result.succeed == true then
         self:_close_qr_dialog(true)
         self:_complete(result, generation)
@@ -487,7 +797,7 @@ function QRLogin:_show_otp(uid, generation, error_message)
                         self.host:showBusy(_("Verifying login..."))
                         self.host:runOnlineTask(_("QR login"), function()
                             local ok, result = pcall(function()
-                                return self:_poll_protocol(uid, otp)
+                                return self:_poll_once(uid, otp)
                             end)
                             self.host:closeBusy()
                             if generation ~= self.generation then
@@ -503,6 +813,25 @@ function QRLogin:_show_otp(uid, generation, error_message)
                                 end
                             elseif result.transport_pending then
                                 self:_show_otp(uid, generation, _("Verification timed out. Please try again."))
+                            elseif self.login_mode == "ink" then
+                                if ink_login_payload(result) then
+                                    self:_complete(nil, generation, function()
+                                        return self:_resolve_ink_result(result)
+                                    end)
+                                else
+                                    local kind = ink_logic_kind(result)
+                                    if kind == "expired" or kind == "timeout" then
+                                        self:cancel()
+                                        self.host:showInfo(_("The verification code has expired. Please try again."))
+                                    elseif kind == "otp_mismatch" or kind == "need_otp" then
+                                        self:_show_otp(uid, generation, _("Incorrect verification code."))
+                                    elseif kind == "ended" then
+                                        self:cancel()
+                                        self.host:showInfo(T(_("QR login failed:\n%1"), _("Unknown login response")))
+                                    else
+                                        self:_show_otp(uid, generation, _("Verification timed out. Please try again."))
+                                    end
+                                end
                             elseif result.succeed == true then
                                 self:_complete(result, generation)
                             else
@@ -527,11 +856,15 @@ function QRLogin:_show_otp(uid, generation, error_message)
     self.host:showInputDialog(dialog)
 end
 
-function QRLogin:_complete(login_result, generation)
+function QRLogin:_complete(login_result, generation, provider)
     self.host:showBusy(_("Completing WeRead login..."))
     self.host:runOnlineTask(_("QR login"), function()
         local ok, account_or_error = pcall(function()
-            return self:_complete_protocol(login_result, generation)
+            local resolved = login_result
+            if provider then
+                resolved = provider()
+            end
+            return self:_complete_protocol(resolved, generation)
         end)
         self.host:closeBusy()
         if generation ~= self.generation then
