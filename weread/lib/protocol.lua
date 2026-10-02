@@ -283,7 +283,7 @@ function WeRead.normalize_cover_url(url)
     if type(url) ~= "string" or url == "" then
         return url
     end
-    return url:gsub("/t%d+_", "/t9_")
+    return (url:gsub("/t%d+_", "/t9_"):gsub("/s_", "/t9_"))
 end
 
 return WeRead

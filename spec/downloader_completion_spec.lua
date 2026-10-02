@@ -44,13 +44,15 @@ package.preload["ffi/util"] = function()
     }
 end
 local full_book_save_count = 0
+local saved_cover_data
 package.preload["weread.lib.content"] = function()
     return {
         save_chapter_epub = function(_settings, _book, chapter)
             return "/cache/book/chapter-" .. tostring(chapter.chapterUid) .. ".epub"
         end,
-        save_book_epub = function()
+        save_book_epub = function(_settings, _book, _chapters, _bodies, _suffix, _assets, _css, cover_data)
             full_book_save_count = full_book_save_count + 1
+            saved_cover_data = cover_data
             return "/cache/book/replacement-full.epub"
         end,
     }
@@ -62,14 +64,7 @@ end
 package.preload["weread.lib.thoughts"] = function()
     return { is_download_enabled = function() return false end }
 end
-package.preload["weread.lib.protocol"] = function()
-    return {
-        normalize_cover_url = function(value) return value end,
-        reader_url = function(book_id)
-            return "https://reader/" .. tostring(book_id)
-        end,
-    }
-end
+local Protocol = require("weread.lib.protocol")
 
 local Downloader = require("weread.lib.downloader")
 
@@ -228,6 +223,40 @@ eq(incomplete_full_completion_value, "incomplete_full_book",
     "incomplete full-book completion reason")
 eq(#info_messages, 1,
     "incomplete full-book failure was shown to the user")
+
+local cover_base = "https://cdn.weread.qq.com/weread/cover/52/Example/"
+for _, token in ipairs({ "s", "t6", "t12", "t9" }) do
+    local source = cover_base .. token .. "_Example.jpg"
+    local expected = cover_base .. "t9_Example.jpg"
+    eq(Protocol.normalize_cover_url(source), expected, token .. " cover normalization")
+    local requested_url
+    downloader.client.get_binary = function(_self, url)
+        requested_url = url
+        return "synthetic cover bytes"
+    end
+    local full = {
+        book = { book_id = "book", title = "Book", cover = source },
+        chapters = { chapter }, selected = { chapter },
+        bodies = { ["22"] = "<p>body</p>" }, assets = {}, state = { css = "" },
+        suffix = "full", index = 2, total = 1, failed = {},
+        annotation_failed_batches = 0, silent_completion = true, started_at = 999,
+    }
+    downloader:_step(full)
+    eq(requested_url, expected, token .. " downloader requested upgraded cover")
+    eq(saved_cover_data, "synthetic cover bytes", token .. " cover passed to EPUB packaging")
+end
+eq(Protocol.normalize_cover_url(nil), nil, "nil cover preserved")
+eq(Protocol.normalize_cover_url(""), "", "empty cover preserved")
+eq(Protocol.normalize_cover_url(false), false, "non-string cover preserved")
+for _, url in ipairs({
+    "https://example.com/cover.jpg",
+    "https://example.com/books_Example.jpg",
+    "https://example.com/small_Example.jpg",
+    "https://example.com/t_Example.jpg",
+    "https://example.com/twelve_Example.jpg",
+}) do
+    eq(Protocol.normalize_cover_url(url), url, "unrelated URL preserved: " .. url)
+end
 
 print(string.format(
     "downloader_completion_spec: %d checks, %d failure(s)", checks, failures))
