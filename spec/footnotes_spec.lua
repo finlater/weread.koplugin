@@ -28,19 +28,18 @@ end
 
 local Footnotes = require("weread.lib.footnotes")
 
-expect(Footnotes.FOOTNOTES_CSS:find(
-    "aside.wr%-book%-footnote{%-cr%-hint:footnote%-inpage") ~= nil,
-    "generated footnotes must use KOReader's default in-page flow")
+expect(not Footnotes.FOOTNOTES_CSS:find("-cr-hint:", 1, true),
+    "default footnotes must leave display policy to the reading system")
 expect(not Footnotes.FOOTNOTES_CSS:find("visibility:hidden", 1, true),
-    "generated in-page footnotes must remain visible to CREngine")
-expect(Footnotes.FOOTNOTES_CSS:find(
-    "wr%-fn%-ref a{%-cr%-hint:noteref") ~= nil,
-    "generated references must be explicit KOReader noterefs")
+    "default chapter-end footnotes must remain visible")
+expect(Footnotes.FOOTNOTES_CSS:find("border-top:1px solid #ccc", 1, true) ~= nil,
+    "default chapter-end footnotes should have a visible separator")
 expect(Footnotes.FOOTNOTES_CSS:find(
     "div.wr%-footnotes>hr{display:none") ~= nil,
-    "the generated footnote container must not leave a visible separator")
-expect(Footnotes.get_css(false) == Footnotes.IN_PAGE_CSS,
-    "in-page footnotes should remain the default")
+    "the generated hr must not duplicate the container separator")
+expect(Footnotes.get_css(false) == Footnotes.FOOTNOTES_CSS
+        and Footnotes.get_css(nil) == Footnotes.FOOTNOTES_CSS,
+    "standard chapter-end styling should be the default")
 expect(Footnotes.get_css(true) == Footnotes.POPUP_CSS
         and Footnotes.POPUP_CSS:find(
             "aside.wr%-book%-footnote{%-cr%-hint:footnote;", 1) ~= nil
@@ -67,8 +66,9 @@ local transformed, local_stats = Footnotes.transform_chapter(annotated, scan, lo
 expect(local_stats.converted == 1 and local_stats.unresolved == 0,
     "same-chapter footnote was not converted")
 expect(transformed:find('epub:type="footnote"', 1, true)
+    and transformed:find('epub:type="noteref" role="doc-noteref"', 1, true)
     and transformed:find("同章脚注内容", 1, true),
-    "converted same-chapter note was not embedded")
+    "converted notes and references must retain standard EPUB3 semantics")
 expect(Footnotes.validate(transformed) == true,
     "valid generated footnote markup failed validation")
 
