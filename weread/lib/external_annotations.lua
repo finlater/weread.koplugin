@@ -10,8 +10,17 @@ ExternalAnnotations.MAX_SEARCH_HITS = 16
 ExternalAnnotations.CHAPTER_SEARCH_HITS = 1
 ExternalAnnotations.FALLBACK_QUOTE_BYTES = 90
 ExternalAnnotations.PERF_TAG = "external_annotation_perf"
+-- The reverse chapter walk yields whichever comes first: this much matching
+-- CPU between yields, or this many steps.  os.clock() is deliberately used
+-- instead of a wall clock: between yields the controller sleeps (0.01-0.1s),
+-- and a wall clock would then see that sleep as "work" and yield after every
+-- single step.  os.clock() measures only the work that can block the UI.
+ExternalAnnotations.YIELD_WORK_SECONDS = 0.045
+ExternalAnnotations.YIELD_STEP_CAP = 256
+ExternalAnnotations.MATCH_PERF_TAG = "annotation_match_perf"
 
 local PERF = ExternalAnnotations.PERF_TAG
+local MATCH_PERF = ExternalAnnotations.MATCH_PERF_TAG
 
 local function scalar(value)
     if type(value) == "string" or type(value) == "number" then
@@ -94,6 +103,16 @@ local function perf(...)
         parts[i] = tostring(select(i, ...))
     end
     logger.info(PERF .. " " .. table.concat(parts, ""))
+end
+
+-- One cheap line per chapter summarising matcher cost; the next device run can
+-- filter it with `grep annotation_match_perf crash.log`.
+local function match_perf(...)
+    local parts = {}
+    for i = 1, select("#", ...) do
+        parts[i] = tostring(select(i, ...))
+    end
+    logger.info(MATCH_PERF .. " " .. table.concat(parts, ""))
 end
 
 -- Short non-cryptographic fingerprint of a quote, for correlating perf logs.
@@ -234,6 +253,8 @@ function ExternalAnnotations.new_chapter_walk(document, extracted, end_xpointer)
         ignored_footnote_bytes = ignored_footnote_bytes(extracted),
         valid = true,
         n = #extracted,
+        steps = 0,
+        yields = 0,
     }
 end
 
@@ -247,10 +268,30 @@ function ExternalAnnotations.advance_chapter_walk(walk, target_byte)
     if walk.xp_at[target_byte] then return true end
     local getPrevVisibleChar = walk.document.getPrevVisibleChar
     local extracted = walk.extracted
-    local steps = 0
+    local clock = walk.clock or os.clock
+    local work_budget = walk.work_budget or ExternalAnnotations.YIELD_WORK_SECONDS
+    local last_yield = clock()
+    local since_yield = 0
     while walk.ptr >= 1 and not walk.xp_at[target_byte] do
-        steps = steps + 1
-        if steps % 256 == 0 and walk.yield then walk.yield() end
+        since_yield = since_yield + 1
+        walk.steps = walk.steps + 1
+        if walk.yield and (since_yield >= ExternalAnnotations.YIELD_STEP_CAP
+            or clock() - last_yield >= work_budget) then
+            since_yield = 0
+            last_yield = clock()
+            walk.yields = walk.yields + 1
+            -- The hint lets the caller show the first quote's walk moving.
+            walk.yield({
+                steps = walk.steps,
+                walked_bytes = walk.n - walk.ptr,
+                total_bytes = walk.n,
+                progress = walk.n > 0 and (walk.n - walk.ptr) / walk.n or 0,
+            })
+            if walk.deadline and clock() >= walk.deadline then
+                walk.aborted = true
+                return false
+            end
+        end
         local char_start = char_start_before(extracted, walk.ptr)
         local byte = extracted:byte(char_start)
         if byte == 0x0A or byte == 0x0D then
@@ -276,6 +317,7 @@ function ExternalAnnotations.advance_chapter_walk(walk, target_byte)
         end
     end
     if not walk.xp_at[target_byte] then
+        if walk.aborted then return false end
         walk.valid = false
         return false
     end
@@ -408,6 +450,7 @@ end
 function ExternalAnnotations.locate(document, chapters, options)
     assert(type(document) == "table", "document is required")
     options = options or {}
+    local clock = options.clock or os.clock
     local records = options.resume and options.resume.records or {}
     -- Shared-book thoughts are loaded on tap. Strip old checkpoint payloads
     -- too, so resuming never writes those large items back at every checkpoint.
@@ -426,6 +469,13 @@ function ExternalAnnotations.locate(document, chapters, options)
         local chapter_started = os.clock()
         local located_before = stats.located
         local unmatched_before = stats.unmatched
+        -- CPU deadline for this chapter's matching. os.clock() excludes the
+        -- controller's between-yield sleeps, so a chapter that yields often
+        -- does not abort merely because of UI scheduling.
+        local deadline = options.chapter_budget
+            and (clock() + options.chapter_budget) or nil
+        local fallbacks, fallback_capped = 0, false
+        local chapter_aborted = false
         local range = type(options.chapter_ranges) == "table"
             and options.chapter_ranges[uid] or nil
         local we_title = type(options.chapter_titles) == "table"
@@ -466,7 +516,12 @@ function ExternalAnnotations.locate(document, chapters, options)
             and ExternalAnnotations.new_chapter_walk(
                 document, extracted, range.end_xpointer) or nil
         local search_origin = range and range.start_xpointer or global_cursor_xp
-        if walk then walk.yield = options.yield end
+        if walk then
+            walk.yield = options.walk_yield or options.yield
+            walk.clock = clock
+            walk.work_budget = options.walk_work_budget
+            walk.deadline = deadline
+        end
         local cursor_byte = options.resume and options.resume.cursor_byte or 0
         local previous_range = options.resume and options.resume.previous_range
         local strict = false
@@ -520,8 +575,22 @@ function ExternalAnnotations.locate(document, chapters, options)
                     -- the whole-book path; the walk stays invalid.
                 end
             end
-            -- 3. Whole-book fallback.  The result is still range-filtered so
-            -- out-of-chapter hits are never projected onto this chapter.
+            if walk and walk.aborted then
+                return nil, false, "budget_aborted", 0
+            end
+            -- 3. Whole-book fallback.  This is the only unbounded non-yielding
+            -- native path, so sync callers bound it per chapter.  The result is
+            -- still range-filtered so out-of-chapter hits are never projected
+            -- onto this chapter.
+            if options.max_fallbacks and fallbacks >= options.max_fallbacks then
+                fallback_capped = true
+                return nil, false, "fallback_capped", 0
+            end
+            if fallbacks > 0 then
+                local fallback_yield = options.fallback_yield or options.yield
+                if fallback_yield then fallback_yield() end
+            end
+            fallbacks = fallbacks + 1
             local results = search_all(document, quote)
             local filtered = {}
             for _, candidate in ipairs(results) do
@@ -540,9 +609,15 @@ function ExternalAnnotations.locate(document, chapters, options)
 
         for seq, underline in ipairs(underlines) do
             if seq < (options.resume and options.resume.next_index or 1) then goto continue end
+            if (walk and walk.aborted) or (deadline and clock() >= deadline) then
+                if walk then walk.aborted = true end
+                chapter_aborted = true
+                stats.unmatched = stats.unmatched + (#underlines - seq + 1)
+                break
+            end
             strict = previous_range ~= nil and range_start(underline) > previous_range
 
-            local quote_started = os.clock()
+            local quote_started = clock()
             local underline_range = tostring(underline.range or "")
             local quote = ExternalAnnotations.quote_for(underline, chapter.reviews)
             if quote == "" then
@@ -591,6 +666,15 @@ function ExternalAnnotations.locate(document, chapters, options)
             ::continue::
         end
 
+        stats.aborted = chapter_aborted or nil
+        match_perf("book_id=", book_id, " chapter_uid=", uid,
+            " extracted_bytes=", tostring(type(extracted) == "string" and #extracted or 0),
+            " walk_steps=", tostring(walk and walk.steps or 0),
+            " yield_count=", tostring(walk and walk.yields or 0),
+            " fallback_count=", tostring(fallbacks),
+            " elapsed_ms=", string.format("%.1f", elapsed_ms(chapter_started)),
+            " budget_exceeded=", tostring(chapter_aborted),
+            " fallback_capped=", tostring(fallback_capped))
         perf("book_id=", book_id, "chapter_uid=", uid, "stage=chapter",
             "located=", tostring(stats.located - located_before),
             "unmatched=", tostring(stats.unmatched - unmatched_before),

@@ -75,4 +75,69 @@ assert(coroutine.resume(worker))
 assert(checkpoint and checkpoint.next_index == 17 and #checkpoint.records == 16)
 records, stats = locate(many, { resume = checkpoint })
 assert(#records == 40 and stats.located == 40 and stats.total == 40, "matching resume lost or duplicated records")
+
+-- The reverse walk yields on a CPU-work budget (and at most every 256 steps)
+-- so one long chapter cannot monopolise the UI, and each yield carries a
+-- progress hint the dialog can display while the first quote is still walking.
+do
+    local long = string.rep("z", 2000)
+    local walk_document = { getPrevVisibleChar = function(_self, point)
+        local n = tonumber(point)
+        return n > 0 and tostring(n - 1) or nil
+    end }
+    local clock_calls, hints = 0, {}
+    local function advancing_clock() clock_calls = clock_calls + 1; return clock_calls * 0.02 end
+    local walk = External.new_chapter_walk(walk_document, long, tostring(#long))
+    walk.clock = advancing_clock
+    walk.yield = function(hint) hints[#hints + 1] = hint end
+    assert(External.advance_chapter_walk(walk, 1), "time-budgeted walk did not reach its target")
+    assert(#hints > 0 and walk.steps == #long and walk.yields == #hints,
+        "time-budgeted walk yield or step counters are incorrect")
+    local previous_progress = -1
+    for _, hint in ipairs(hints) do
+        assert(type(hint) == "table" and hint.steps and hint.progress
+            and hint.progress >= previous_progress and hint.progress <= 1,
+            "walk yield did not carry a monotonic progress hint")
+        previous_progress = hint.progress
+    end
+end
+do
+    local long = string.rep("y", 700)
+    local walk_document = { getPrevVisibleChar = function(_self, point)
+        local n = tonumber(point)
+        return n > 0 and tostring(n - 1) or nil
+    end }
+    local walk = External.new_chapter_walk(walk_document, long, tostring(#long))
+    walk.clock = function() return 0 end
+    local step_marks = {}
+    walk.yield = function(hint) step_marks[#step_marks + 1] = hint.steps end
+    assert(External.advance_chapter_walk(walk, 1), "step-capped walk did not reach its target")
+    assert(#step_marks >= 2, "step-capped walk did not yield")
+    local previous_mark = 0
+    for _, mark in ipairs(step_marks) do
+        assert(mark - previous_mark <= 256, "walk went more than 256 steps without yielding")
+        previous_mark = mark
+    end
+end
+
+-- The whole-book fallback is the only unbounded non-yielding native path; the
+-- sync caller bounds it per chapter. Capped quotes are recorded unmatched, and
+-- the capped calls are still separated by a yield point.
+do
+    document.getPrevVisibleChar = nil
+    text, searches = "nothing", 0
+    local cap_rows = {}
+    for i = 1, 10 do
+        cap_rows[#cap_rows + 1] = { range = tostring(i) .. "-" .. tostring(i),
+            markText = "capquote" .. i }
+    end
+    local fallback_yields = 0
+    local _, stats2 = locate(cap_rows, { max_fallbacks = 4,
+        fallback_yield = function() fallback_yields = fallback_yields + 1 end })
+    assert(searches == 4, "fallback cap was not enforced: searches=" .. tostring(searches))
+    assert(fallback_yields == 3, "fallback calls were not separated by a yield point")
+    assert(stats2.total == 10 and stats2.located == 0 and stats2.unmatched == 10,
+        "capped fallbacks were not recorded as unmatched")
+    document.getPrevVisibleChar = previous
+end
 print("annotation_locator_regressions_spec: overlap, equality, bounds, fast path and matching resume passed")

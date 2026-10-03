@@ -28,7 +28,7 @@ function M.run(settings, client, context, chapters, worker_context)
         offline = false,
         fetch_source = function(chapter)
             local html = Content.fetch_chapter_xhtml(client, settings,
-                source_book, chapter)
+                source_book, chapter, { total_timeout = Sync.NETWORK_TOTAL_TIMEOUT })
             if source_book._content_format == "txt" then
                 return context.store:get(context.book_id, "original",
                     Chapters.uid(chapter)) or {}

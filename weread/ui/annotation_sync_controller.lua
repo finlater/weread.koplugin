@@ -23,13 +23,36 @@ local function annotation_progress(state)
     local count = tonumber(state.count) or 0
     local fraction = count > 0 and math.max(0, math.min(1, current / count)) or 0
     if state.stage == "thoughts" then
-        return completed + fraction * 0.5
+        return completed + fraction * 0.25
+    elseif state.stage == "persist" then
+        return completed + 0.25 + fraction * 0.25
     elseif state.stage == "source" then
         return completed + 0.5
     elseif state.stage == "match" then
         return completed + 0.5 + fraction * 0.5
     end
     return completed
+end
+
+-- Local match/persist stages do no network work, so they can resume quickly:
+-- the old 0.1s floor turned a long chapter's thousands of walk yields into
+-- minutes of scheduling delay.  Network stages keep the 0.1s floor so a
+-- request yield does not spin the event loop.
+local LOCAL_STAGES = { match = true, persist = true }
+
+-- Parent-side watchdog for the child wait. The 60s HTTP total timeout already
+-- bounds each attempt inside the child; this catches a child that wedges in a
+-- way the socket timeout cannot (for example a blocked pipe on a huge payload).
+-- It aborts the wait and feeds a normal failure back to Sync:request, so the
+-- existing retry/pause path runs instead of waiting forever.
+local NETWORK_WATCHDOG_SECONDS = 90
+
+local function resume_delay(state)
+    local delay = state.delay or 0.01
+    if LOCAL_STAGES[state.stage] then
+        return math.max(0.01, delay)
+    end
+    return math.max(0.1, delay)
 end
 
 function M:_annotationStore()
@@ -362,11 +385,34 @@ end
 -- Same pipe/termination path as chapter downloads. Never run the whole
 -- annotation job in a child: matching uses the open document, and completed
 -- thought batches must be committed by the parent before starting the next one.
-function M:_runAnnotationNetwork(request, task)
+function M:_runAnnotationNetwork(request, task, label)
     local ok_json, Json = pcall(require, "json")
     if not ok_json then Json = require("rapidjson") end
     local WorkerSettings = require("weread.lib.worker_settings")
     local fingerprint = WorkerSettings.fingerprint(self.settings)
+    local finished, watchdog = false, nil
+    local function cancel_watchdog()
+        if watchdog then
+            UIManager:unschedule(watchdog)
+            watchdog = nil
+        end
+    end
+    local function fire_watchdog()
+        watchdog = nil
+        if finished or request.cancelled or self._external_annotation_sync ~= request then return end
+        request.network_watchdog = true
+        logger.warn("annotation_sync_watchdog book_id=" .. tostring(request.context.book_id)
+            .. " request=" .. tostring(label or "request")
+            .. " waited_s=" .. tostring(NETWORK_WATCHDOG_SECONDS))
+        -- dismissableRunInSubprocess installs the dialog's dismiss_callback;
+        -- invoking it is the same resume path as tapping Pause. There is no
+        -- other supported programmatic abort, so this closest safe mechanism
+        -- terminates the child and makes the wait return completed=false.
+        local dismiss = request.progress and request.progress.dismiss_callback
+        if dismiss then dismiss() end
+    end
+    watchdog = fire_watchdog
+    UIManager:scheduleIn(NETWORK_WATCHDOG_SECONDS, fire_watchdog)
     local completed, encoded = request.trapper:dismissableRunInSubprocess(function()
         local auth_result = WorkerSettings.capture(self.settings)
         local ok, values = xpcall(function()
@@ -378,8 +424,15 @@ function M:_runAnnotationNetwork(request, task)
         -- serializer rejects. Send JSON over its existing plain-string pipe.
         return Json.encode({ ok = ok, values = values, auth = auth_result() })
     end, request.progress, true)
+    finished = true
+    cancel_watchdog()
     request.progress.dismiss_callback = nil
     if self._external_annotation_sync ~= request or request.cancelled then return end
+    local watchdog_fired = request.network_watchdog == true
+    request.network_watchdog = nil
+    if watchdog_fired and not completed then
+        return { false, nil, "annotation network watchdog timeout" }
+    end
     if not completed then error("could not start annotation worker") end
     if not encoded or encoded == "" then error("annotation worker returned no result") end
     local result = Json.decode(encoded)
@@ -449,11 +502,17 @@ function M:_runAnnotationJob(context, options)
         document = not options.prefetch and self.ui.document or nil,
         document_key = not options.prefetch and context.document_key or nil,
         refresh = options.refresh or options.clear_existing, clear_existing = options.clear_existing,
+        reset_legacy = options.reset_legacy,
         offline = options.offline, async_network = request.trapper ~= nil,
         is_online = function() return self:isNetworkConnected() end,
-        on_reset = function()
-            for _, chapter in ipairs(options.chapters or context.chapters) do
-                context.statuses[context.store:projectionKey(context.document_key, Chapters.uid(chapter))] = nil
+        on_reset = function(uid)
+            if uid then
+                context.statuses[context.store:projectionKey(context.document_key, uid)] = nil
+            else
+                for _, chapter in ipairs(options.chapters or context.chapters) do
+                    context.statuses[context.store:projectionKey(context.document_key,
+                        Chapters.uid(chapter))] = nil
+                end
             end
             context.generation = (context.generation or 0) + 1
             self:_refreshAnnotationOverlay()
@@ -461,12 +520,13 @@ function M:_runAnnotationJob(context, options)
         end,
         fetch_source = function(chapter)
             local html, format = request.job:callNetwork(function()
-                local body = Content.fetch_chapter_xhtml(self.client, self.settings, source_book, chapter)
+                local body = Content.fetch_chapter_xhtml(self.client, self.settings, source_book, chapter,
+                    { total_timeout = Sync.NETWORK_TOTAL_TIMEOUT })
                 if source_book._content_format == "txt" then
                     body = context.store:get(context.book_id, "original", Chapters.uid(chapter)) or {}
                 end
                 return body, source_book._content_format
-            end)
+            end, "source")
             source_book._content_format = format
             return html
         end,
@@ -504,7 +564,7 @@ function M:_runAnnotationJob(context, options)
         while done == false and state and state.network do
             -- Trapper yields from this outer coroutine, never from Sync.thread.
             -- Resuming the pipeline before the child returns would lose data.
-            local values = self:_runAnnotationNetwork(request, state.network)
+            local values = self:_runAnnotationNetwork(request, state.network, state.network_label)
             if self._external_annotation_sync ~= request then return end
             if file(self) ~= context.path or self._reader_session_gen ~= request.session then
                 self:_cancelUnifiedAnnotationSync()
@@ -548,6 +608,10 @@ function M:_runAnnotationJob(context, options)
                 title = T(_("Downloading thoughts %1/%2 · chapter %3/%4"),
                     tostring(state.current or 0), tostring(state.count or 0),
                     tostring(state.index), tostring(state.total))
+            elseif state.stage == "persist" then
+                title = T(_("Saving thoughts %1/%2 · chapter %3/%4"),
+                    tostring(state.current or 0), tostring(state.count or 0),
+                    tostring(state.index), tostring(state.total))
             elseif state.stage == "match" then
                 title = T(_("Matching underlines %1/%2 · chapter %3/%4"),
                     tostring(state.current or 0), tostring(state.count or 0),
@@ -567,7 +631,7 @@ function M:_runAnnotationJob(context, options)
             request.progress:reportProgress(annotation_progress(state))
             request.progress:setTitle(title)
         end
-        UIManager:scheduleIn(math.max(0.1, state.delay or 0.1), safe_step)
+        UIManager:scheduleIn(resume_delay(state), safe_step)
     end
     safe_step = function()
         local function run()
@@ -604,7 +668,10 @@ function M:startUnifiedAnnotationSync(options)
         self.settings:set("cache", cache)
         self.settings:flush()
         if self._xpointer_overlay then self._xpointer_overlay:setEnabled(true) end
-        self:_runAnnotationJob(context, options)
+        local job_options = {}
+        for key, value in pairs(options) do job_options[key] = value end
+        job_options.reset_legacy = true
+        self:_runAnnotationJob(context, job_options)
     end
     if options.offline then return start() end
     if not self:requireLogin(true, true) then return end
@@ -653,12 +720,32 @@ function M:onUnifiedAnnotationsReady()
     -- Recover partial chapter selections created by older builds that wrote a
     -- projection but waited for the whole document before marking it usable.
     if self:_annotationSummary(context).located > 0 then
-        context.store:put(context.book_id, "display", context.document_key, true)
+        -- Best effort: a cancelled prefetch worker may still hold the store's
+        -- write lock, and a failed flag write must not abort the reader-ready
+        -- path.
+        local marked, mark_err = pcall(function()
+            context.store:put(context.book_id, "display", context.document_key, true)
+        end)
+        if not marked then logger.warn("annotation display flag:", mark_err) end
     end
     self._unified_annotations_active = self:_usesUnifiedAnnotations()
     started = perf("annotation_display_state", started)
     self:_refreshAnnotationOverlay()
     started = perf("saved_annotation_overlay", started)
+    local sources = context.store:list(context.book_id, "source_status")
+    local legacy = false
+    for _, chapter in ipairs(context.chapters) do
+        local uid = Chapters.uid(chapter)
+        if sources[uid] and sources[uid].persistence_version
+            ~= require("weread.lib.annotation_sync").PERSISTENCE_VERSION then
+            legacy = true
+            break
+        end
+    end
+    if legacy and type(self.showTransientInfo) == "function" then
+        self:showTransientInfo(
+            _("Thought data format has been upgraded. Match again to download current data."), 3)
+    end
     if self:canPrefetchAnnotations()
         and context.store:get(context.book_id, "meta", "enabled")
         and not context.store:get(context.book_id, "manual_only", context.document_key) then

@@ -1,9 +1,28 @@
 package.path = "./?.lua;" .. package.path
 local helper = require("spec.helpers.annotation_test_store")
-local scheduled, shown, notices, progress_titles, progress_updates, prevented, allowed = {}, {}, {}, {}, {}, 0, 0
+local scheduled, scheduled_delays, watchdogs, shown, notices, progress_titles, progress_updates, prevented, allowed = {}, {}, {}, {}, {}, {}, {}, 0, 0
+local function unschedule(list, callback)
+    for index, entry in ipairs(list) do
+        if entry == callback then table.remove(list, index); return end
+    end
+end
 package.preload["ui/uimanager"] = function()
     return {
-        scheduleIn = function(_self, _delay, callback) scheduled[#scheduled + 1] = callback end,
+        scheduleIn = function(_self, delay, callback)
+            -- The real UIManager honors delays; drain() below only settles quick
+            -- work, so the 90s network watchdog is kept apart and fired explicitly.
+            if type(delay) == "number" and delay >= 60 then
+                watchdogs[#watchdogs + 1] = callback
+            else
+                scheduled[#scheduled + 1] = callback
+            end
+            scheduled_delays[#scheduled_delays + 1] = { delay = delay,
+                title = progress_titles[#progress_titles] }
+        end,
+        unschedule = function(_self, callback)
+            unschedule(scheduled, callback)
+            unschedule(watchdogs, callback)
+        end,
         close = function() end, setDirty = function() end, show = function(_self, widget) shown[#shown + 1] = widget end,
     }
 end
@@ -106,6 +125,22 @@ assert(host:ensureAnnotationDisplay() and #shown == 1 and calls == 0,
 shown[1].ok_callback()
 drain()
 assert(calls == 1 and #host._xpointer_overlay.records == 1)
+local saw_match_delay, saw_network_floor = false, false
+for _, entry in ipairs(scheduled_delays) do
+    local title = entry.title
+    if type(title) == "string" and title:find("Matching underlines", 1, true) then
+        if entry.delay <= 0.02 then saw_match_delay = true end
+    end
+    if type(title) == "string" and (title:find("Downloading thoughts", 1, true)
+        or title:find("Downloading underlines", 1, true)
+        or title:find("Downloading underline source text", 1, true)) then
+        assert(entry.delay >= 0.1,
+            "a network stage resumed below the 0.1s floor: " .. tostring(entry.delay))
+        saw_network_floor = true
+    end
+end
+assert(saw_match_delay, "the match stage did not resume with a small delay")
+assert(saw_network_floor, "no network stage was scheduled to verify the 0.1s floor")
 assert(store:get("book", "meta", "enabled") == true)
 assert(not host:isAnnotationPrefetchEnabled(),
     "annotation prefetch must default to off")
@@ -124,12 +159,14 @@ cache.show_annotations = true
 local titles = table.concat(progress_titles, "\n")
 assert(titles:find("Downloading thoughts 1/1 · chapter 1/1", 1, true),
     "thought download progress did not expose item counts")
+assert(titles:find("Saving thoughts 1/1 · chapter 1/1", 1, true),
+    "thought persistence did not expose item counts")
 assert(titles:find("Matching underlines 1/1 · chapter 1/1", 1, true),
     "matching progress did not expose item counts")
 local thought_progress_moved = false
 for _, update in ipairs(progress_updates) do
     if update.title == "Downloading thoughts 1/1 · chapter 1/1"
-        and update.progress == 0.5 then
+        and update.progress == 0.25 then
         thought_progress_moved = true
         break
     end
@@ -157,6 +194,38 @@ host:setAnnotationPrefetchEnabled(false)
 host:prefetchChapterAnnotations({ book_id = "book" }, { chapterUid = "3" })
 drain()
 assert(calls == 2)
+-- A legacy completed source is retained until an explicit user sync. Prefetch
+-- must not decode it or start an automatic network-backed rebuild.
+host:setAnnotationPrefetchEnabled(true)
+store:put("book", "source", "3", { chapter_uid = "3", underlines = {}, reviews = {} }, "3")
+store:put("book", "source_status", "3", { revision = "legacy", total = 0 }, "3")
+host:prefetchChapterAnnotations({ book_id = "book" }, { chapterUid = "3" })
+drain()
+assert(calls == 2 and not store:get("book", "source_status", "3").persistence_version,
+    "prefetch rebuilt an old completed source automatically")
+context.chapters, context.ranges = { { chapterUid = "3" } }, {}
+store:put("book", "meta", "enabled", true)
+    local legacy_notice, calls_before_legacy = nil, calls
+    local original_transient_info = host.showTransientInfo
+    host.showTransientInfo = function(_self, message) legacy_notice = message end
+    host:onUnifiedAnnotationsReady()
+    drain()
+    assert(calls == calls_before_legacy
+        and legacy_notice == "Thought data format has been upgraded. Match again to download current data.",
+        "opening an old cache did not stay local with a rematch notice")
+    -- Prefetch defaults to off; the upgrade notice must not depend on it.
+    host:setAnnotationPrefetchEnabled(false)
+    legacy_notice = nil
+    local calls_before_off_notice = calls
+    host:onUnifiedAnnotationsReady()
+    drain()
+    assert(calls == calls_before_off_notice
+        and legacy_notice == "Thought data format has been upgraded. Match again to download current data.",
+        "opening an old cache with prefetch disabled did not show the rematch notice")
+    host:setAnnotationPrefetchEnabled(true)
+    host.showTransientInfo = original_transient_info
+    store:put("book", "source", "3", nil)
+    store:put("book", "source_status", "3", nil)
 -- Multi-select keeps source catalog order, including noncontiguous choices.
 context.chapters = { { chapterUid = "1" }, { chapterUid = "2" }, { chapterUid = "3" } }
 local picker_options, chosen
@@ -662,5 +731,172 @@ do
     assert(spawned > killed and prevented == allowed)
     WorkerSettings.capture = capture
 end
+
+-- A user-initiated sync must actually rebuild a legacy (pre-persistence)
+-- chapter instead of silently skipping it: regression for `reset_legacy`
+-- never reaching the Sync job. The worker block above left its auth-keyed
+-- settings and request-tracking client behind, so restore plain fixtures.
+package.loaded["ffi/util"], package.loaded["ui/trapper"] = nil, nil
+host.settings = { get = function() return cache end, set = function() end, flush = function() end }
+host.client = {
+    get_chapter_underlines = function() calls = calls + 1
+        return true, { underlines = { { range = "0-1", markText = "a" } } } end,
+    build_chapter_review_batches = function(_self, ranges)
+        return { { { range = ranges[1] } } }
+    end,
+    get_chapter_reviews_batch = function()
+        return true, { reviews = {} }
+    end,
+}
+context = { path = "single", book_id = "legacy-sync", document_key = "single", store = store,
+    binding = { book_id = "legacy-sync", title = "fixture" }, statuses = {},
+    chapters = { { chapterUid = "9" } }, ranges = {} }
+host._annotation_context = context
+store:put("legacy-sync", "source", "9", {
+    book_id = "legacy-sync", chapter_uid = "9",
+    underlines = { { range = "1-2", markText = "alpha" } },
+    reviews = { { range = "1-2", pageReviews = { { review = { content = "old thought" } } } } },
+}, "9")
+store:put("legacy-sync", "source_status", "9", { revision = "legacy", total = 1 }, "9")
+local legacy_persistence_version = require("weread.lib.annotation_sync").PERSISTENCE_VERSION
+local calls_before_explicit_sync = calls
+host:startUnifiedAnnotationSync({ offline = false })
+drain()
+local rebuilt_legacy_source = store:get("legacy-sync", "source", "9")
+assert(calls > calls_before_explicit_sync
+        and rebuilt_legacy_source and #(rebuilt_legacy_source.reviews or {}) == 0
+        and store:get("legacy-sync", "source_status", "9").persistence_version == legacy_persistence_version,
+    "an explicit sync did not rebuild the legacy chapter with bounded persistence")
+
+-- A store busy with a cancelled prefetch worker finishing its last write must
+-- not abort the reader-ready path: the display flag write is best effort.
+host:setAnnotationPrefetchEnabled(false)
+context.statuses = {
+    [store:projectionKey(context.document_key, "9")] = { stats = { total = 1, located = 1 } },
+}
+local original_put = store.put
+store.put = function() error("ljsqlite3[busy] database is locked") end
+local ready_ok = pcall(function() host:onUnifiedAnnotationsReady() end)
+store.put = original_put
+assert(ready_ok, "a failed display flag write aborted the reader-ready path")
+
+-- Pausing an explicit legacy rebuild before its first network request must
+-- drop the deleted projection from the in-memory summary and refresh the
+-- overlay: the legacy deletion path only notified the controller for
+-- `clear_existing` before this fix.
+do
+    context = { path = "single", book_id = "legacy-pause", document_key = "single", store = store,
+        binding = { book_id = "legacy-pause", title = "fixture" }, statuses = {},
+        chapters = { { chapterUid = "9" } }, ranges = {}, generation = 1 }
+    host._annotation_context = context
+    local pause_key = store:projectionKey("single", "9")
+    store:put("legacy-pause", "source", "9", {
+        book_id = "legacy-pause", chapter_uid = "9",
+        underlines = { { range = "1-2", markText = "alpha" } },
+        reviews = { { range = "1-2", pageReviews = { { review = { content = "old thought" } } } } },
+    }, "9")
+    store:put("legacy-pause", "source_status", "9", { revision = "legacy", total = 1 }, "9")
+    store:put("legacy-pause", "projection", pause_key,
+        { records = { { range = "1-2", markText = "alpha" } } }, "9")
+    store:put("legacy-pause", "status", pause_key,
+        { revision = "legacy", matcher_version = 1, range_key = "" }, "9")
+    context.statuses[pause_key] = { stats = { total = 1, located = 1 } }
+    host._xpointer_overlay.records = { { range = "1-2", markText = "alpha" } }
+    host._xpointer_overlay._annotation_window = "1:1:1"
+    local calls_before_pause = calls
+    host:startUnifiedAnnotationSync({ offline = false })
+    assert(#scheduled >= 1, "the legacy rebuild scheduled no task callback")
+    table.remove(scheduled, 1)()
+    assert(calls == calls_before_pause,
+        "the paused legacy rebuild contacted the network before its checkpoint")
+    assert(store:get("legacy-pause", "projection", pause_key) == nil,
+        "the legacy projection was not deleted from the store")
+    host:_refreshAnnotationOverlay()
+    local paused_summary = host:_annotationSummary(context)
+    assert(context.statuses[pause_key] == nil
+            and paused_summary.chapters == 0 and paused_summary.located == 0
+            and #host._xpointer_overlay.records == 0,
+        "a paused legacy rebuild left stale statuses or overlay records behind")
+    host:_cancelUnifiedAnnotationSync()
+    drain()
+    assert(prevented == allowed, "standby guard leaked after the paused legacy rebuild")
+end
+
+-- A child that never returns must not hang the sync: the parent watchdog
+-- dismisses the trapper wait, the request stays inside its retry budget, and
+-- the job then pauses cleanly instead of waiting forever.
+do
+    local watch_log = {}
+    local logger = require("weread.lib.logger")
+    local logger_warn = logger.warn
+    logger.warn = function(...)
+        local parts = {}
+        for i = 1, select("#", ...) do parts[i] = tostring(select(i, ...)) end
+        watch_log[#watch_log + 1] = table.concat(parts, " ")
+    end
+    local spawned, dismissed = 0, 0
+    package.loaded["ffi/util"] = { runInSubProcess = function() end }
+    package.loaded["ui/trapper"] = {
+        wrap = function(_self, callback)
+            local ok, err = coroutine.resume(coroutine.create(callback))
+            assert(ok, err)
+        end,
+        dismissableRunInSubprocess = function(_self, _task, dialog)
+            spawned = spawned + 1
+            local co = coroutine.running()
+            dialog.dismiss_callback = function()
+                dismissed = dismissed + 1
+                local ok, err = coroutine.resume(co, false)
+                assert(ok, err)
+            end
+            return coroutine.yield()
+        end,
+    }
+    local wd_context = { path = "single", book_id = "watchdog", document_key = "watchdog-key",
+        store = store, binding = { book_id = "watchdog", title = "Watchdog" }, statuses = {},
+        chapters = { { chapterUid = "1" } }, ranges = {} }
+    host._annotation_context = wd_context
+    host.settings = { get = function(_self, key, default)
+        return key == "cache" and cache or default end, set = function() end, flush = function() end }
+    host.client = {
+        get_chapter_underlines = function() return true, { underlines = { { range = "0-1", markText = "a" } } } end,
+        build_chapter_review_batches = function(_self, ranges) return { { ranges[1] } } end,
+        get_chapter_reviews_batch = function() return true, { reviews = {} } end,
+    }
+    host.isNetworkConnected = function() return true end
+    host._reader_session_gen = 4
+    for k, v in pairs(Controller) do host[k] = v end
+    local before_watchdogs = #watchdogs
+    local before_notices = #notices
+    host:_runAnnotationJob(wd_context, {})
+    drain()
+    assert(spawned == 1 and #watchdogs == before_watchdogs + 1,
+        "the suspended network wait did not arm a watchdog")
+    for attempt = 1, 3 do
+        assert(#watchdogs == before_watchdogs + 1,
+            "attempt " .. attempt .. " did not have exactly one watchdog armed")
+        table.remove(watchdogs, before_watchdogs + 1)()
+        drain()
+    end
+    assert(dismissed == 3 and spawned == 3,
+        "the watchdog abort did not stay within the retry budget: dismissed="
+            .. dismissed .. " spawned=" .. spawned)
+    assert(#watchdogs == before_watchdogs, "the watchdog timer leaked after the job paused")
+    assert(not host._external_annotation_sync, "the watchdog paused the job uncleanly")
+    assert(prevented == allowed, "the watchdog abort leaked a standby guard")
+    assert(#notices == before_notices + 1, "the watchdog pause did not report to the user")
+    local saw_watchdog = false
+    for _, line in ipairs(watch_log) do
+        if line:find("annotation_sync_watchdog", 1, true)
+            and line:find("book_id=watchdog", 1, true)
+            and line:find("request=underlines", 1, true) then
+            saw_watchdog = true
+        end
+    end
+    assert(saw_watchdog, "the watchdog abort was not logged with its request kind")
+    logger.warn = logger_warn
+    package.loaded["ffi/util"], package.loaded["ui/trapper"] = nil, nil
+end
+
 helper.cleanup()
-print("annotation_sync_controller_spec: consent, completion, cancellation, sessions and prefetch passed")
+print("annotation_sync_controller_spec: consent, completion, cancellation, sessions, prefetch, legacy rebuild and network watchdog passed")
