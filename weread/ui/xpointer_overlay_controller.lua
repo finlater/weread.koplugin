@@ -12,6 +12,13 @@ local T = PluginUtil.T
 local M = {}
 local VIEW_MODULE = "weread_xpointer_overlay"
 local TOUCH_ZONE = "weread_xpointer_overlay_tap"
+local TOUCH_OVERRIDES = {
+    "readerhighlight_tap",
+    "tap_top_left_corner", "tap_top_right_corner",
+    "tap_left_bottom_corner", "tap_right_bottom_corner",
+    "readerfooter_tap", "readermenu_ext_tap", "readermenu_tap",
+    "tap_forward", "tap_backward",
+}
 
 local function current_file(plugin)
     return plugin.ui and plugin.ui.document and plugin.ui.document.file
@@ -41,8 +48,49 @@ local function is_page_turn_edge(plugin, pos)
     return pos.x < width * ratio or pos.x > width * (1 - ratio)
 end
 
+local function overlay_touch_zone(plugin)
+    local cache = plugin.settings:get("cache", {})
+    if cache.ignore_edge_thought_taps == false then
+        return { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 }
+    end
+    local ratio = tonumber(cache.edge_tap_ratio) or 0.20
+    ratio = math.max(0.05, math.min(0.45, ratio))
+    return {
+        ratio_x = ratio, ratio_y = 0,
+        ratio_w = 1 - ratio * 2, ratio_h = 1,
+    }
+end
+
 function M:_xpointerOverlayPrototypeAvailable()
     return is_supported(self)
+end
+
+function M:_registerXPointerOverlayTouchZone()
+    if not self.ui then return false end
+    self.ui:registerTouchZones({
+        {
+            id = TOUCH_ZONE,
+            ges = "tap",
+            screen_zone = overlay_touch_zone(self),
+            overrides = TOUCH_OVERRIDES,
+            handler = function(ges)
+                return self:_onXPointerOverlayTap(ges)
+            end,
+        },
+    })
+    self._xpointer_overlay_touch_registered = true
+    return true
+end
+
+function M:_updateXPointerOverlayTouchZone()
+    if not self._xpointer_overlay_touch_registered or not self.ui then
+        return false
+    end
+    self.ui:unRegisterTouchZones({ {
+        id = TOUCH_ZONE,
+        overrides = TOUCH_OVERRIDES,
+    } })
+    return self:_registerXPointerOverlayTouchZone()
 end
 
 function M:_setupXPointerOverlayPrototype()
@@ -60,26 +108,7 @@ function M:_setupXPointerOverlayPrototype()
 
     local Device = require("device")
     if Device:isTouchDevice() then
-        self.ui:registerTouchZones({
-            {
-                id = TOUCH_ZONE,
-                ges = "tap",
-                screen_zone = {
-                    ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1,
-                },
-                overrides = {
-                    "readerhighlight_tap",
-                    "tap_top_left_corner", "tap_top_right_corner",
-                    "tap_left_bottom_corner", "tap_right_bottom_corner",
-                    "readerfooter_tap", "readermenu_ext_tap", "readermenu_tap",
-                    "tap_forward", "tap_backward",
-                },
-                handler = function(ges)
-                    return self:_onXPointerOverlayTap(ges)
-                end,
-            },
-        })
-        self._xpointer_overlay_touch_registered = true
+        self:_registerXPointerOverlayTouchZone()
     end
     return true
 end
@@ -89,13 +118,7 @@ function M:_teardownXPointerOverlayPrototype()
         self.ui:unRegisterTouchZones({
             {
                 id = TOUCH_ZONE,
-                overrides = {
-                    "readerhighlight_tap",
-                    "tap_top_left_corner", "tap_top_right_corner",
-                    "tap_left_bottom_corner", "tap_right_bottom_corner",
-                    "readerfooter_tap", "readermenu_ext_tap", "readermenu_tap",
-                    "tap_forward", "tap_backward",
-                },
+                overrides = TOUCH_OVERRIDES,
             },
         })
     end
@@ -180,7 +203,7 @@ function M:bindExternalAnnotationsBook(touchmenu_instance)
                                 local cleared, clear_err =
                                     self.external_annotations_db:clearSyncCheckpoint(path)
                                 if not cleared then error(clear_err) end
-                                if self._xpointer_overlay then self._xpointer_overlay:setRecords({}) end
+                                if self._xpointer_overlay then self._xpointer_overlay:clearAnnotationState() end
                                 if touchmenu_instance
                                     and type(touchmenu_instance.updateItems) == "function" then
                                     touchmenu_instance:updateItems()
@@ -188,12 +211,12 @@ function M:bindExternalAnnotationsBook(touchmenu_instance)
                                 local ConfirmBox = require("ui/widget/confirmbox")
                                 UIManager:show(ConfirmBox:new{
                                     title = _("Local book matched"),
-                                    text = T(_("Matched with “%1”.\n\nSync underlines and thoughts now?\n\nYou can cancel at any time. Downloaded progress is saved and resumed automatically next time."),
+                                    text = T(_("Matched with “%1”.\n\nSync underlines and thoughts now?\n\nYou can cancel at any time. Saved progress resumes when you choose Continue matching."),
                                         book.title ~= "" and book.title or book.book_id),
                                     ok_text = _("Sync underlines and thoughts"),
                                     cancel_text = _("Later"),
                                     ok_callback = function()
-                                        self:syncExternalAnnotations()
+                                        self:syncExternalAnnotations({ all_chapters = true })
                                     end,
                                 })
                             end,
@@ -220,7 +243,13 @@ function M:getXPointerOverlayPrototypeMenuItems()
 end
 
 function M:_invalidateXPointerOverlayLayout()
-    if self._xpointer_overlay then self._xpointer_overlay:invalidate() end
+    if self._xpointer_overlay then
+        if self._xpointer_overlay.invalidateLayout then
+            self._xpointer_overlay:invalidateLayout()
+        else
+            self._xpointer_overlay:invalidate()
+        end
+    end
 end
 
 -- CREngine emits UpdatePos after every layout-affecting typography change

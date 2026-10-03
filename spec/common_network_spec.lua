@@ -15,10 +15,18 @@ end
 package.preload["ui/bidi"] = function() return {} end
 package.preload["ui/widget/confirmbox"] = function() return {} end
 package.preload["ui/widget/infomessage"] = function() return {} end
+local notification_args = {}
+package.preload["ui/widget/notification"] = function()
+    return { new = function(_self, args)
+        notification_args[#notification_args + 1] = args
+        return args
+    end }
+end
 package.preload["ui/widget/menu"] = function() return {} end
 package.preload["ui/uimanager"] = function()
     return {
         scheduleIn = function(_self, _delay, callback) callback() end,
+        show = function() end,
     }
 end
 package.preload["ui/network/manager"] = function()
@@ -55,5 +63,9 @@ eq(offline_notices, 0, "silent offline task does not show a notice")
 eq(host:runOnlineTask("manual", function() end), false,
     "regular offline task does not start")
 eq(offline_notices, 1, "regular offline task still shows a notice")
+
+host:showNotification("Check", 1.5)
+eq(#notification_args, 1, "showNotification uses the non-modal Notification widget")
+eq(notification_args[1].timeout, 1.5, "showNotification passes the requested timeout")
 
 print(string.format("common_network_spec: %d checks", checks))

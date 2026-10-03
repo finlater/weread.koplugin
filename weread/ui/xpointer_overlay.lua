@@ -60,6 +60,21 @@ function Overlay:invalidate()
     self.visible = {}
 end
 
+function Overlay:invalidateLayout()
+    self._annotation_refresh_context = nil
+    self._annotation_refresh_generation = nil
+    self._annotation_refresh_page = nil
+    self:invalidate()
+end
+
+function Overlay:clearAnnotationState()
+    self._annotation_window = nil
+    self._annotation_refresh_context = nil
+    self._annotation_refresh_generation = nil
+    self._annotation_refresh_page = nil
+    self:setRecords({})
+end
+
 function Overlay:resetLayout()
     self._ordered_prefix_ends = nil
     self:invalidate()
@@ -105,7 +120,8 @@ end
 
 local function merge_lines(boxes)
     -- Merge overlapping line spans before painting, so intersections never
-    -- darken. Reuse these spans with the page's cached screen rectangles.
+    -- darken. This depends only on the cached page rectangles, so it can be
+    -- reused for repeated repaints of the same page.
     local lines = {}
     for _, entry in ipairs(boxes) do
         local rect = entry.rect
@@ -175,6 +191,7 @@ function Overlay:_computeVisible()
             page_end = document:getPageXPointer(next_page)
         end
     end
+    local bounded_page = view.view_mode == "page" and page_start and page_end
     local first = self:_orderedStart(document, page_start)
     for index = first, #self.records do
         local record = self.records[index]
@@ -184,14 +201,21 @@ function Overlay:_computeVisible()
                 if self.records_ordered then break end
                 goto continue
             end
-            local ok_start, start_pos = pcall(
-                document.getPosFromXPointer, document, record.pos0
-            )
-            local ok_end, end_pos = pcall(
-                document.getPosFromXPointer, document, record.pos1
-            )
-            if ok_start and ok_end and tonumber(start_pos) and tonumber(end_pos)
-                and start_pos <= bottom and end_pos >= top then
+            -- Page XPointer bounds already establish that this record crosses
+            -- the displayed page. In paged mode that avoids two costly
+            -- XPointer-to-position conversions for every candidate.
+            local visible_on_page = bounded_page
+            if not visible_on_page then
+                local ok_start, start_pos = pcall(
+                    document.getPosFromXPointer, document, record.pos0
+                )
+                local ok_end, end_pos = pcall(
+                    document.getPosFromXPointer, document, record.pos1
+                )
+                visible_on_page = ok_start and ok_end and tonumber(start_pos)
+                    and tonumber(end_pos) and start_pos <= bottom and end_pos >= top
+            end
+            if visible_on_page then
                 candidates = candidates + 1
                 local ok_boxes, boxes = pcall(
                     document.getScreenBoxesFromPositions,

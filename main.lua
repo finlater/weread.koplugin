@@ -201,6 +201,9 @@ function WeReadPlugin:init()
         notify = function(code, data)
             ProgressSyncDialog.notify(code, data)
         end,
+        on_status = function(code)
+            ProgressSyncDialog.show_status(code)
+        end,
     }
     self:onDispatcherRegisterActions()
     self.ui.menu:registerToMainMenu(self)
