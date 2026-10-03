@@ -104,6 +104,7 @@ function PageRenderer:new(opts)
     self_obj.content_width = opts.content_width
     self_obj.contrast = tonumber(opts.contrast) or 0
     self_obj.skip_quote = opts.skip_quote == true
+    self_obj.hide_leading_separator = opts.hide_leading_separator == true
     self_obj._layout_cache = newLayoutCache()
     self_obj._page_bbs = newPageCache()
     self_obj._piece_cache = newPieceCache()
@@ -162,44 +163,82 @@ function PageRenderer:paginate()
     local boundaries = {}
     local y = 0
 
-    local function addTextPiece(variant, text, fg, width, x, keep_next)
+    local function textPiece(variant, text, fg, width, x)
         local face = FaceFactory:getFace(self.doc_font_name, base_size, variant)
-        if not face then return false end
+        if not face then return nil end
         local line_h, extra, baseline = Paginator.textPieceMetrics(face)
         local paginated = Paginator.paginateText(text, face, width)
         local n_lines = paginated.n_lines
         local piece_h = n_lines * line_h + extra
-        local piece_y = y
-        pieces[#pieces + 1] = {
+        return {
             kind = "text", variant = variant, text = text, fg = fg,
-            face = face, width = width, x = x, y = piece_y,
+            face = face, width = width, x = x, y = y,
             n_lines = n_lines, line_h = line_h, piece_h = piece_h,
             baseline = baseline, xtext = paginated.xtext, lines = paginated.lines,
         }
-        if keep_next and n_lines >= 1 then
-            boundaries[#boundaries + 1] = {
-                top = piece_y,
-                bottom = piece_y + piece_h,
-                keep_next = true,
-            }
-        else
-            for k = 1, n_lines do
-                boundaries[#boundaries + 1] = {
-                    top = piece_y + (k - 1) * line_h,
-                    bottom = piece_y + k * line_h,
-                }
-            end
-        end
-        y = y + piece_h
-        return true
     end
 
+    local header_top
     for _, block in ipairs(blocks) do
-        if block.kind == "paragraph" then
-            y = y + math.floor(base_size * (block.spacing_before or 0) + 0.5)
-            addTextPiece(block.variant, block.text, block.fg, text_w, 0,
-                block.variant == "meta")
-            y = y + math.floor(base_size * (block.spacing_after or 0) + 0.5)
+        if block.kind == "separator" then
+            -- Keep the rule and its whitespace with the following author row.
+            header_top = y
+            y = y + math.floor(base_size * block.spacing_before + 0.5)
+            local thickness = math.max(1, Screen:scaleBySize(1))
+            pieces[#pieces + 1] = {
+                kind = "separator", fg = block.fg, x = 0, y = y,
+                width = text_w, piece_h = thickness,
+            }
+            y = y + thickness + math.floor(base_size * block.spacing_after + 0.5)
+        elseif block.variant == "meta" then
+            local author_width = text_w
+            -- Reserve space for likes before wrapping a long username. Each
+            -- column is bounded even in a narrow popup or with a large count.
+            local likes
+            if block.likes_text then
+                likes = textPiece("likes", block.likes_text, block.likes_fg,
+                    math.max(1, math.floor(text_w * 0.4)), 0)
+                if likes then
+                    local width = 0
+                    for _, line in ipairs(likes.lines) do
+                        width = math.max(width, line.width or 0)
+                    end
+                    likes.width = math.max(1, math.min(likes.width, math.ceil(width)))
+                    likes.x = text_w - likes.width
+                    likes.align = "right"
+                    author_width = math.max(1, likes.x - math.floor(base_size * 0.6 + 0.5))
+                end
+            end
+            local author = textPiece("meta", block.text, block.fg, author_width, 0)
+            local row_h = author and author.piece_h or 0
+            -- Long-press lookup uses meta to identify the start of a thought.
+            if author then pieces[#pieces + 1] = author end
+            if likes then
+                if author then
+                    likes.y = y + math.max(0, author.baseline - likes.baseline)
+                end
+                row_h = math.max(row_h, likes.y - y + likes.piece_h)
+                pieces[#pieces + 1] = likes
+            end
+            boundaries[#boundaries + 1] = {
+                top = header_top or y,
+                bottom = y + row_h,
+                keep_next = true,
+            }
+            header_top = nil
+            y = y + row_h + math.floor(base_size * block.spacing_after + 0.5)
+        elseif block.kind == "paragraph" then
+            local piece = textPiece(block.variant, block.text, block.fg, text_w, 0)
+            if piece then
+                pieces[#pieces + 1] = piece
+                for k = 1, piece.n_lines do
+                    boundaries[#boundaries + 1] = {
+                        top = y + (k - 1) * piece.line_h,
+                        bottom = y + k * piece.line_h,
+                    }
+                end
+                y = y + piece.piece_h
+            end
         end
     end
 
@@ -263,36 +302,65 @@ function PageRenderer:_freePieceCache()
     end
 end
 
---- Render (and cache) the bitmap of page page_idx within page_starts.
---- page_starts is the page list returned by computePages; the page -> piece
---- index is rebuilt whenever a different page_starts table is passed.
-function PageRenderer:renderPage(page_idx, page_starts)
+--- Original content coordinate at the top of a rendered page. Centered
+--- pages drop leading separators AND their spacing; painting and long-press
+--- lookup must use the same origin. Continuous scrolling keeps every pixel.
+function PageRenderer:getPageContentStart(page_idx, page_starts)
     if self._page_pieces_key ~= page_starts then
+        self:_freePageBBs()
         self._page_pieces = Paginator.buildPagePieceIndex(
             self.layout and self.layout.pieces, page_starts, self.content_h)
         self._page_pieces_key = page_starts
     end
+    local p0 = page_starts[page_idx]
+    if self.hide_leading_separator then
+        local p1 = page_starts[page_idx + 1] or self.content_h
+        for _, piece in ipairs(self._page_pieces[page_idx] or {}) do
+            if piece.kind ~= "separator" then
+                local r = Paginator.pieceVisibleRange(piece, p0, p1)
+                if r then return p0 + r.dest_y end
+            end
+        end
+    end
+    return p0
+end
+
+--- Render (and cache) the bitmap of page page_idx within page_starts.
+function PageRenderer:renderPage(page_idx, page_starts)
+    if not page_starts or page_idx < 1 or page_idx > #page_starts then return nil end
+    local p0 = self:getPageContentStart(page_idx, page_starts)
     self._page_bbs = self._page_bbs or newPageCache()
     local cached = self._page_bbs:get(page_idx)
     if cached then return cached.bb end
-    if not page_starts or page_idx < 1 or page_idx > #page_starts then return nil end
-    local p0 = page_starts[page_idx]
     local p1 = page_starts[page_idx + 1] or self.content_h
     local h = math.max(1, p1 - p0)
     local bbtype = Screen:isColorEnabled() and Blitbuffer.TYPE_BBRGB32 or Blitbuffer.TYPE_BB8
     local bb = Blitbuffer.new(self.text_w, h, bbtype)
     bb:fill(Blitbuffer.COLOR_WHITE)
 
+    local has_text = false
     for _, piece in ipairs(self._page_pieces[page_idx] or {}) do
-        local r = Paginator.pieceVisibleRange(piece, p0, p1)
-        if r and piece.kind == "text" then
-            local text_bb = self:_getPieceTextBB(piece)
-            if text_bb then
-                bb:blitFrom(text_bb, piece.x, r.dest_y, 0, r.src_y, piece.width, r.src_h)
-            else
-                logger.warn("thought popup text render failed:",
-                    "y=", piece.y, "n_lines=", piece.n_lines,
-                    "text=", tostring(piece.text):sub(1, 40))
+        if piece.kind == "separator" then
+            -- A separator is only useful between thoughts visible on this
+            -- page. Keep it in continuous-scroll bitmaps, whose page seams
+            -- can appear in the middle of the viewport while panning.
+            if has_text or not self.hide_leading_separator then
+                local top = math.max(piece.y, p0)
+                local bottom = math.min(piece.y + piece.piece_h, p1)
+                bb:paintRect(piece.x, top - p0, piece.width, bottom - top, piece.fg)
+            end
+        else
+            local r = Paginator.pieceVisibleRange(piece, p0, p1)
+            if r then
+                has_text = true
+                local text_bb = self:_getPieceTextBB(piece)
+                if text_bb then
+                    bb:blitFrom(text_bb, piece.x, r.dest_y, 0, r.src_y, piece.width, r.src_h)
+                else
+                    logger.warn("thought popup text render failed:",
+                        "y=", piece.y, "n_lines=", piece.n_lines,
+                        "text=", tostring(piece.text):sub(1, 40))
+                end
             end
         end
     end

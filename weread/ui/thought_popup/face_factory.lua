@@ -31,12 +31,13 @@ local FaceFactory = {
     fallback_cache = {}, -- path|size -> FontFaceObj (fallback faces shared across variants)
 }
 
--- Size variants (relative to the base size). quote/meta render one step
--- smaller; meta is the author line.
+-- Size variants relative to the configured size. The body stays unchanged;
+-- author/likes form a smaller header, with the author rendered in bold.
 FaceFactory.VARIANTS = {
     content = 0.9,  -- thought body
     quote   = 0.9,  -- quoted abstract (italic, gray)
-    meta    = 0.9,  -- author line; keep it as readable as the thought body
+    meta    = 0.72, -- author
+    likes   = 0.68, -- right-aligned likes
 }
 
 function FaceFactory:init()
@@ -162,6 +163,7 @@ function FaceFactory:_buildFace(path, size)
         ftsize = ftsize,
         hash = path .. "|" .. size,
         is_real_bold = false,
+        embolden_half_strength = ftsize:getEmboldenHalfStrength(3/8),
         hb_features = { "+kern", "+liga" },
     }
     face_obj.fallbacks = {}

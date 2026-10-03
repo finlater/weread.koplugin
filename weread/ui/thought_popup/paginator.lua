@@ -83,7 +83,9 @@ end
 function Paginator.textPieceMetrics(face)
     local line_h = math.floor((1 + 0.2) * face.size + 0.5)
     local face_height, face_ascender = face.ftsize:getHeightAndAscender()
-    local extra = math.max(0, face_height - line_h)
+    -- FreeType may return fractional heights. Keep page coordinates in
+    -- integer pixels so rounding cannot re-include the previous page's line.
+    local extra = math.max(0, math.ceil(face_height) - line_h)
     local line_heights_diff = math.floor(line_h - face_height)
     local baseline
     if line_heights_diff >= 0 then
@@ -94,7 +96,7 @@ function Paginator.textPieceMetrics(face)
     return line_h, extra, baseline
 end
 
-local function shapeLineCached(xtext, line)
+local function shapeLineCached(xtext, line, align, width)
     if line._shaped then return end
     line._shaped = true
     if not line.end_offset or line.end_offset < line.offset then
@@ -102,8 +104,8 @@ local function shapeLineCached(xtext, line)
         return
     end
     local xshaping = xtext:shapeLine(line.offset, line.end_offset)
-    local alignment = xshaping.para_is_rtl and "right" or "left"
-    local targeted = line.targeted_width or line.width or 0
+    local alignment = align or (xshaping.para_is_rtl and "right" or "left")
+    local targeted = width or line.targeted_width or line.width or 0
     local pen_x = 0
     if alignment == "right" then
         pen_x = (targeted - (line.width or xshaping.width or 0))
@@ -146,13 +148,13 @@ function Paginator.renderTextPiece(piece)
     local face = piece.face
     for i = 1, #piece.lines do
         local line = piece.lines[i]
-        shapeLineCached(piece.xtext, line)
+        shapeLineCached(piece.xtext, line, piece.align, piece.width)
         if line.xglyphs then
             for _, xglyph in ipairs(line.xglyphs) do
                 if not xglyph.no_drawing then
                     local glyph_face = face.getFallbackFont(xglyph.font_num)
                     if glyph_face then
-                        local glyph = RenderText:getGlyphByIndex(glyph_face, xglyph.glyph, false, false)
+                        local glyph = RenderText:getGlyphByIndex(glyph_face, xglyph.glyph, piece.variant == "meta", false)
                         if glyph and glyph.bb then
                             local dx = xglyph.x0 + glyph.l + xglyph.x_offset
                             local dy = y - glyph.t - xglyph.y_offset

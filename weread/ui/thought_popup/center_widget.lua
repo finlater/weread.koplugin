@@ -119,6 +119,7 @@ function CenterThoughtPopupWidget:init()
         content_width = self.width,
         contrast = self.contrast,
         skip_quote = true,
+        hide_leading_separator = true,
     }
     self:_buildLayout()
 end
@@ -373,7 +374,10 @@ end
 function CenterThoughtPopupWidget:onHoldThought(_, ges)
     local viewport = self._viewport
     if viewport and viewport.dimen and ges.pos:intersectWith(viewport.dimen) then
-        local content_y = (ges.pos.y - viewport.dimen.y) + (self._page_starts[self.page_index] or 0)
+        local content_y = (ges.pos.y - viewport.dimen.y)
+            + self._pages:getPageContentStart(self.page_index, self._page_starts)
+        local page_end = self._page_starts[self.page_index + 1] or self._pages.content_h
+        if content_y >= page_end then return true end
         local item = self:_findItemAtContentY(content_y)
         if item then
             self:_showThoughtActionMenu(item)
@@ -390,7 +394,7 @@ function CenterThoughtPopupWidget:_findItemAtContentY(y)
         if piece.variant == "meta" then
             item_idx = item_idx + 1
         end
-        if piece.y and piece.piece_h and piece.y <= y and y < piece.y + piece.piece_h then
+        if piece.kind ~= "separator" and piece.y and piece.piece_h and piece.y <= y and y < piece.y + piece.piece_h then
             if piece.variant == "quote" then
                 return self.items and self.items[1]
             end

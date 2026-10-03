@@ -257,6 +257,21 @@ test("paginateLines counts one line per text run", function()
     eq(Paginator.paginateLines("", face, 400), 0, "empty text")
 end)
 
+test("fractional font metrics cannot spill the previous line across a page break", function()
+    local face = {
+        size = 26,
+        ftsize = { getHeightAndAscender = function() return 35.412, 27.7 end },
+    }
+    local line_h, extra = Paginator.textPieceMetrics(face)
+    eq(line_h, 31, "integer line height")
+    eq(extra, 5, "glyph overhang rounds up to whole pixels")
+    local body_y = line_h + extra + 10
+    local piece = { y = body_y, piece_h = 6 * 38 + extra, line_h = 38, n_lines = 6 }
+    local page_start = body_y + 6 * 38
+    eq(Paginator.pieceVisibleRange(piece, page_start, page_start + 200), nil,
+        "the completed body has no text line on the next page")
+end)
+
 test("paginateLines adds a trailing line for a hard newline at end of text", function()
     mock_xt_state.hard_newline_at_eot = true
     local face = { size = 20 }
@@ -325,8 +340,9 @@ test("content builder emits quote, meta and content blocks", function()
     eq(blocks[1].text, "「quote text」", "quote text")
     eq(blocks[1].fg, 6, "quote gray level")
     eq(blocks[2].variant, "meta", "meta variant")
-    eq(blocks[2].text, "▸ alice · ♥ 3", "meta text with likes")
-    eq(blocks[2].spacing_after, 0.18, "meta separates author from body")
+    eq(blocks[2].text, "alice", "author text")
+    eq(blocks[2].likes_text, "♥ 3", "likes are a separate column")
+    eq(blocks[2].spacing_after, 0.27, "compact author-to-body spacing")
     eq(blocks[3].variant, "content", "content variant")
     eq(blocks[3].text, "body text", "content text")
 end)
@@ -342,7 +358,20 @@ test("content builder skips empty content and zero likes", function()
     })
     eq(#blocks, 1, "only the meta block remains")
     eq(blocks[1].variant, "meta", "meta variant")
-    eq(blocks[1].text, "▸ bob", "meta text without likes")
+    eq(blocks[1].text, "bob", "meta text without likes")
+    eq(blocks[1].likes_text, nil, "zero likes stay hidden")
+end)
+
+test("thoughts have one compact separator and a usable anonymous author", function()
+    local blocks = ContentBuilder.build({
+        { author = "alice", content = "first" },
+        { author = "  ", content = "second" },
+    })
+    eq(#blocks, 5, "two thoughts and one rule")
+    eq(blocks[3].kind, "separator", "rule between thoughts only")
+    eq(blocks[3].spacing_before, 0.54, "compact space above rule")
+    eq(blocks[3].spacing_after, 0.54, "compact space below rule")
+    eq(blocks[4].text, "匿名", "blank author fallback")
 end)
 
 test("content builder truncates multi-paragraph and long quotes", function()
@@ -396,11 +425,11 @@ test("content builder contrast darkens and lightens every block", function()
     }
     local dark = ContentBuilder.build(items, 2)
     eq(dark[1].fg, 4, "quote darkens two levels")
-    eq(dark[2].fg, 7, "meta darkens two levels")
+    eq(dark[2].fg, 3, "meta darkens two levels")
     eq(dark[3].fg, 3, "content darkens two levels")
     local light = ContentBuilder.build(items, -2)
     eq(light[1].fg, 8, "quote lightens two levels")
-    eq(light[2].fg, 11, "meta lightens two levels")
+    eq(light[2].fg, 7, "meta lightens two levels")
     eq(light[3].fg, 7, "content lightens two levels")
 end)
 

@@ -51,8 +51,9 @@ end
 
 package.preload["libs/libkoreader-xtext"] = function()
     return {
-        new = function(text, _face, ...)
-            local size = #text
+        new = function(text, face, ...)
+            local size = #splitToChars(text)
+            local char_width = math.max(1, math.floor(face.size * 0.6))
             local xt = {}
             for i = 1, size do
                 xt[i] = true
@@ -60,17 +61,25 @@ package.preload["libs/libkoreader-xtext"] = function()
             xt.measure = function() end
             xt.makeLine = function(_self, idx, width, ...)
                 if idx > size then return nil end
+                local last = math.min(size, idx + math.max(1, math.floor(width / char_width)) - 1)
                 return {
                     offset = idx,
-                    end_offset = size,
-                    next_start_offset = size + 1,
+                    end_offset = last,
+                    next_start_offset = last + 1,
                     hard_newline_at_eot = false,
-                    width = width,
+                    width = (last - idx + 1) * char_width,
                     targeted_width = width,
                 }
             end
-            xt.shapeLine = function()
-                return { para_is_rtl = false, width = 0 }
+            xt.shapeLine = function(_self, first, last)
+                local glyphs = { para_is_rtl = false, width = (last - first + 1) * char_width }
+                for i = first, last do
+                    glyphs[#glyphs + 1] = {
+                        font_num = 0, glyph = i, x_advance = char_width,
+                        x_offset = 0, y_offset = 0,
+                    }
+                end
+                return glyphs
             end
             xt.free = function(self) self.freed = true end
             setmetatable(xt, { __len = function() return size end })
@@ -79,6 +88,7 @@ package.preload["libs/libkoreader-xtext"] = function()
     }
 end
 
+local rules_painted = 0
 package.preload["ffi/blitbuffer"] = function()
     return {
         COLOR_GRAY_1 = 1,
@@ -104,6 +114,10 @@ package.preload["ffi/blitbuffer"] = function()
             return {
                 fill = function() end,
                 blitFrom = function() end,
+                paintRect = function(_self, x, y, width, height)
+                    assert(x >= 0 and y >= 0 and x + width <= w and y + height <= h)
+                    rules_painted = rules_painted + 1
+                end,
                 getWidth = function() return w end,
                 getHeight = function() return h end,
             }
@@ -122,8 +136,12 @@ package.preload["device"] = function()
     }
 end
 
+local bold_draws, regular_draws = 0, 0
 package.preload["ui/rendertext"] = function()
-    return { getGlyphByIndex = function() return nil end }
+    return { getGlyphByIndex = function(_self, _face, _glyph, bold)
+        if bold then bold_draws = bold_draws + 1 else regular_draws = regular_draws + 1 end
+        return nil
+    end }
 end
 
 -- Mock the koreader Cache API used by pages.lua (get/insert/clear +
@@ -174,11 +192,15 @@ end
 
 package.preload["weread.ui.thought_popup.face_factory"] = function()
     return {
-        getFace = function(_name, _size, _variant)
-            return {
-                size = 20,
-                ftsize = { getHeightAndAscender = function() return 30, 24 end },
+        getFace = function(_self, _name, size, variant)
+            local ratio = ({ meta = 0.72, likes = 0.68 })[variant] or 0.9
+            size = math.max(8, math.floor(size * ratio + 0.5))
+            local face = {
+                size = size,
+                ftsize = { getHeightAndAscender = function() return size, math.floor(size * 0.8) end },
             }
+            face.getFallbackFont = function() return face end
+            return face
         end,
     }
 end
@@ -260,6 +282,7 @@ test("computePages yields pages for the viewport", function()
 end)
 
 test("renderPage produces a page bitmap for each page", function()
+    rules_painted, bold_draws, regular_draws = 0, 0, 0
     local renderer = new_renderer()
     renderer:ensureLayout()
     local page_starts = renderer:computePages(300)
@@ -268,6 +291,75 @@ test("renderPage produces a page bitmap for each page", function()
         ok(type(bb) == "table" and type(bb.fill) == "function",
             "page " .. page_idx .. " renders a bitmap")
     end
+    eq(rules_painted, 1, "the separator is drawn once across all pages")
+    ok(bold_draws > 0, "author glyphs are rendered bold")
+    ok(regular_draws > 0, "body and likes use regular glyphs")
+end)
+
+test("long usernames wrap without overlapping right-aligned likes", function()
+    local renderer = PageRenderer:new{
+        items = {
+            { author = string.rep("长用户名", 12), likes_count = 123456, content = "想法正文" },
+        },
+        doc_font_size = 22,
+        content_width = 280,
+        skip_quote = true,
+    }
+    renderer:ensureLayout()
+    local author, likes, body = unpack(renderer.layout.pieces)
+    eq(author.variant, "meta", "author starts the thought for long-press lookup")
+    ok(author.n_lines > 1, "long author wraps")
+    ok(author.width < likes.x, "columns have a gap")
+    eq(likes.x + likes.width, renderer.text_w, "likes sit on the right edge")
+    eq(author.y + author.baseline, likes.y + likes.baseline, "first baselines align")
+    ok(body.y > author.y + author.piece_h, "body begins after the whole author")
+    ok(body.y > likes.y + likes.piece_h, "body begins after the whole likes column")
+    eq(body.width, renderer.text_w, "body uses the full column width")
+end)
+
+test("zero likes leave the whole row available for the username", function()
+    local renderer = PageRenderer:new{
+        items = { { author = "无赞读者", content = "正文", likes_count = 0 } },
+        skip_quote = true,
+    }
+    renderer:ensureLayout()
+    eq(#renderer.layout.pieces, 2, "only author and body")
+    eq(renderer.layout.pieces[1].width, renderer.text_w, "author uses the full width")
+end)
+
+test("centered pages remove the leading rule and its whitespace", function()
+    local renderer = PageRenderer:new{
+        items = {
+            { author = "读者甲", content = "第一条" },
+            { author = "读者乙", content = "第二条想法", likes_count = 123 },
+        },
+        skip_quote = true,
+        doc_font_size = 22,
+        hide_leading_separator = true,
+    }
+    renderer:ensureLayout()
+    local pieces = renderer.layout.pieces
+    local first_body, separator, author, likes, body = pieces[2], pieces[3], pieces[4], pieces[5], pieces[6]
+    local viewport_h = author.y + author.piece_h + 1
+    local starts = renderer:computePages(viewport_h)
+    eq(#starts, 2, "header without body causes a page break")
+    eq(starts[2], first_body.y + first_body.line_h, "break comes before the separator whitespace")
+    ok(separator.y >= starts[2], "separator stays on the second page")
+    ok(body.y + body.line_h - starts[2] <= viewport_h, "second page fits the first body line")
+    eq(separator.y - first_body.y - first_body.piece_h, 12, "12 pixels above rule at preview scale")
+    eq(author.y - separator.y - separator.piece_h, 12, "12 pixels below rule at preview scale")
+    eq(body.y - math.max(author.y + author.piece_h, likes.y + likes.piece_h), 6, "6 pixels below header")
+    rules_painted = 0
+    renderer:renderPage(1, starts)
+    eq(rules_painted, 0, "previous page has no orphaned rule")
+    local second_page = renderer:renderPage(2, starts)
+    eq(rules_painted, 0, "following page has no rule above its first thought")
+    eq(second_page:getHeight(), renderer.content_h - author.y, "leading whitespace is removed with the rule")
+    eq(renderer:getPageContentStart(2, starts), author.y, "paint and touch use the first author's position")
+    eq(renderer:renderPage(2, starts), second_page, "revisiting the page reuses its trimmed bitmap")
+
+    renderer:renderPage(1, renderer:computePages(renderer.content_h))
+    eq(rules_painted, 1, "the rule remains when both thoughts fit on the same page")
 end)
 
 test("setContent with unchanged items keeps the layout", function()

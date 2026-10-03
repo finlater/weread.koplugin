@@ -251,7 +251,7 @@ function ThoughtPopupWidget:_findItemAtContentY(y)
         if piece.variant == "meta" then
             item_idx = item_idx + 1
         end
-        if piece.y and piece.piece_h and piece.y <= y and y < piece.y + piece.piece_h then
+        if piece.kind ~= "separator" and piece.y and piece.piece_h and piece.y <= y and y < piece.y + piece.piece_h then
             if piece.variant == "quote" then
                 return self.items and self.items[1]
             end

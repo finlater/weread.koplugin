@@ -1,4 +1,4 @@
--- Focused behavior tests for centered thought-popup navigation.
+-- Thought-popup navigation and long-press lookup in both popup positions.
 package.path = "./?.lua;" .. package.path
 
 local function class(proto)
@@ -21,6 +21,9 @@ package.preload["ui/bidi"] = function()
     }
 end
 package.preload["ui/widget/buttondialog"] = function() return class() end
+package.preload["ui/widget/container/bottomcontainer"] = function() return class() end
+package.preload["ui/widget/linewidget"] = function() return class() end
+package.preload["weread.ui.thought_popup.scroll_container"] = function() return class() end
 package.preload["ffi/blitbuffer"] = function() return { COLOR_WHITE = 255 } end
 package.preload["ui/widget/buttontable"] = function() return class() end
 package.preload["ui/widget/container/centercontainer"] = function() return class() end
@@ -53,6 +56,7 @@ package.preload["ui/size"] = function()
     return {
         padding = { large = 8, default = 4 },
         radius = { window = 6 },
+        line = { thick = 2 },
     }
 end
 package.preload["ui/widget/titlebar"] = function() return class() end
@@ -95,6 +99,46 @@ eq(popup.page_index, 2, "next page updates the page index")
 eq(dirty_target, popup, "page navigation redraws the popup itself")
 eq(dirty_mode, "partial", "page navigation requests a partial refresh")
 eq(dirty_region, popup.container.dimen, "page navigation refreshes the popup region")
+
+for _, widget in ipairs({ CenterWidget, require("weread.ui.thought_popup.widget") }) do
+    local first, second = { content = "first thought" }, { content = "second thought" }
+    local view = setmetatable({
+        items = { first, second },
+        _pages = { layout = { pieces = {
+            { kind = "text", variant = "meta", y = 0, piece_h = 20 },
+            { kind = "text", variant = "likes", y = 2, piece_h = 20 },
+            { kind = "text", variant = "content", y = 28, piece_h = 40 },
+            { kind = "separator", y = 80, piece_h = 1 },
+            { kind = "text", variant = "meta", y = 93, piece_h = 20 },
+            { kind = "text", variant = "likes", y = 95, piece_h = 20 },
+            { kind = "text", variant = "content", y = 121, piece_h = 40 },
+        } } },
+    }, { __index = widget })
+    eq(view:_findItemAtContentY(21), first, "likes retain the first thought")
+    eq(view:_findItemAtContentY(40), first, "first body keeps its action target")
+    eq(view:_findItemAtContentY(80), nil, "separator does not copy the previous thought")
+    eq(view:_findItemAtContentY(114), second, "likes retain the second thought")
+    eq(view:_findItemAtContentY(130), second, "second body keeps its action target")
+    if widget == CenterWidget then
+        view.page_index = 2
+        view._page_starts = { 0, 68, 161 }
+        view._viewport = { dimen = { y = 200 } }
+        view._pages.getPageContentStart = function() return 93 end
+        local selected
+        view._showThoughtActionMenu = function(_, item) selected = item end
+        local function hold(y)
+            selected = nil
+            view:onHoldThought(nil, { pos = {
+                y = 200 + y, intersectWith = function() return true end,
+            } })
+            return selected
+        end
+        eq(hold(1), second, "long press follows the author after removing page-top spacing")
+        eq(hold(30), second, "long press follows the shifted body")
+        view._findItemAtContentY = function() return first end
+        eq(hold(70), nil, "blank area below a short page cannot select another page's thought")
+    end
+end
 
 print(string.format("thought_popup_center_widget_spec: %d checks, %d failure(s)",
     checks, failures))

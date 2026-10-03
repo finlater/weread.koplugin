@@ -6,6 +6,9 @@ content, likes_count) become a widget-independent block tree consumed by
 widget.lua:
 
     { kind="paragraph", variant=<quote|meta|content>, text=..., fg=gray level }
+    { kind="separator", fg=gray level, spacing_before=..., spacing_after=... }
+
+Meta blocks keep the author and likes separate for a two-column header.
 
 Size variants for each block live in face_factory.lua (VARIANTS); the gray
 levels below match the WeRead reader's footnote styling.
@@ -173,18 +176,24 @@ function ContentBuilder.build(items, opts)
     end
 
     for item_index, item in ipairs(items) do
-        local meta = "▸ " .. tostring(item.author or "匿名")
-        local likes = tonumber(item.likes_count) or 0
-        if likes > 0 then
-            meta = meta .. " · ♥ " .. tostring(likes)
+        if item_index > 1 then
+            blocks[#blocks + 1] = {
+                kind = "separator",
+                fg = grayForLevel(10),
+                spacing_before = 0.54,
+                spacing_after = 0.54,
+            }
         end
+        local likes = tonumber(item.likes_count) or 0
+        local author = trimText(tostring(item.author or ""))
         blocks[#blocks + 1] = {
             kind = "paragraph",
             variant = "meta",
-            text = meta,
-            fg = adjustedGray(9, opts.contrast),
-            spacing_before = item_index > 1 and 0.45 or nil,
-            spacing_after = 0.18,
+            text = author ~= "" and author or "匿名",
+            likes_text = likes > 0 and ("♥ " .. tostring(likes)) or nil,
+            likes_fg = adjustedGray(7, opts.contrast),
+            fg = adjustedGray(5, opts.contrast),
+            spacing_after = 0.27,
         }
 
         local content = trimText(item.content or "")
