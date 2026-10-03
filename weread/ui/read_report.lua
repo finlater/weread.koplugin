@@ -82,29 +82,34 @@ function M:getReadReportMenuItems()
             text = _("Report status"),
             keep_menu_open = true,
             callback = self:safeCallback(_("Report status"), function()
-                local cur = self.settings:get("read_report")
-                local report_status = self.read_report:status()
-                local target
-                if cur.mode == "auto" then
-                    local auto_title = report_status.target_book_title
-                    target = auto_title and T(_("Auto: %1"), auto_title) or _("Auto-associate")
-                else
-                    target = cur.book_title ~= "" and cur.book_title or _("Not configured")
-                end
-                local status = report_status.running and _("Running") or _("Stopped")
-                local count = report_status.count
-                local last = report_status.last_time
-                    and os.date("%H:%M:%S", report_status.last_time) or "--"
-                local err = report_status.last_error or ""
-                local msg = T(_("Report book: %1\nStatus: %2"), target, status)
-                    .. "\n" .. T(_("Reported: %1 times, last: %2"), tostring(count), last)
-                if err ~= "" then
-                    msg = msg .. "\n" .. T(_("Last error: %1"), err)
-                end
-                self:showInfo(msg)
+                self:onShowWeReadReportStatus()
             end),
         },
     }
+end
+
+function M:onShowWeReadReportStatus()
+    local cur = self.settings:get("read_report")
+    local report_status = self.read_report:status()
+    local target
+    if cur.mode == "auto" then
+        local auto_title = report_status.target_book_title
+        target = auto_title and T(_("Auto: %1"), auto_title) or _("Auto-associate")
+    else
+        target = cur.book_title ~= "" and cur.book_title or _("Not configured")
+    end
+    local status = report_status.running and _("Running") or _("Stopped")
+    local count = report_status.count
+    local last = report_status.last_time
+        and os.date("%H:%M:%S", report_status.last_time) or "--"
+    local err = report_status.last_error or ""
+    local msg = T(_("Report book: %1\nStatus: %2"), target, status)
+        .. "\n" .. T(_("Reported: %1 times, last: %2"), tostring(count), last)
+    if err ~= "" then
+        msg = msg .. "\n" .. T(_("Last error: %1"), err)
+    end
+    self:showInfo(msg)
+    return true
 end
 
 function M:getReportTargetMenuItems()

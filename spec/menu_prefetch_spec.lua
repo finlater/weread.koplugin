@@ -123,8 +123,17 @@ host:onDispatcherRegisterActions()
 expect(registered.weread_show == nil,
     "generic WeRead shortcut action is no longer registered")
 local sync_action = registered.weread_sync_progress
-expect(sync_action == nil,
-    "standalone sync action is no longer registered")
+expect(sync_action and sync_action.event == "WeReadSyncProgress"
+        and sync_action.title == "WeRead · Sync progress now"
+        and sync_action.category == "none"
+        and sync_action.reader == true and sync_action.general ~= true,
+    "sync gesture reuses the quick-menu event as a reader-only action")
+local report_action = registered.weread_read_report_status
+expect(report_action and report_action.event == "ShowWeReadReportStatus"
+        and report_action.title == "WeRead · Reading time report status"
+        and report_action.category == "none"
+        and report_action.reader == true and report_action.general ~= true,
+    "reading report status is registered as a reader-only action")
 local quick_action = registered.weread_quick_menu
 expect(quick_action ~= nil, "quick menu dispatcher action is registered")
 expect(quick_action and quick_action.event == "ShowWeReadQuickMenu",

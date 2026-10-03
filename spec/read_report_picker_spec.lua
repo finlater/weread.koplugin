@@ -14,7 +14,12 @@ package.preload["weread.ui.read_stats_view"] = function() return {} end
 package.preload["weread.lib.plugin_util"] = function()
     return {
         tr = function(text) return text end,
-        T = function(text, value) return text:gsub("%%1", tostring(value)) end,
+        T = function(text, ...)
+            local args = { ... }
+            return (text:gsub("%%(%d+)", function(index)
+                return tostring(args[tonumber(index)])
+            end))
+        end,
         log_error = tostring,
         display_error = tostring,
     }
@@ -93,5 +98,27 @@ expect(closed_view == view and host.shelf_view == nil,
 expect(stopped == "target_changed" and started == true
         and notice == "Target book set: Book One",
     "book selection did not restart reporting with feedback")
+
+local status_text
+local report_status = { running = false, count = 0 }
+host.read_report = { status = function() return report_status end }
+host.showInfo = function(_self, text) status_text = text end
+expect(host:onShowWeReadReportStatus(), "status gesture consumes the reader event")
+expect(status_text == "Report book: Book One\nStatus: Stopped\nReported: 0 times, last: --",
+    "status gesture displays the manual target before the first report")
+local gesture_text = status_text
+status_text = nil
+report_items[4].callback()
+expect(status_text == gesture_text, "menu and gesture show the same report status")
+
+config.mode = "auto"
+report_status = {
+    running = true, count = 3, target_book_title = "Auto Book",
+    last_time = 12345, last_error = "offline",
+}
+host:onShowWeReadReportStatus()
+expect(status_text == "Report book: Auto: Auto Book\nStatus: Running\nReported: 3 times, last: "
+        .. os.date("%H:%M:%S", report_status.last_time) .. "\nLast error: offline",
+    "status gesture preserves the live automatic target, report time, and last error")
 
 print(("read_report_picker_spec: %d checks"):format(checks))

@@ -31,6 +31,18 @@ function M:onDispatcherRegisterActions()
         title = _("WeRead · Quick menu"),
         reader = true,
     })
+    Dispatcher:registerAction("weread_sync_progress", {
+        category = "none",
+        event = "WeReadSyncProgress",
+        title = _("WeRead · Sync progress now"),
+        reader = true,
+    })
+    Dispatcher:registerAction("weread_read_report_status", {
+        category = "none",
+        event = "ShowWeReadReportStatus",
+        title = _("WeRead · Reading time report status"),
+        reader = true,
+    })
     Dispatcher:registerAction("weread_bookshelf", {
         category = "none",
         event = "ShowWeReadBookshelf",
