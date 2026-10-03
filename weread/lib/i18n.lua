@@ -583,7 +583,9 @@ function I18n.language()
     if G_reader_settings and G_reader_settings.readSetting then
         lang = G_reader_settings:readSetting("language")
     end
-    return lang or "en"
+    -- KOReader initializes gettext before plugins, even when no language is saved.
+    local gettext = package.loaded["gettext"]
+    return lang or (type(gettext) == "table" and gettext.current_lang) or "en"
 end
 
 function I18n.is_zh()
