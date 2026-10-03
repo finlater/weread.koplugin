@@ -15,6 +15,15 @@ local T = PluginUtil.T
 
 local M = {}
 
+-- Set the default once per module load; KOReader applies user menu orders later.
+for _i, module in ipairs({
+    "ui/elements/filemanager_menu_order",
+    "ui/elements/reader_menu_order",
+}) do
+    local order = require(module)
+    table.insert(order.tools, 1, "weread")
+end
+
 function M:onDispatcherRegisterActions()
     Dispatcher:registerAction("weread_quick_menu", {
         category = "none",

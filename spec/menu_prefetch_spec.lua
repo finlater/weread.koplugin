@@ -45,6 +45,15 @@ package.preload["weread.lib.plugin_util"] = function()
     }
 end
 
+for _, module in ipairs({
+    "ui/elements/filemanager_menu_order",
+    "ui/elements/reader_menu_order",
+}) do
+    package.preload[module] = function()
+        return { tools = { "statistics", "more_tools" } }
+    end
+end
+
 local Menu = require("weread.ui.menu")
 
 local checks, failures = 0, 0
