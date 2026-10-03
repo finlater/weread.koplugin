@@ -84,6 +84,21 @@ expect(release.version == "0.7.0" and release.archive_size == 1234,
 expect(release.notes:find("Added updates", 1, true) ~= nil,
     "release notes were not normalized")
 
+local function parse_notes(notes)
+    return assert(Updater.parse_release{
+        tag_name = "v0.7.0", body = notes,
+        assets = {
+            { name = "weread.koplugin-v0.7.0.zip", browser_download_url = release.archive_url },
+            { name = "weread.koplugin-v0.7.0.zip.sha256", browser_download_url = release.checksum_url },
+        },
+    }).notes
+end
+local long_notes = string.rep("中文更新内容，支持完整滚动阅读。\n", 120) .. "最后一条更新"
+expect(parse_notes(long_notes) == long_notes, "long release notes were truncated")
+local bounded_notes = parse_notes(string.rep("中", Updater.MAX_NOTES_BYTES))
+expect(#bounded_notes <= Updater.MAX_NOTES_BYTES
+    and bounded_notes:gsub("中", "") == "...", "notes limit split a UTF-8 character")
+
 local missing, missing_err = Updater.parse_release({
     tag_name = "v0.7.0",
     assets = {},
@@ -152,6 +167,26 @@ local updater = Updater:new{
     current_version = "0.6.0",
     plugin_dir = "/tmp/weread.koplugin",
 }
+updater:cache_release(release)
+expect(updater:should_notify("0.7.0"), "new release should notify by default")
+expect(not updater:should_notify("0.6.0") and not updater:should_notify("0.5.0"),
+    "current or older release should not notify")
+local before_snooze = os.time()
+updater:snooze_update("0.7.0")
+expect(update_state.snooze_until >= before_snooze + 86400
+    and not updater:should_notify("0.7.0"), "snooze must suppress the version for 24 hours")
+expect(updater:should_notify("0.8.0"), "snooze must not hide a newer version")
+local reloaded = Updater:new{
+    settings = updater.settings, current_version = "0.6.0", plugin_dir = updater.plugin_dir,
+}
+expect(not reloaded:should_notify("0.7.0"), "snooze must survive instance recreation")
+update_state.snooze_until = os.time()
+expect(reloaded:should_notify("0.7.0"), "snooze should expire after 24 hours")
+updater:skip_update("0.7.0")
+updater:cache_release(release)
+expect(not reloaded:should_notify("0.7.0") and reloaded:should_notify("0.8.0"),
+    "skipped version must survive checks and leave newer releases visible")
+expect(reloaded:cached_release().version == "0.7.0", "skipping must preserve manual update")
 local backup_exists, purged_path = true, nil
 package.loaded["libs/libkoreader-lfs"] = {
     attributes = function(path)

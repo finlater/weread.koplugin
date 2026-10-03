@@ -10,6 +10,8 @@ local Updater = {}
 Updater.__index = Updater
 
 Updater.AUTO_CHECK_INTERVAL = 60 * 60
+Updater.REMINDER_INTERVAL = 24 * 60 * 60
+Updater.MAX_NOTES_BYTES = 64 * 1024
 Updater.MAX_PACKAGE_BYTES = 10 * 1024 * 1024
 Updater.API_URL = "https://api.github.com/repos/finlater/weread.koplugin/releases/latest"
 Updater.RELEASE_PREFIX = "https://github.com/finlater/weread.koplugin/releases/download/"
@@ -117,7 +119,11 @@ local function normalize_notes(notes)
     notes = notes:gsub("^#+%s*", ""):gsub("\n#+%s*", "\n")
     notes = notes:gsub("%*%*(.-)%*%*", "%1")
     notes = notes:gsub("`(.-)`", "%1")
-    if #notes > 1600 then notes = notes:sub(1, 1597) .. "..." end
+    if #notes > Updater.MAX_NOTES_BYTES then
+        -- Keep cached metadata bounded without cutting a UTF-8 character.
+        notes = notes:sub(1, Updater.MAX_NOTES_BYTES - 3)
+            :gsub("[\194-\244][\128-\191]*$", "") .. "..."
+    end
     return notes
 end
 
@@ -222,6 +228,25 @@ end
 
 function Updater:available_version()
     return self:has_update() and self:_state().available_version or nil
+end
+
+function Updater:should_notify(version)
+    if Updater.compare_versions(version, self.current_version) ~= 1 then return false end
+    local state = self:_state()
+    if state.skipped_version == version then return false end
+    return state.snoozed_version ~= version
+        or os.time() >= (tonumber(state.snooze_until) or 0)
+end
+
+function Updater:snooze_update(version)
+    self:_save_state{
+        snoozed_version = version,
+        snooze_until = os.time() + Updater.REMINDER_INTERVAL,
+    }
+end
+
+function Updater:skip_update(version)
+    self:_save_state{ skipped_version = version }
 end
 
 function Updater:_http_get(url, destination, on_download, total_hint, max_bytes)

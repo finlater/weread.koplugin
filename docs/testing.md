@@ -89,6 +89,21 @@ When updating the pinned KOReader commit, update all three locations together:
 - `.github/workflows/koreader-integration.yml`;
 - this document.
 
+## Updater simulator regression / 更新弹窗模拟器回归
+
+使用包含 `luajit` 和 `reader.lua` 的已构建 KOReader 运行目录，测试目录必须不存在：
+
+```bash
+python3 scripts/test_updater_simulator.py \
+    --koreader /path/to/koreader-runtime --run-dir /tmp/weread-updater-test
+```
+
+测试会打包当前代码到隔离副本，在 HTTP 边界注入合成版本和更新包，保留真实控件、
+子进程、校验、解压和安装流程。覆盖长说明滚动、固定按钮、提醒去重、设置落盘、
+手动更新、校验失败与重试；截图和日志保存在 `evidence/`。不会更新日常使用的插件。
+加 `--width 1072 --height 1448 --dpi 300` 可复测大屏；加 `--interactive` 会生成
+`WeReadUpdateTest.app`，打开后可进行真实窗口点击测试。每次使用新的 `--run-dir`。
+
 ## Release UI acceptance / 发版前界面验收
 
 Before every release, follow [macOS simulator release testing](macos-release-testing.md).

@@ -14,6 +14,10 @@ local T = PluginUtil.T
 local UpdaterUI = {}
 UpdaterUI.__index = UpdaterUI
 
+-- File manager and reader plugin instances share the same notification UI.
+local active_viewer
+local update_in_progress = false
+
 local function remove_file(path)
     if path then pcall(os.remove, path) end
 end
@@ -116,6 +120,7 @@ function UpdaterUI:_run_subprocess(message, task, callback, trap_widget)
 end
 
 function UpdaterUI:_show_release(release)
+    if active_viewer or update_in_progress then return end
     if self.updater.compare_versions(
         release.version, self.updater.current_version) ~= 1 then
         UIManager:show(InfoMessage:new{
@@ -127,21 +132,83 @@ function UpdaterUI:_show_release(release)
     end
     local notes = release.notes or _("No release notes were provided.")
     local viewer
+    local resolved = false
+    local function choose(action)
+        if resolved then return false end
+        resolved = true
+        if action == "skip" then
+            self.updater:skip_update(release.version)
+        elseif action ~= "install" then
+            self.updater:snooze_update(release.version)
+        else
+            update_in_progress = true
+        end
+        active_viewer = nil
+        return true
+    end
     viewer = TextViewer:new{
-        title = T(_("v%1 -> v%2"),
+        title = T(_("New version available\nWeRead v%1 → v%2"),
             self.updater.current_version, release.version),
+        title_multilines = true,
         text = notes,
         text_type = "general",
         auto_para_direction = true,
+        show_menu = false,
+        add_default_buttons = false,
+        close_callback = function() choose("later") end,
+        init = function(widget, reinit)
+            local Screen = require("device").screen
+            local Font = require("ui/font")
+            local TextWidget = require("ui/widget/textwidget")
+            local VerticalGroup = require("ui/widget/verticalgroup")
+            widget.width = math.floor(Screen:getWidth() * 0.85)
+            widget.height = math.floor(Screen:getHeight() * 0.75)
+            for _, entry in ipairs(widget.buttons_table[1]) do
+                entry.height = Screen:scaleBySize(60)
+            end
+            TextViewer.init(widget, reinit)
+            -- Keep native button input/feedback, with a smaller explanatory line.
+            for _, item in ipairs({
+                { "later", _("No reminders for 24 hours") },
+                { "skip", _("Remind me when a newer version is available") },
+            }) do
+                local button = widget.button_table:getButtonById(item[1])
+                button.label_container[1] = VerticalGroup:new{
+                    button.label_widget,
+                    TextWidget:new{
+                        text = item[2],
+                        face = Font:getFace("cfont", 14),
+                        max_width = button.label_container.dimen.w,
+                    },
+                }
+            end
+            local install = widget.button_table:getButtonById("install")
+            install.label_widget.fgcolor = require("ffi/blitbuffer").COLOR_WHITE
+        end,
         buttons_table = {
             {
                 {
-                    text = _("Cancel"),
-                    callback = function() UIManager:close(viewer) end,
+                    id = "later",
+                    text = _("Remind me later"),
+                    callback = function()
+                        if choose("later") then UIManager:close(viewer) end
+                    end,
                 },
                 {
-                    text = _("Download and install"),
+                    id = "skip",
+                    text = _("Skip this version"),
                     callback = function()
+                        if choose("skip") then UIManager:close(viewer) end
+                    end,
+                },
+            },
+            {
+                {
+                    id = "install",
+                    text = _("Update now"),
+                    background = require("ffi/blitbuffer").COLOR_BLACK,
+                    callback = function()
+                        if not choose("install") then return end
                         UIManager:close(viewer)
                         UIManager:scheduleIn(0.1, function()
                             self:install(release)
@@ -151,20 +218,25 @@ function UpdaterUI:_show_release(release)
             },
         },
     }
+    active_viewer = viewer
     UIManager:show(viewer)
+    return viewer
 end
 
 function UpdaterUI:check(manual)
+    if self._checking or active_viewer or update_in_progress then return false end
     if manual and not self.is_connected() then
         UIManager:show(InfoMessage:new{
             text = _("No network connection. Please connect Wi-Fi and try again."),
         })
         return false
     end
+    self._checking = true
     self:_run_subprocess(manual and _("Checking for updates…") or nil, function()
         local release, err = self.updater:fetch_release()
         return { release = release, error = err }
     end, function(result)
+        self._checking = false
         if not result or not result.release then
             logger.warn("update check failed:", result and result.error or "cancelled")
             if manual and not (result and result.cancelled) then
@@ -177,7 +249,9 @@ function UpdaterUI:check(manual)
         end
         self.updater:cache_release(result.release)
         self.refresh_ui()
-        if manual then self:_show_release(result.release) end
+        if manual or self.updater:should_notify(result.release.version) then
+            self:_show_release(result.release)
+        end
     end)
     return true
 end
@@ -185,7 +259,7 @@ end
 function UpdaterUI:show_cached_update()
     local release = self.updater:cached_release()
     if not release then return self:check(true) end
-    self:_show_release(release)
+    return self:_show_release(release)
 end
 
 function UpdaterUI:_progress_title(event)
@@ -215,6 +289,7 @@ function UpdaterUI:install(release)
         return
     end
 
+    update_in_progress = true
     local progress_path = self.settings.data_dir .. "/update-progress"
     remove_file(progress_path)
     remove_file(progress_path .. ".tmp")
@@ -250,6 +325,7 @@ function UpdaterUI:install(release)
         end)
         return { success = ok == true, error = err }
     end, function(result)
+        update_in_progress = false
         active = false
         UIManager:unschedule(poll)
         remove_file(progress_path)
