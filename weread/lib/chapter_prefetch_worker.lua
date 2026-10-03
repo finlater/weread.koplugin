@@ -58,7 +58,7 @@ function M.run(settings, client, book, chapter, context)
                 stats = current or stats
                 if Footnotes.has_converted(current) then
                     state.css = (state.css or "") .. "\n"
-                        .. Footnotes.get_css(cache.book_footnotes_in_popup == true)
+                        .. Footnotes.FOOTNOTES_CSS
                 end
             else
                 stats.fallback = 1

@@ -145,10 +145,8 @@ expect(dl.bodies["1"]:find("下载器跨章脚注", 1, true),
     "downloader did not embed a cross-chapter note")
 local _, css_count = dl.state.css:gsub("%.wr%-fn%-ref%{", "")
 expect(css_count == 1, "footnote CSS was not merged exactly once")
-expect(dl.state.css:find(
-        "aside.wr%-book%-footnote{%-cr%-hint:footnote;", 1) ~= nil
-        and dl.state.css:find("visibility:hidden", 1, true) ~= nil,
-    "popup preference did not select the previous footnote CSS")
+expect(dl.state.css == "body{}\n" .. Footnotes.FOOTNOTES_CSS,
+    "legacy popup preference must not override standard footnote CSS")
 
 local resumed_source_chapter = {
     chapterUid = 11, chapterIdx = 1, files = { "Text/chapter1.xhtml" },

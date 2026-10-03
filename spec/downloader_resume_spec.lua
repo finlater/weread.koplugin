@@ -88,7 +88,7 @@ package.preload["weread.lib.footnotes"] = function()
         validate = function() return true end,
         has_converted = function() return false end,
         build_book_index = function() return {} end,
-        get_css = function() return "" end,
+        FOOTNOTES_CSS = "",
     }
 end
 package.preload["weread.lib.content"] = function()

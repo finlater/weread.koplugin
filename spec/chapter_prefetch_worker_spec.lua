@@ -21,7 +21,9 @@ package.preload["weread.lib.content"] = function()
             calls[#calls + 1] = "images"
             return "<p>final</p>", {}
         end,
-        save_chapter_epub = function(_settings, book)
+        save_chapter_epub = function(_settings, book, _chapter, _body, _assets, css)
+            assert(css == "\nstandard-footnote-css",
+                "legacy popup preference must not override standard footnote CSS")
             calls[#calls + 1] = "epub"
             local path = "/tmp/book-chapter.epub"
             book.cache_dir = "/tmp/cache/book"
@@ -39,16 +41,17 @@ package.preload["weread.lib.footnotes"] = function()
     return {
         scan_chapter = function() return {} end,
         build_book_index = function() return {} end,
-        transform_chapter = function(body) return body, { converted = 0 } end,
+        transform_chapter = function(body) return body, { converted = 1 } end,
         validate = function() return true end,
-        has_converted = function() return false end,
-        get_css = function() return "" end,
+        has_converted = function() return true end,
+        FOOTNOTES_CSS = "standard-footnote-css",
     }
 end
 
 local flushes = 0
 local values = {
-    cache = { download_book_images = true }, cookies = {}, wr_ticket = "old",
+    cache = { download_book_images = true, book_footnotes_in_popup = true },
+    cookies = {}, wr_ticket = "old",
     wr_wrpa = "",
 }
 local settings = {

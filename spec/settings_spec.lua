@@ -14,7 +14,7 @@ local values = {
     wr_wrpa = "legacy-wrpa",
     account = { name = "legacy-user" },
     books = { ["42"] = { cache_dir = "/cache/42" } },
-    cache = { download_images = false },
+    cache = { download_images = false, book_footnotes_in_popup = true },
     config_loaded = true,
 }
 local flush_count = 0
@@ -118,7 +118,7 @@ expect(values.books["42"].cache_dir == "/cache/42",
 expect(values.config_loaded == nil, "legacy setting was not removed")
 expect(values.cache.download_book_images == false
     and values.cache.download_mp_images == false
-    and values.cache.book_footnotes_in_popup == false
+    and values.cache.book_footnotes_in_popup == nil
     and values.cache.download_underlines_and_thoughts == false
     and values.cache.prefetch_annotations == false
     and values.cache.auto_prefetch_next_chapter == false

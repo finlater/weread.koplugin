@@ -25,6 +25,10 @@ local Content = require("weread.lib.content")
 local Footnotes = require("weread.lib.footnotes")
 local ReaderUI = require("apps/reader/readerui")
 local Registry = require("document/documentregistry")
+local tr = require("weread.lib.i18n").tr
+local legacy_settings = require("luasettings"):open(home .. "/settings/weread.lua")
+legacy_settings:saveSetting("cache", { book_footnotes_in_popup = true })
+legacy_settings:flush()
 
 local chapter = { chapterUid = 178, chapterIdx = 1, title = "脚注行为验证" }
 local note = "甲脚注：标准脚注应能点击弹框，也能跳转到章末。"
@@ -41,18 +45,17 @@ local scan = Footnotes.scan_chapter(source, chapter)
 local body, stats = Footnotes.transform_chapter(source, scan,
     Footnotes.build_book_index({ ["178"] = scan }, { chapter }))
 assert(stats.image_notes == 2 and stats.converted == 1 and Footnotes.validate(body))
-local paths = {}
-for _, mode in ipairs({ "standard", "hidden" }) do
-    paths[mode] = Content.save_chapter_epub({}, {
-        bookId = "footnotes-" .. mode, title = mode, cache_dir = evidence,
-    }, chapter, body, {}, Footnotes.get_css(mode == "hidden"))
-end
+local path = Content.save_chapter_epub({}, {
+    bookId = "footnotes-standard", title = "standard", cache_dir = evidence,
+}, chapter, body, {}, Footnotes.FOOTNOTES_CSS)
 
-local reader, popup, normal_height, normal_full_height
-local function open(mode)
+local reader, popup, normal_height, hide_item
+local function open()
     if reader then reader:onClose() end
-    reader = ReaderUI:new{ dimen = Screen:getSize(), document = Registry:openDocument(paths[mode]) }
+    reader = ReaderUI:new{ dimen = Screen:getSize(), document = Registry:openDocument(path) }
     assert(reader.weread, "candidate plugin must be loaded")
+    assert(reader.weread.settings:get("cache").book_footnotes_in_popup == nil,
+        "obsolete footnote setting was not removed")
     UIManager:show(reader)
     reader.rolling:onGotoPage(1)
 end
@@ -89,13 +92,31 @@ end
 local function page_height()
     return reader.document._document:getPageHeight(1)
 end
+local function menu_select(menu, text)
+    for _, item in ipairs(menu.item_table) do
+        if item.text == tr(text) then menu:onMenuSelect(item); return end
+    end
+    error("missing menu item: " .. text)
+end
 
 local steps = {
-    function() open("standard") end,
+    function() open() end,
+    function()
+        reader.menu:onShowMenu(4)
+        local menu = reader.menu.menu_container[1]
+        menu_select(menu, "WeRead")
+        menu_select(menu, "Settings")
+        menu_select(menu, "Download settings")
+        for _, item in ipairs(menu.item_table) do
+            assert(item.text ~= "隐藏脚注文本" and item.text ~= "Hide footnote text",
+                "obsolete footnote menu item is still visible")
+        end
+        shot("00-download-settings")
+        reader.menu:onCloseReaderMenu()
+    end,
     function() inpage(false) end,
     function()
         normal_height = page_height()
-        normal_full_height = reader.document._document:getFullHeight()
         shot("01-standard-inpage-off")
         popup_enabled(true)
         tap_note()
@@ -130,25 +151,58 @@ local steps = {
     end,
     function()
         assert(page_height() == normal_height, "disabling native in-page notes did not restore layout")
-        open("hidden")
+        inpage(true)
+        reader.styletweak:onToggleStyleTweak({ "inpage_footnote_combine_non_linear", true }, nil, true)
+        open()
     end,
-    function() inpage(true) end,
     function()
-        assert(page_height() == normal_height, "hidden mode left visible page-bottom notes")
-        assert(reader.document._document:getFullHeight() < normal_full_height,
-            "hidden notes still occupy chapter-end space")
-        shot("06-hidden-inpage-on")
+        assert(reader.document:hasNonLinearFlows(), "native tweak did not mark the chapter-end notes")
+        local items = {}
+        reader.rolling:addToMainMenu(items)
+        hide_item = assert(items.hide_nonlinear_flows, "missing native hide menu item")
+        assert(hide_item.enabled_func() and not hide_item.checked_func())
+        hide_item.callback()
+        assert(hide_item.checked_func() and reader.document:hasHiddenFlows())
+        reader.menu:onShowMenu(1)
+        shot("06-native-hide-menu")
+        reader.menu:onCloseReaderMenu()
+    end,
+    function()
+        local document = reader.document
+        local last_linear = document:getLastLinearPage()
+        assert(last_linear < document:getPageCount(), "chapter-end notes were not separated from normal pages")
+        reader.rolling:onGotoPage(1)
+        for _ = 1, document:getPageCount() do
+            local page = reader:getCurrentPage()
+            assert(document:getPageFlow(page) == 0, "normal page turning entered hidden notes")
+            if document:getNextPage(page) == 0 then break end
+            reader.rolling:onGotoViewRel(1)
+        end
+        assert(reader:getCurrentPage() == last_linear, "normal page turning did not stop before the notes")
+        shot("07-native-hidden-chapter-end")
+        reader.rolling:onGotoPage(1)
         popup_enabled(true)
         tap_note()
     end,
     function()
         check_popup()
-        shot("07-hidden-popup")
+        shot("08-native-hidden-popup")
         popup:onClose()
+        popup_enabled(false)
+        tap_note()
+    end,
+    function()
+        assert(reader.document:getPageFlow(reader:getCurrentPage()) > 0,
+            "hidden footnotes must remain accessible through their links")
+        shot("09-native-hidden-link-target")
+        reader.link:onGoBackLink()
+        assert(reader:getCurrentPage() == 1)
+        hide_item.callback()
+        assert(not hide_item.checked_func() and not reader.document:hasHiddenFlows())
         reader.rolling:onGotoPage(reader.document:getPageCount())
     end,
     function()
-        shot("08-hidden-chapter-end")
+        shot("10-native-restored-chapter-end")
         reader:onClose()
         reader = nil
     end,
@@ -170,4 +224,4 @@ advance()
 UIManager:run()
 assert(not failure, failure)
 assert(index >= #steps, "simulator stopped before finishing the behavior checks")
-print("PASS: native in-page toggle on/off, popup on/off, chapter-end navigation, hidden notes and isolated popup content")
+print("PASS: menu removal, legacy setting cleanup, native in-page/popup toggles, native chapter-end hiding, link access and restoration")

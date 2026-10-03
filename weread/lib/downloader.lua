@@ -836,7 +836,7 @@ function Downloader:_footnoteStep(dl)
         dl.footnote_job = nil
         if job.css_needed then
             dl.state.css = (dl.state.css or "") .. "\n"
-                .. Footnotes.get_css(job.use_popup)
+                .. Footnotes.FOOTNOTES_CSS
         end
         logger.info("book footnotes processed:",
             "candidates=", tostring(dl.footnote_stats.candidates),
@@ -938,13 +938,11 @@ function Downloader:_startFootnotes(dl)
             scans[uid] = dl.footnote_scans[uid]
         end
     end
-    local cache = self.settings and self.settings:get("cache") or {}
     dl.footnote_job = {
         index = 1,
         chapters = selected,
         index_data = Footnotes.build_book_index(scans, selected),
         css_needed = false,
-        use_popup = cache.book_footnotes_in_popup == true,
     }
     self:_scheduleGuarded(dl, function() self:_footnoteStep(dl) end)
 end

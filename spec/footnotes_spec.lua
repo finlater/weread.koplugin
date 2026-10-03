@@ -37,14 +37,6 @@ expect(Footnotes.FOOTNOTES_CSS:find("border-top:1px solid #ccc", 1, true) ~= nil
 expect(Footnotes.FOOTNOTES_CSS:find(
     "div.wr%-footnotes>hr{display:none") ~= nil,
     "the generated hr must not duplicate the container separator")
-expect(Footnotes.get_css(false) == Footnotes.FOOTNOTES_CSS
-        and Footnotes.get_css(nil) == Footnotes.FOOTNOTES_CSS,
-    "standard chapter-end styling should be the default")
-expect(Footnotes.get_css(true) == Footnotes.POPUP_CSS
-        and Footnotes.POPUP_CSS:find(
-            "aside.wr%-book%-footnote{%-cr%-hint:footnote;", 1) ~= nil
-        and Footnotes.POPUP_CSS:find("visibility:hidden", 1, true) ~= nil,
-    "popup footnotes should use the previous hidden footnote flow")
 
 local source = [[
 <p>正文<a epub:type="noteref" href="#note-1"><sup>[1]</sup></a></p>
