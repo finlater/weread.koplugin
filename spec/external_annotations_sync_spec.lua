@@ -262,5 +262,18 @@ empty = true
 assert(finish(new("selected-refresh", { chapters[1] }, { clear_existing = true, refresh = true })))
 assert(store:get("book", "status", "selected-refresh:1").stats.total == 0,
     "successful zero-thought chapter must be recorded as retrieved")
+local refresh_cache_hit
+local function refresh_perf(stage, _started, ...)
+    if stage == "chapter_source_cache" then
+        local details = { ... }
+        refresh_cache_hit = details[4]
+    end
+    return 0
+end
+assert(finish(new("refresh-log", { { chapterUid = "refresh-log" } }, {
+    refresh = true, perf = refresh_perf,
+})))
+assert(refresh_cache_hit == false,
+    "refresh diagnostics incorrectly reported the intentionally bypassed source as a cache hit")
 helper.cleanup()
 print("external_annotations_sync_spec: resume, cross-file reuse, empty updates and offline prefetch passed")
