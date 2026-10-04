@@ -32,6 +32,7 @@ for _, size in ipairs({ { 600, 800 }, { 1072, 1448 }, { 800, 600 } }) do
     Device.screen.getHeight = function() return size[2] end
     local model = Selection:new(chapters, ranges, toc, 1, function(chapter)
         return tonumber(chapter.chapterUid) % 2 == 0
+            and "matched" or "ready_to_match"
     end)
     local chosen
     local view = Picker.show{ model = model, on_edit = function() end,

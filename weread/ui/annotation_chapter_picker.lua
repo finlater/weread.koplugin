@@ -171,15 +171,18 @@ function Picker:chapterRow(node)
     remote.label_widget.fgcolor = BB.COLOR_DARK_GRAY
     local check = self:button(node.selected and "✓" or "□", side, toggle,
         { text_font_size = 24, enabled = node.selectable })
-    local status = node.chapter and (node.fetched and "✓ " .. _("Retrieved") or _("Ready to fetch")) or _("Unlinked")
-    local border = node.chapter and not node.fetched and self.line_height or 0
+    local matched = node.state == "matched"
+    local status = node.state == "ready_to_fetch" and _("Ready to fetch")
+        or node.state == "ready_to_match" and _("Ready to match")
+        or matched and "✓ " .. _("Matched") or _("Unlinked")
+    local border = node.chapter and not matched and self.line_height or 0
     local padding = Screen:scaleBySize(3)
     local label = CenterContainer:new{ dimen = Geom:new{ w = status_width, h = half },
         FrameContainer:new{ bordersize = border, color = BB.COLOR_GRAY, margin = 0, padding = padding,
-            background = node.fetched and BB.COLOR_BLACK or BB.COLOR_WHITE,
-            TextWidget:new{ text = status, face = Font:getFace("cfont", 13), bold = node.fetched,
+            background = matched and BB.COLOR_BLACK or BB.COLOR_WHITE,
+            TextWidget:new{ text = status, face = Font:getFace("cfont", 13), bold = matched,
                 max_width = status_width - 2 * (padding + border),
-                fgcolor = node.fetched and BB.COLOR_WHITE or BB.COLOR_DARK_GRAY } } }
+                fgcolor = matched and BB.COLOR_WHITE or BB.COLOR_DARK_GRAY } } }
     local edit = self:button(node.chapter and _("Change match") or _("Select match"), status_width,
         function() self:edit(node) end, { height = self.row_height - half, text_font_size = 16,
             enabled = self.on_edit ~= nil and node.xpointer ~= nil })

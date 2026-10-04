@@ -92,7 +92,7 @@ open_reader()
 local picker = assert(plugin:chooseAnnotationChapters())
 assert(picker.model.count == 0 and picker.model.by_uid['1'] and picker.model.by_uid['6'])
 local first = picker.model.by_uid['1']
-assert(first.chapter and not first.fetched)
+assert(first.chapter and first.state == 'ready_to_fetch')
 shot('01-matched-default-unchecked')
 -- Native checkbox changes only one chapter, not its siblings.
 picker.layout[2][1].callback()
@@ -145,7 +145,7 @@ assert(store:get('900001', 'source', '2').underlines[1].metadata == json.decode(
     'HTTP/worker/SQLite roundtrip lost the JSON null fixture')
 dismiss_info()
 picker = plugin:chooseAnnotationChapters()
-assert(picker.model.by_uid['2'].fetched and picker.model.count == 0)
+assert(picker.model.by_uid['2'].state == 'matched' and picker.model.count == 0)
 shot('05-retrieved-default-unchecked')
 picker:onClose()
 -- An unfinished chapter and a cached source with no positions coexist on open.
@@ -252,11 +252,11 @@ local source = assert(store:get('900001', 'source', '2'))
 assert(#source.underlines == 0 and #source.reviews == 0)
 dismiss_info()
 picker = plugin:chooseAnnotationChapters()
-assert(picker.model.by_uid['2'].fetched and picker.model.count == 0)
+assert(picker.model.by_uid['2'].state == 'matched' and picker.model.count == 0)
 shot('07-empty-success-retrieved')
 picker:onClose()
 control { empty_annotations = false }
-print('PASS: selected chapter refetch clears old data; successful empty result remains Retrieved')
+print('PASS: selected chapter refetch clears old data; successful empty result remains Matched')
 -- A fresh display must activate as soon as its first chapter commits, even
 -- if a later real HTTP request fails and the user resumes it afterward.
 dismiss_info()

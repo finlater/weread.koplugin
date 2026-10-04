@@ -740,9 +740,14 @@ function M:_annotationSelectionModel(context)
         function(chapter)
             local uid = Chapters.uid(chapter)
             local status = context.statuses[context.store:projectionKey(context.document_key, uid)]
-            return not refreshing[uid] and sources[uid] and status
-                and status.revision == sources[uid].revision and status.matcher_version == matcher
-                and status.range_key == Chapters.rangeKey(context.ranges[uid]) or false
+            local source = sources[uid]
+            if refreshing[uid] or not source then return "ready_to_fetch" end
+            if status and status.revision == source.revision
+                and status.matcher_version == matcher
+                and status.range_key == Chapters.rangeKey(context.ranges[uid]) then
+                return "matched"
+            end
+            return "ready_to_match"
         end)
 end
 
