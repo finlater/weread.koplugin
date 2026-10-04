@@ -281,7 +281,8 @@ do
     assert(#launched == 0)
     online = true
     automatic:onUnifiedAnnotationsReady()
-    assert(#launched == 1 and #network == 0 and #scheduled == queued_before and overlays == 5)
+    assert(#launched == 1 and launched[1].kind == "annotation"
+        and #network == 0 and #scheduled == queued_before and overlays == 5)
     local result = launched[1].task({ checkCancelled = function() end,
         emit = function(state) assert(state.stage ~= "match") end, sleep = function() end })
     launched[1].on_done({ ok = true, value = result })

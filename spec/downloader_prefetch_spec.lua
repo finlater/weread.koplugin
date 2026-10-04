@@ -130,6 +130,9 @@ expect(#scheduled == 1 and #worker.starts == 0,
     "first prefetch defers the worker launch so the UI can paint")
 run_scheduled()
 expect(#worker.starts == 1, "first prefetch starts one worker")
+expect(worker.starts[1].options.kind == "chapter"
+        and worker.starts[1].options.replace_active == true,
+    "chapter prefetch did not identify its replaceable worker kind")
 expect(downloader:isPrefetching(book_a, chapter_2), "first target is active")
 expect(downloader:promotePrefetch(book_a, chapter_2), "matching prefetch promotes")
 expect(downloader._active_job.open_on_complete == true,

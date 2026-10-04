@@ -423,6 +423,7 @@ function Downloader:_startPrefetchWorker(dl)
     end
     local ChapterWorker = require("weread.lib.chapter_prefetch_worker")
     local ok, handle = worker:start {
+        kind = "chapter",
         queue = true,
         replace_active = true,
         timeout = 180,

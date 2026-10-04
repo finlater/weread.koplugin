@@ -328,6 +328,7 @@ function M:_runAnnotationPrefetchWorker(request, context, options)
     local AnnotationWorker = require("weread.lib.annotation_prefetch_worker")
     request.auth_fingerprint = WorkerSettings.fingerprint(self.settings)
     local ok, handle = worker:start {
+        kind = "annotation",
         queue = true,
         timeout = 180,
         task = function(worker_context)
