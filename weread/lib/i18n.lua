@@ -45,6 +45,7 @@ local zh = {
     ["Start matching"] = "开始匹配",
     ["WeRead"] = "微信读书",
     ["WeRead · Sync reading progress"] = "微信读书·同步阅读进度",
+    ["WeRead · Continue matching underlines and thoughts"] = "微信读书·继续匹配划线和想法",
     ["Bookshelf"] = "书架",
     ["Local bookshelf"] = "本地书架",
     ["WeRead favorites"] = "weread收藏夹",

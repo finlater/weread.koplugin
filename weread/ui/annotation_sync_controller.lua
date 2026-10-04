@@ -641,6 +641,11 @@ function M:ensureAnnotationDisplay()
     return true
 end
 
+function M:onWeReadContinueAnnotationMatching()
+    self:startUnifiedAnnotationSync({ offline = not self:isNetworkConnected() })
+    return true
+end
+
 function M:onUnifiedAnnotationsReady()
     local perf = PluginUtil.reader_open_perf
     local started = perf("annotations_begin", nil, "session=", self._reader_session_gen)

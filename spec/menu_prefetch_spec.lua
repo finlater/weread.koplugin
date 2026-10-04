@@ -152,6 +152,16 @@ expect(toggle_action and toggle_action.reader == true
 expect(toggle_action
         and toggle_action.title == "WeRead · Toggle underlines and thoughts",
     "annotation visibility action has a gesture-friendly title")
+local continue_action = registered.weread_continue_annotation_matching
+expect(continue_action
+        and continue_action.event == "WeReadContinueAnnotationMatching",
+    "continue-matching action dispatches the matching reader event")
+expect(continue_action and continue_action.reader == true
+        and continue_action.general ~= true,
+    "continue-matching action is reader-only")
+expect(continue_action
+        and continue_action.title == "WeRead · Continue matching underlines and thoughts",
+    "continue-matching action has a gesture-friendly title")
 expect(registered.weread_current_page_thoughts == nil,
     "current-page thoughts is no longer exposed as a separate shortcut action")
 local bookshelf_action = registered.weread_bookshelf

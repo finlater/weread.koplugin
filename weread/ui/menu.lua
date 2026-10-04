@@ -73,6 +73,12 @@ function M:onDispatcherRegisterActions()
         title = _("WeRead · Toggle underlines and thoughts"),
         reader = true,
     })
+    Dispatcher:registerAction("weread_continue_annotation_matching", {
+        category = "none",
+        event = "WeReadContinueAnnotationMatching",
+        title = _("WeRead · Continue matching underlines and thoughts"),
+        reader = true,
+    })
 end
 
 function M:addToMainMenu(menu_items)

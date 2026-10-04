@@ -92,6 +92,15 @@ host._annotation_context = context
 host._annotationBinding = function() return context.binding end
 host._prepareAnnotationContext = function() return context end
 host._usesUnifiedAnnotations = function() return true end
+local start_sync = host.startUnifiedAnnotationSync
+local gesture_calls, gesture_options = 0
+host.startUnifiedAnnotationSync = function(_self, options)
+    gesture_calls, gesture_options = gesture_calls + 1, options
+end
+assert(host:onWeReadContinueAnnotationMatching() == true
+        and gesture_calls == 1 and gesture_options.offline == false,
+    "continue-matching gesture did not reuse the online menu action")
+host.startUnifiedAnnotationSync = start_sync
 local function drain()
     for _ = 1, 1000 do
         if #scheduled == 0 then return end
