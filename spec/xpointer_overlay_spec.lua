@@ -55,6 +55,9 @@ expect(draw_calls == 12, "visible underline was not drawn as short dashes")
 expect(overlay.last_metrics.candidates == 1 and overlay.last_metrics.boxes == 1,
     "paint metrics do not describe the visible page")
 expect(overlay.last_metrics.cache_hit == false, "first paint unexpectedly hit cache")
+local cached_page = overlay.cache["1:4"]
+expect(cached_page and cached_page.lines and #cached_page.lines == 1,
+    "page cache did not retain merged drawing spans")
 
 local hit = overlay:hitTest({ x = 20, y = 25 })
 expect(hit and hit.id == "visible", "tap did not resolve the visible overlay record")
@@ -67,6 +70,22 @@ expect(overlay.last_metrics.cache_hit == true, "second paint did not report cach
 expect(sort_calls == 1, "page repaint repeated underline sorting")
 expect(draw_calls == 24 and overlay:hitTest({ x = 20, y = 25 }).id == "visible",
     "cached lines changed drawing or thought hit targets")
+expect(overlay.cache["1:4"].lines == cached_page.lines,
+    "cached page rebuilt its drawing spans during repaint")
+
+-- Clearing annotation state must drop records together with the refresh and
+-- window markers, so a later same-page refresh cannot be skipped by mistake.
+local cleared_overlay = Overlay:new{ records = { { id = "stale", pos0 = "a", pos1 = "b" } } }
+cleared_overlay._annotation_window = "stale-window"
+cleared_overlay._annotation_refresh_context = {}
+cleared_overlay._annotation_refresh_generation = 3
+cleared_overlay._annotation_refresh_page = 4
+cleared_overlay:clearAnnotationState()
+expect(#cleared_overlay.records == 0 and cleared_overlay._annotation_window == nil
+        and cleared_overlay._annotation_refresh_context == nil
+        and cleared_overlay._annotation_refresh_generation == nil
+        and cleared_overlay._annotation_refresh_page == nil,
+    "clearing annotation state left records or refresh markers behind")
 
 -- Unified projections are ordered by their start XPointer. Build the interval
 -- prefix once, then page turns should skip records before/after the page while
@@ -98,10 +117,17 @@ ordered.view = { view_mode = "page" }
 local first_visible = ordered:_computeVisible()
 expect(#first_visible >= 2 and first_visible[1].record.id == "49",
     "ordered lookup skipped an underline overlapping from an earlier page")
+local ordered_position_reads = 0
+ordered_document.getPosFromXPointer = function(_self, value)
+    ordered_position_reads = ordered_position_reads + 1
+    return value
+end
 comparisons = 0
 ordered:_computeVisible()
 expect(comparisons < 25,
     "ordered page lookup still rescanned the full annotation window")
+expect(ordered_position_reads == 0,
+    "page XPointer bounds still performed per-record position conversions")
 
 overlay:resetLayout()
 overlay:paintTo(buffer, 0, 0)
@@ -171,10 +197,37 @@ package.preload["weread.ui.thought_popup"] = function()
     return { show = function(options) shown_popup = options end }
 end
 local Controller = require("weread.ui.xpointer_overlay_controller")
+local registered_zones, unregistered_zones = {}, 0
+local zone_cache = { ignore_edge_thought_taps = true, edge_tap_ratio = 0.20 }
+local zone_host = {
+    settings = { get = function() return zone_cache end },
+    ui = {
+        registerTouchZones = function(_self, zones) registered_zones[#registered_zones + 1] = zones end,
+        unRegisterTouchZones = function() unregistered_zones = unregistered_zones + 1 end,
+    },
+}
+for name, method in pairs(Controller) do zone_host[name] = method end
+expect(zone_host:_registerXPointerOverlayTouchZone(),
+    "overlay touch zone did not register")
+expect(registered_zones[1][1].screen_zone.ratio_x == 0.20
+        and registered_zones[1][1].screen_zone.ratio_w == 0.60,
+    "edge page-turn area still enters the overlay touch zone")
+zone_cache.ignore_edge_thought_taps = false
+expect(zone_host:_updateXPointerOverlayTouchZone(),
+    "overlay touch zone did not refresh after setting change")
+expect(unregistered_zones == 1
+        and registered_zones[2][1].screen_zone.ratio_x == 0
+        and registered_zones[2][1].screen_zone.ratio_w == 1,
+    "disabling edge protection did not restore full underline tap coverage")
 local invalidations = 0
 local host = {
     _xpointer_overlay = {
         invalidate = function() invalidations = invalidations + 1 end,
+        invalidateLayout = function(self)
+            self._annotation_refresh_page = nil
+            self:invalidate()
+        end,
+        _annotation_refresh_page = 1,
     },
 }
 for name, method in pairs(Controller) do
@@ -183,6 +236,8 @@ end
 Controller.onUpdatePos(host)
 expect(invalidations == 1,
     "UpdatePos did not invalidate cached boxes after typography reflow")
+expect(host._xpointer_overlay._annotation_refresh_page == nil,
+    "UpdatePos retained the page-level annotation refresh guard")
 Controller.onDocumentRerendered(host)
 expect(invalidations == 2,
     "DocumentRerendered did not retain the layout invalidation fallback")
@@ -257,10 +312,17 @@ local bind_host = {
     runOnlineTask = function(_self, _label, callback) callback() end,
     showList = function(_self, _title, items) listed_items = items end,
     showTransientInfo = function() end,
+    _xpointer_overlay = {
+        cleared = 0,
+        clearAnnotationState = function(self) self.cleared = self.cleared + 1 end,
+    },
 }
 for name, method in pairs(Controller) do bind_host[name] = method end
-local sync_calls = 0
-bind_host.syncExternalAnnotations = function() sync_calls = sync_calls + 1 end
+local sync_calls, sync_options = 0, nil
+bind_host.syncExternalAnnotations = function(_self, options)
+    sync_calls = sync_calls + 1
+    sync_options = options
+end
 bind_host:bindExternalAnnotationsBook()
 input_options.buttons[1][2].callback()
 listed_items[1].callback()
@@ -268,21 +330,23 @@ expect(saved_document and saved_document.binding.book_id == "book-1",
     "selecting a search result did not persist its binding")
 expect(confirm_options and confirm_options.title == "Local book matched",
     "selecting a search result did not ask whether to sync immediately")
-expect(confirm_options and confirm_options.text:find("resumed automatically", 1, true),
-    "match confirmation did not explain resumable sync")
+expect(confirm_options and confirm_options.text:find("Continue matching", 1, true),
+    "match confirmation did not explain how saved progress resumes")
+expect(bind_host._xpointer_overlay.cleared == 1,
+    "rebinding a book did not clear overlay annotation state")
 expect(sync_calls == 0,
     "annotation sync started before the user confirmed")
 confirm_options.ok_callback()
-expect(sync_calls == 1,
-    "confirming the match did not start annotation sync")
+expect(sync_calls == 1 and sync_options and sync_options.all_chapters == true,
+    "confirming the match did not start a whole-book annotation sync")
 local Unified = require("weread.ui.annotation_sync_controller")
 for name, method in pairs(Unified) do bind_host[name] = method end
 local local_book_items = bind_host:getXPointerOverlayPrototypeMenuItems()
-expect(#local_book_items == 4, "unified annotation management is not concise")
+expect(#local_book_items == 4, "unified annotation management is missing an action")
 expect(local_book_items[1].text == "Linked WeRead book: 测试书"
     and local_book_items[2].text == "Continue matching"
     and local_book_items[3].text == "Choose chapters to match"
     and local_book_items[4].text == "Clear underlines and thoughts",
-    "management did not distinguish resume from clearing file coordinates")
+    "management retained the removed current-chapter action")
 
 print(("xpointer_overlay_spec: %d checks"):format(checks))
