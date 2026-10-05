@@ -1472,10 +1472,11 @@ function Content.download_remote_images_to_files(client, xhtml, used_names, work
     return body, assets
 end
 
-function Content.ensure_reader_state(client, book)
+function Content.ensure_reader_state(client, book, opts)
     local book_id = book.book_id or book.bookId
     local reader_url = book.reader_url or WeRead.reader_url(book_id)
-    local reader_html = client:get_text(reader_url, { referer = reader_url })
+    local reader_html = client:get_text(reader_url, { referer = reader_url,
+        total_timeout = opts and opts.total_timeout })
     local state = Content.extract_reader_state(reader_html, function(encoded)
         return client:json_decode(encoded)
     end)
@@ -1498,7 +1499,7 @@ function Content.ensure_reader_state(client, book)
 end
 
 --- Refresh psvts before downloading a chapter (matches per-chapter reader page fetch).
-function Content.refresh_reader_state(client, book, chapter)
+function Content.refresh_reader_state(client, book, chapter, opts)
     book.psvts = nil
     local book_id = book.book_id or book.bookId
     if chapter and chapter.chapterUid then
@@ -1506,7 +1507,7 @@ function Content.refresh_reader_state(client, book, chapter)
     else
         book.reader_url = book.reader_url or WeRead.reader_url(book_id)
     end
-    Content.ensure_reader_state(client, book)
+    Content.ensure_reader_state(client, book, opts)
 end
 
 function Content.fetch_catalog(client, book)
@@ -1520,9 +1521,9 @@ function Content.fetch_catalog(client, book)
     return chapters
 end
 
-function Content.fetch_chapter_shard(client, _settings, book, chapter, endpoint)
+function Content.fetch_chapter_shard(client, _settings, book, chapter, endpoint, opts)
     if not book.psvts then
-        Content.ensure_reader_state(client, book)
+        Content.ensure_reader_state(client, book, opts)
     end
     local book_id = book.book_id or book.bookId
     if not chapter then
@@ -1544,6 +1545,7 @@ function Content.fetch_chapter_shard(client, _settings, book, chapter, endpoint)
             ["Referer"] = chapter_url,
         },
         body = client:json_encode(params),
+        total_timeout = opts and opts.total_timeout,
     })
     if not code or code < 200 or code >= 300 then
         error(endpoint .. " failed: HTTP " .. tostring(code or "unknown"))
@@ -1568,27 +1570,27 @@ function Content.txt_to_xhtml(text)
         .. '<body>\n' .. table.concat(parts, "\n") .. '\n</body></html>'
 end
 
-function Content.fetch_txt_as_xhtml(client, settings, book, chapter)
-    local t0 = Content.fetch_chapter_shard(client, settings, book, chapter, "/web/book/chapter/t_0")
-    local ok_t1, t1 = pcall(Content.fetch_chapter_shard, client, settings, book, chapter, "/web/book/chapter/t_1")
+function Content.fetch_txt_as_xhtml(client, settings, book, chapter, opts)
+    local t0 = Content.fetch_chapter_shard(client, settings, book, chapter, "/web/book/chapter/t_0", opts)
+    local ok_t1, t1 = pcall(Content.fetch_chapter_shard, client, settings, book, chapter, "/web/book/chapter/t_1", opts)
     if not ok_t1 then t1 = "" end
     local plain = Content.decode_content_shards(t0, t1, "")
     Content.cache_annotation_source(settings, book, chapter, plain, true)
     return Content.txt_to_xhtml(plain)
 end
 
-function Content.fetch_chapter_xhtml(client, settings, book, chapter)
-    Content.refresh_reader_state(client, book, chapter)
+function Content.fetch_chapter_xhtml(client, settings, book, chapter, opts)
+    Content.refresh_reader_state(client, book, chapter, opts)
 
     if book._content_format == "txt" then
-        return Content.fetch_txt_as_xhtml(client, settings, book, chapter)
+        return Content.fetch_txt_as_xhtml(client, settings, book, chapter, opts)
     end
 
-    local ok, e0 = pcall(Content.fetch_chapter_shard, client, settings, book, chapter, "/web/book/chapter/e_0")
+    local ok, e0 = pcall(Content.fetch_chapter_shard, client, settings, book, chapter, "/web/book/chapter/e_0", opts)
 
     if ok and e0:sub(1, 1) == "{" and e0:find('"bookId"', 1, true) then
         book._content_format = "txt"
-        return Content.fetch_txt_as_xhtml(client, settings, book, chapter)
+        return Content.fetch_txt_as_xhtml(client, settings, book, chapter, opts)
     end
 
     if not ok then
@@ -1598,8 +1600,8 @@ function Content.fetch_chapter_xhtml(client, settings, book, chapter)
     book._content_format = "epub"
     return Content.decode_content_shards(
         e0,
-        Content.fetch_chapter_shard(client, settings, book, chapter, "/web/book/chapter/e_1"),
-        Content.fetch_chapter_shard(client, settings, book, chapter, "/web/book/chapter/e_3")
+        Content.fetch_chapter_shard(client, settings, book, chapter, "/web/book/chapter/e_1", opts),
+        Content.fetch_chapter_shard(client, settings, book, chapter, "/web/book/chapter/e_3", opts)
     )
 end
 

@@ -13,6 +13,12 @@ end
 local DEFAULT_TIMEOUT_SECONDS = 15
 local Client = {}
 Client.__index = Client
+-- Policy value for annotation-sync callers only. The idle/block timeout stays
+-- at the transport default; this bounds the whole request so a stalled sync
+-- request fails and the resumable job can retry/pause. It is deliberately not
+-- the default for other callers: book/chapter/epub downloads keep the existing
+-- unbounded total timeout.
+Client.ANNOTATION_SYNC_TOTAL_TIMEOUT = 60
 
 local function header_value(headers, name)
     if type(headers) ~= "table" or type(name) ~= "string" then return nil end
@@ -251,6 +257,8 @@ function Client:request(opts)
         total_timeout = opts.timeout[2] or block_timeout
     elseif type(opts.timeout) == "number" then
         block_timeout = opts.timeout
+    elseif tonumber(opts.total_timeout) then
+        total_timeout = tonumber(opts.total_timeout)
     end
     socketutil:set_timeout(block_timeout, total_timeout)
 
@@ -584,7 +592,7 @@ function Client:renew_cookie()
     return result, code, resp_headers
 end
 
-function Client:gateway(api_name, params)
+function Client:gateway(api_name, params, opts)
     local payload = merge_req_opts({
         api_name = api_name,
         skill_version = (params and params.skill_version) or WeRead.SKILL_VERSION
@@ -597,6 +605,8 @@ function Client:gateway(api_name, params)
     return self:post_json("https://i.weread.qq.com/api/agent/gateway", payload, {
         diagnostic_api = api_name,
         skip_cookie = true,
+        timeout = opts and opts.timeout,
+        total_timeout = opts and opts.total_timeout,
         headers = {
             ["Authorization"] = "Bearer " .. api_key,
         },
@@ -768,7 +778,7 @@ function Client:report_read(payload, referer)
     })
 end
 
-function Client:get_chapter_underlines(book_id, chapter_uid)
+function Client:get_chapter_underlines(book_id, chapter_uid, opts)
     if not book_id or tostring(book_id) == "" then
         return false, nil, "empty book_id"
     end
@@ -780,7 +790,7 @@ function Client:get_chapter_underlines(book_id, chapter_uid)
         return self:gateway("/book/underlines", {
             bookId = tostring(book_id),
             chapterUid = chapter_uid,
-        })
+        }, opts)
     end)
     if not ok then
         return false, nil, tostring(result)
@@ -809,7 +819,7 @@ function Client:build_chapter_review_batches(ranges)
     return batches
 end
 
-function Client:get_chapter_reviews_batch(book_id, chapter_uid, batch)
+function Client:get_chapter_reviews_batch(book_id, chapter_uid, batch, opts)
     if not book_id or tostring(book_id) == "" then
         return false, nil, "empty book_id"
     end
@@ -825,7 +835,7 @@ function Client:get_chapter_reviews_batch(book_id, chapter_uid, batch)
             bookId = tostring(book_id),
             chapterUid = chapter_uid,
             reviews = batch,
-        })
+        }, opts)
     end)
     if not ok then
         return false, nil, tostring(result)
