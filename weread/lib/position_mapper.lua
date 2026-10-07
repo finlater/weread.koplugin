@@ -263,12 +263,18 @@ function PositionMapper.compare(local_position, remote, threshold)
         return "unknown", 0
     end
     threshold = math.max(0, tonumber(threshold) or 2)
-    local delta = (tonumber(remote.percent) or 0)
-        - (tonumber(local_position.percent) or 0)
-    if local_position.chapter_uid ~= nil and remote.chapter_uid ~= nil
+    local local_percent = tonumber(local_position.percent) or 0
+    local remote_percent = tonumber(remote.percent) or 0
+    local delta = remote_percent - local_percent
+    local chapter_differs = local_position.chapter_uid ~= nil
+        and remote.chapter_uid ~= nil
         and tostring(local_position.chapter_uid)
             ~= tostring(remote.chapter_uid)
-        and math.abs(delta) <= threshold then
+    -- Opening one chapter file of a long book puts both sides under 1%.
+    -- The dialog rounds those to 0% and 0%, so this is not a choice.
+    local both_under_one_percent = local_percent < 1 and remote_percent < 1
+    if chapter_differs and math.abs(delta) <= threshold
+        and not both_under_one_percent then
         return "different", delta
     end
     if math.abs(delta) <= threshold then return "same", delta end

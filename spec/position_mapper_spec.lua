@@ -164,6 +164,12 @@ test("compare uses percentage point threshold", function()
         2
     )
     eq(state, "different", "chapter mismatch is not same")
+    state = Mapper.compare(
+        { percent = 0, chapter_uid = 2 },
+        { percent = 0.734, chapter_uid = 5 },
+        2
+    )
+    eq(state, "same", "sub-percent chapter mismatch is not a conflict")
 end)
 
 test("missing remote offset falls back to raw percent", function()
