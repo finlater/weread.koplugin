@@ -158,6 +158,104 @@ test("one reader session enters once and reports live position", function()
     eq(records[3].elapsed_seconds, 30, "time report keeps interval")
 end)
 
+test("open WeRead book wins over a pinned manual target", function()
+    local report = fixture()
+    report.settings = {
+        get = function(_self, key)
+            if key == "read_report" then
+                return {
+                    enabled = true,
+                    mode = "manual",
+                    book_id = "pinned",
+                    book_title = "Pinned",
+                    report_on_open = false,
+                    interval_seconds = 120,
+                }
+            end
+            if key == "books" then
+                return { openbook = { title = "Open" } }
+            end
+            return {}
+        end,
+        is_cookie_configured = function() return true end,
+    }
+    report.detect_book = function() return "openbook" end
+    local id, _title, source = report:resolve_target()
+    eq(id, "openbook", "open book is the report target")
+    eq(source, "current_document", "source follows the open book")
+end)
+
+test("time report enter does not send an rt=0 heartbeat", function()
+    local report, records = fixture()
+    local book = {
+        book_id = "book",
+        chapter_uid = 11,
+        chapter_idx = 1,
+        chapter_offset = 1,
+        progress = 1,
+        psvts = "ps",
+        pclts = "pc",
+        token = "token",
+    }
+    report:_send("book", book, {
+        chapter_uid = 22,
+        chapter_idx = 2,
+        chapter_offset = 150,
+        percent = 25,
+    }, 120, { time_report = true })
+    eq(#records, 1, "enter is the only request")
+    eq(records[1].kind, "enter", "session opens without rt")
+end)
+
+test("restored session credits wall time without entering again", function()
+    local stored = {
+        enabled = true,
+        mode = "auto",
+        interval_seconds = 120,
+        session_book_id = "book",
+        session_started_at = 1000,
+        last_credit_at = 1000,
+    }
+    local records = {}
+    local report = fixture()
+    report.now = function() return 1180 end
+    report.settings = {
+        get = function() return stored end,
+        set = function(_self, _key, value) stored = value end,
+        flush = function() end,
+        is_cookie_configured = function() return true end,
+    }
+    report.client = {
+        report_read = function(_self, payload)
+            records[#records + 1] = payload
+            return { succ = 1 }
+        end,
+    }
+    local elapsed, session_open = report:_reading_credit("book")
+    eq(session_open, true, "session restored inside the ttl")
+    eq(elapsed, 180, "credit is capped at max(interval, 180)")
+    local book = {
+        book_id = "book",
+        chapter_uid = 11,
+        chapter_idx = 1,
+        chapter_offset = 1,
+        progress = 1,
+        psvts = "ps",
+        pclts = "pc",
+        token = "token",
+    }
+    report:_send("book", book, {
+        chapter_uid = 11,
+        chapter_idx = 1,
+        chapter_offset = 400,
+        percent = 1,
+    }, elapsed, { session_open = true, time_report = true })
+    eq(#records, 1, "no second enter")
+    eq(records[1].kind, "report", "duration report")
+    eq(records[1].elapsed_seconds, 180, "capped elapsed is sent")
+    eq(records[1].chapter_offset, 400, "live offset is sent")
+end)
+
 test("report context restores SQLite catalog and backfills disk", function()
     local report = fixture()
     local db_catalog = { { chapterUid = 11, chapterIdx = 1 } }

@@ -92,7 +92,10 @@ function M:onShowWeReadReportStatus()
     local cur = self.settings:get("read_report")
     local report_status = self.read_report:status()
     local target
-    if cur.mode == "auto" then
+    local runtime_title = report_status.running and report_status.target_book_title or nil
+    if runtime_title and runtime_title ~= "" then
+        target = runtime_title
+    elseif cur.mode == "auto" then
         local auto_title = report_status.target_book_title
         target = auto_title and T(_("Auto: %1"), auto_title) or _("Auto-associate")
     else
