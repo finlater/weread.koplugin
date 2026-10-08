@@ -269,7 +269,8 @@ function Worker:start(options)
                 error = "replaced" })
         end
         self.pending = request
-        if options.replace_active then
+        if options.replace_active
+            and self.job.request.options.kind == options.kind then
             self:cancel(self.job.request, "superseded")
         end
         return true, request

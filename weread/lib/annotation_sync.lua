@@ -106,7 +106,7 @@ function Sync:run()
             and tonumber(source.revision) ~= nil
         if self.perf then
             started = self.perf("chapter_source_cache", started,
-                "chapter_uid=", uid, "cache_hit=", source ~= nil)
+                "chapter_uid=", uid, "cache_hit=", not not source)
         end
         if not source then
             local stage = store:get(book_id, "download", uid)

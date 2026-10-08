@@ -290,7 +290,8 @@ do
     assert(#launched == 0)
     online = true
     automatic:onUnifiedAnnotationsReady()
-    assert(#launched == 1 and #network == 0 and #scheduled == queued_before and overlays == 5)
+    assert(#launched == 1 and launched[1].kind == "annotation"
+        and #network == 0 and #scheduled == queued_before and overlays == 5)
     local result = launched[1].task({ checkCancelled = function() end,
         emit = function(state) assert(state.stage ~= "match") end, sleep = function() end })
     launched[1].on_done({ ok = true, value = result })
@@ -453,8 +454,8 @@ do
     assert(not store:get("manual", "chapter_mapping", doc_key)["20"], "occupied chapter was reused")
     menu_items[2].callback()
     assert(updated_model.by_uid.b.xpointer == "20")
-    -- Successful zero-thought chapters are retrieved; refresh checkpoints and
-    -- mismatched revisions must never display that status.
+    -- Successful zero-thought chapters are matched. Refresh checkpoints need
+    -- fetching, while downloaded source with stale projections only needs matching.
     local saved = mapping_host._annotation_context
     local key = store:projectionKey(doc_key, "a")
     store:put("manual", "source_status", "a", { revision = "7", total = 0 }, "a")
@@ -463,12 +464,13 @@ do
         range_key = require("weread.lib.annotation_chapters").rangeKey(saved.ranges.a) }, "a")
     mapping_host._annotation_context = nil
     saved = mapping_host:_prepareAnnotationContext(false)
-    assert(mapping_host:_annotationSelectionModel(saved).by_uid.a.fetched)
+    local states = mapping_host:_annotationSelectionModel(saved).by_uid
+    assert(states.a.state == "matched" and states.b.state == "ready_to_fetch")
     store:put("manual", "refresh", "a", true, "a")
-    assert(not mapping_host:_annotationSelectionModel(saved).by_uid.a.fetched)
+    assert(mapping_host:_annotationSelectionModel(saved).by_uid.a.state == "ready_to_fetch")
     store:put("manual", "refresh", "a", nil)
     store:put("manual", "source_status", "a", { revision = "8" }, "a")
-    assert(not mapping_host:_annotationSelectionModel(saved).by_uid.a.fetched)
+    assert(mapping_host:_annotationSelectionModel(saved).by_uid.a.state == "ready_to_match")
     -- Clearing a mapping immediately invalidates old anchors and persists an
     -- explicit exclusion, so an automatic title match cannot restore it.
     local_toc[2].title = "Remote A"

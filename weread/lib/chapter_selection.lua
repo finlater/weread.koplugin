@@ -4,7 +4,7 @@ local Chapters = require("weread.lib.annotation_chapters")
 local Selection = {}
 Selection.__index = Selection
 
-function Selection:new(chapters, ranges, toc, current_index, is_fetched)
+function Selection:new(chapters, ranges, toc, current_index, state_of)
     local model = setmetatable({ chapters = chapters, nodes = {}, by_uid = {}, count = 0 }, self)
     local by_toc, by_point = {}, {}
     for index, entry in ipairs(toc or {}) do
@@ -23,7 +23,9 @@ function Selection:new(chapters, ranges, toc, current_index, is_fetched)
         local node = { title = title or "", chapter = chapter,
             depth = parent and parent.depth + 1 or 0, source_depth = depth,
             toc_index = index, xpointer = point, index = #model.nodes + 1,
-            selectable = chapter ~= nil, fetched = chapter and is_fetched and is_fetched(chapter) or false }
+            selectable = chapter ~= nil,
+            state = chapter and state_of and state_of(chapter)
+                or chapter and "ready_to_fetch" or "unlinked" }
         if parent then parent.branch = true end
         stack[#stack + 1], model.nodes[#model.nodes + 1] = node, node
         if chapter then model.by_uid[Chapters.uid(chapter)] = node end

@@ -89,7 +89,11 @@ end
 package.preload["ui/geometry"] = function() return Widget end
 package.preload["ui/gesturerange"] = function() return Widget end
 package.preload["ui/font"] = function() return { getFace = function() return {} end } end
-package.preload["ffi/blitbuffer"] = function() return {} end
+package.preload["ffi/blitbuffer"] = function()
+    return { COLOR_BLACK = "black", COLOR_WHITE = "white",
+        COLOR_DARK_GRAY = "dark_gray", COLOR_GRAY = "gray",
+        COLOR_GRAY_E = "gray_e", COLOR_LIGHT_GRAY = "light_gray" }
+end
 package.preload["device"] = function()
     return { screen = { getWidth = function() return width end, getHeight = function() return height end,
         scaleBySize = function(_, n) return scale(n) end }, hasKeys = function() return true end,
@@ -150,6 +154,39 @@ for _, size in ipairs({ { 600, 800 }, { 1072, 1448 }, { 800, 600 } }) do
     assert(chosen and #chosen == 2 and chosen[1] == chapters[1] and chosen[2] == chapters[2])
     assert(live_buttons == 0, "closing picker retained native widget resources")
 end
+-- Linked rows distinguish network fetches from local matching, while completed
+-- rows use the emphasized matched badge.
+width, height = 600, 800
+local state_chapters = {
+    { chapterUid = "fetch", title = "Fetch" },
+    { chapterUid = "match", title = "Match" },
+    { chapterUid = "done", title = "Done" },
+}
+local state_model = Selection:new(state_chapters, {}, nil, 1, function(chapter)
+    return chapter.chapterUid == "fetch" and "ready_to_fetch"
+        or chapter.chapterUid == "match" and "ready_to_match" or "matched"
+end)
+local state_view = Picker.show{ model = state_model, on_select = function() end }
+local function badge(row_index)
+    local row = state_view.body[1][row_index * 2 - 1]
+    local center = row[4][1]
+    local frame = center[1]
+    return center, frame, frame[1]
+end
+local fetch_center, fetch_frame, fetch_text = badge(1)
+local match_center, match_frame, match_text = badge(2)
+local done_center, done_frame, done_text = badge(3)
+assert(fetch_text.text == "Ready to fetch" and match_text.text == "Ready to match"
+    and done_text.text == "✓ Matched", "chapter state badges use the wrong labels")
+assert(fetch_center.dimen.w == scale(92) and match_center.dimen.w == scale(92)
+    and done_center.dimen.w == scale(92), "chapter state badge width changed")
+assert(fetch_frame.bordersize == state_view.line_height
+    and match_frame.bordersize == state_view.line_height
+    and fetch_frame.background == "white" and match_frame.background == "white"
+    and done_frame.bordersize == 0 and done_frame.background == "black"
+    and done_text.fgcolor == "white" and done_text.bold,
+    "chapter state badge styling does not distinguish matched rows")
+state_view:onClose(); assert(live_buttons == 0)
 -- Editing rebuilds the current page and preserves other selected rows. A
 -- completed row remains selectable; an unmatched row only permits editing.
 width, height = 600, 800
@@ -161,7 +198,7 @@ for index = 1, 30 do
         ranges[tostring(index)] = { toc_index = index }
     end
 end
-local model = Selection:new(targets, ranges, toc, 20, function() return true end)
+local model = Selection:new(targets, ranges, toc, 20, function() return "matched" end)
 local view = Picker.show{ model = model, on_select = function() end, on_edit = function(node, rebuild)
     ranges[tostring(node.index)] = nil
     local remaining = {}

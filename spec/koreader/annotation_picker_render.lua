@@ -34,7 +34,9 @@ for index = 1, 20 do
         ranges[uid] = { toc_index = index }
     end
 end
-local model = Selection:new(chapters, ranges, toc, 2, function(chapter) return chapter.chapterUid == "1" end)
+local model = Selection:new(chapters, ranges, toc, 2, function(chapter)
+    return chapter.chapterUid == "1" and "matched" or "ready_to_fetch"
+end)
 model:toggle(model.nodes[2])
 local selected
 local picker = Picker.show{ model = model, book_title = "界面验证样书", on_edit = function() end,

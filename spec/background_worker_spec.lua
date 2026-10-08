@@ -148,4 +148,80 @@ expect(not low_ok and low_err == "low_memory" and next_pid == launches_before,
 expect(low_result and low_result.available_kb == 32 * 1024,
     "low-memory result omitted available memory")
 
+local annotation_result, chapter_result
+local annotation_ok = worker:start {
+    kind = "annotation",
+    task = function() return "annotation" end,
+    on_done = function(value) annotation_result = value end,
+}
+local annotation_pid = next_pid
+local chapter_ok = worker:start {
+    kind = "chapter",
+    queue = true,
+    replace_active = true,
+    task = function() return "chapter" end,
+    on_done = function(value) chapter_result = value end,
+}
+expect(annotation_ok and chapter_ok,
+    "different worker kinds were not accepted")
+callbacks[annotation_pid](); done[annotation_pid] = true; poll()
+expect(annotation_result and annotation_result.ok
+        and annotation_result.value == "annotation",
+    "chapter replacement cancelled an active annotation task")
+local chapter_pid = next_pid
+callbacks[chapter_pid](); done[chapter_pid] = true; poll()
+expect(chapter_result and chapter_result.ok
+        and chapter_result.value == "chapter" and not worker:busy(),
+    "queued chapter task did not run after the annotation task")
+
+local superseded_result, replacement_result
+local old_chapter_ok = worker:start {
+    kind = "chapter",
+    task = function() return "old chapter" end,
+    on_done = function(value) superseded_result = value end,
+}
+local old_chapter_pid = next_pid
+local replacement_ok = worker:start {
+    kind = "chapter",
+    queue = true,
+    replace_active = true,
+    task = function() return "new chapter" end,
+    on_done = function(value) replacement_result = value end,
+}
+clock = clock + 6
+poll()
+expect(old_chapter_ok and replacement_ok and terminated[old_chapter_pid]
+        and superseded_result and superseded_result.cancelled
+        and superseded_result.error == "superseded",
+    "same-kind replacement did not supersede the active chapter task")
+local replacement_pid = next_pid
+callbacks[replacement_pid](); done[replacement_pid] = true; poll()
+expect(replacement_result and replacement_result.ok
+        and replacement_result.value == "new chapter" and not worker:busy(),
+    "same-kind replacement did not run")
+
+local legacy_result, legacy_replacement_result
+worker:start {
+    task = function() return "legacy" end,
+    on_done = function(value) legacy_result = value end,
+}
+local legacy_pid = next_pid
+worker:start {
+    queue = true,
+    replace_active = true,
+    task = function() return "legacy replacement" end,
+    on_done = function(value) legacy_replacement_result = value end,
+}
+clock = clock + 6
+poll()
+expect(terminated[legacy_pid] and legacy_result and legacy_result.cancelled
+        and legacy_result.error == "superseded",
+    "kind-less callers no longer retain the legacy replacement behavior")
+local legacy_replacement_pid = next_pid
+callbacks[legacy_replacement_pid](); done[legacy_replacement_pid] = true; poll()
+expect(legacy_replacement_result and legacy_replacement_result.ok
+        and legacy_replacement_result.value == "legacy replacement"
+        and not worker:busy(),
+    "kind-less replacement did not run")
+
 print(("background_worker_spec: %d checks"):format(checks))
