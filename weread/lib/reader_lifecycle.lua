@@ -119,6 +119,21 @@ function M:onReaderReady()
         -- we must intercept taps on thought links to suppress the native footnote
         -- popup. Visibility is decided inside _onThoughtTap / applyAnnotationVisibility.
         self:_setupThoughtInterception()
+        -- Default hardware key for "Thoughts on this page" on key devices
+        -- (e.g. Kindle). KOReader's Keyboard shortcuts list only exposes
+        -- `general` actions, so `reader = true` actions such as this one are
+        -- not bindable there; we register the key directly on the reader UI so
+        -- it works out of the box. Press "T" (Thought) on the keyboard to open
+        -- the current page's thought list. The Dispatcher action is still
+        -- registered for touch-device gesture binding.
+        if self.ui then
+            self.ui.key_events.ShowCurrentPageWeReadThoughts = { { "T" } }
+            if not self.ui.onShowCurrentPageWeReadThoughts then
+                self.ui.onShowCurrentPageWeReadThoughts = function()
+                    return self:onShowCurrentPageWeReadThoughts()
+                end
+            end
+        end
         if self.settings:get("cache").show_annotations ~= false
             and not (self._usesUnifiedAnnotations and self:_usesUnifiedAnnotations()) then
             local db_session_gen = self._reader_session_gen
@@ -191,6 +206,12 @@ function M:onCloseDocument()
     self:_teardownThoughtInterception()
     self:_teardownXPointerOverlayPrototype()
     self:_removeReaderHighlightTapGuard()
+    -- Remove the default "Thoughts on this page" hardware key so it does not
+    -- linger (and pop a useless toast) after leaving a WeRead book.
+    if self.ui then
+        self.ui.key_events.ShowCurrentPageWeReadThoughts = nil
+        self.ui.onShowCurrentPageWeReadThoughts = nil
+    end
 
     if self._orig_onEndOfBook and self.ui.status then
         self.ui.status.onEndOfBook = self._orig_onEndOfBook
