@@ -375,8 +375,13 @@ function QRLogin:_show_qr(uid, generation)
         scale_factor = 0.9,
     }
     self.qr_dialog = dialog
-    UIManager:show(dialog)
-    self.host:refreshUI()
+    -- Show the QR dialog after the surrounding UI has finished updating.
+    -- Showing it immediately can leave part of the QR code obscured on Kindle.
+    UIManager:scheduleIn(0.2, function()
+        if generation == self.generation and self.qr_dialog == dialog then
+            UIManager:show(dialog)
+        end
+    end)
 
     UIManager:scheduleIn(0.5, function()
         if generation == self.generation and self.qr_dialog == dialog then
