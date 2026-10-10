@@ -15,23 +15,31 @@ local function percent(position)
     return string.format("%.0f", tonumber(position and position.percent) or 0)
 end
 
+-- One decimal, with the percent sign added here. Putting "%" immediately
+-- after %1 in a KOReader template is parsed as part of the placeholder, so
+-- the dialog shows the raw "%1" and "%2".
+local function place(position)
+    local value = string.format("%.1f%%", tonumber(position and position.percent) or 0)
+    local chapter = position and position.chapter_title or ""
+    if chapter ~= "" then
+        return value .. "\n" .. chapter
+    end
+    return value
+end
+
 function ProgressSyncDialog.show_choice(context)
+    local title = tostring(context.book_title or "")
     local message
     if context.source_conflict then
-        message = T(_(
-            "WeRead's two progress sources disagree for \"%1\".\n\n"
-            .. "KOReader: %2%\nSelected cloud position: %3%\n\n"
-            .. "Choose which position to keep."
-        ), context.book_title, percent(context.local_position),
-            percent(context.remote_position))
+        message = T(_("WeRead's two progress sources disagree for \"%1\"."), title)
+            .. "\n\n" .. "KOReader\n" .. place(context.local_position)
+            .. "\n\n" .. _("Selected cloud position") .. "\n" .. place(context.remote_position)
     else
-        message = T(_(
-            "Reading progress differs for \"%1\".\n\n"
-            .. "KOReader: %2%\nWeRead: %3%\n\n"
-            .. "Choose which position to keep."
-        ), context.book_title, percent(context.local_position),
-            percent(context.remote_position))
+        message = T(_("Reading progress differs for \"%1\"."), title)
+            .. "\n\n" .. "KOReader\n" .. place(context.local_position)
+            .. "\n\n" .. _("WeRead") .. "\n" .. place(context.remote_position)
     end
+    message = message .. "\n\n" .. _("Choose which position to keep.")
 
     UIManager:show(ConfirmBox:new{
         title = _("Reading progress sync"),

@@ -462,10 +462,27 @@ function ProgressSync:_resolve(local_position, remote, context, options)
             return choice_generation == self.generation
                 and tostring(self.detect_book() or "") == context.book_id
         end
+        local function chapter_title(position)
+            local uid = position and position.chapter_uid
+            if uid ~= nil and type(context.chapters) == "table" then
+                for _, chapter in ipairs(context.chapters) do
+                    if tostring(chapter.chapterUid or chapter.chapterId) == tostring(uid) then
+                        if chapter.title and chapter.title ~= "" then
+                            return chapter.title
+                        end
+                    end
+                end
+            end
+            return position and position.summary or ""
+        end
+        local local_choice = copy(local_position)
+        local remote_choice = copy(remote)
+        local_choice.chapter_title = chapter_title(local_position)
+        remote_choice.chapter_title = chapter_title(remote)
         self.on_choice({
             book_title = context.book.title or context.book_id,
-            local_position = copy(local_position),
-            remote_position = copy(remote),
+            local_position = local_choice,
+            remote_position = remote_choice,
             source_conflict = remote.conflict == true,
             use_remote = function()
                 if not choice_is_current() then return end

@@ -139,11 +139,10 @@ function PositionMapper.choose_remote(web, gateway, threshold)
     local percent_gap = math.abs(
         (tonumber(web.percent) or 0) - (tonumber(gateway.percent) or 0)
     )
-    local chapter_differs = web.chapter_uid ~= nil
-        and gateway.chapter_uid ~= nil
-        and tostring(web.chapter_uid) ~= tostring(gateway.chapter_uid)
+    -- Chapter ids often differ between the web and gateway payloads for the
+    -- same early position in a long book. That is not a second conflict on
+    -- top of the percent gap.
     local conflict = percent_gap > threshold
-        or (chapter_differs and percent_gap > 0.5)
     local selected
     if (tonumber(gateway.updated_at) or 0) > (tonumber(web.updated_at) or 0) then
         selected = gateway
@@ -266,17 +265,9 @@ function PositionMapper.compare(local_position, remote, threshold)
     local local_percent = tonumber(local_position.percent) or 0
     local remote_percent = tonumber(remote.percent) or 0
     local delta = remote_percent - local_percent
-    local chapter_differs = local_position.chapter_uid ~= nil
-        and remote.chapter_uid ~= nil
-        and tostring(local_position.chapter_uid)
-            ~= tostring(remote.chapter_uid)
-    -- Opening one chapter file of a long book puts both sides under 1%.
-    -- The dialog rounds those to 0% and 0%, so this is not a choice.
-    local both_under_one_percent = local_percent < 1 and remote_percent < 1
-    if chapter_differs and math.abs(delta) <= threshold
-        and not both_under_one_percent then
-        return "different", delta
-    end
+    -- A single-chapter EPUB changes chapter id every time the reader opens
+    -- the next file. Whole-book percent is what the dialog can show. A
+    -- chapter id change inside the percent threshold is the same position.
     if math.abs(delta) <= threshold then return "same", delta end
     return delta > 0 and "remote_ahead" or "local_ahead", delta
 end

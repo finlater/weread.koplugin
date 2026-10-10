@@ -163,13 +163,28 @@ test("compare uses percentage point threshold", function()
         { percent = 25, chapter_uid = 22 },
         2
     )
-    eq(state, "different", "chapter mismatch is not same")
+    eq(state, "same", "same percent is same across chapter files")
     state = Mapper.compare(
         { percent = 0, chapter_uid = 2 },
         { percent = 0.734, chapter_uid = 5 },
         2
     )
     eq(state, "same", "sub-percent chapter mismatch is not a conflict")
+    state = Mapper.compare(
+        { percent = 8, chapter_uid = 10 },
+        { percent = 40, chapter_uid = 30 },
+        2
+    )
+    eq(state, "remote_ahead", "a real percent gap is still a conflict")
+end)
+
+test("nearby chapters from the two cloud sources are not a conflict", function()
+    local selected = Mapper.choose_remote(
+        { percent = 0.2, chapter_uid = 2, updated_at = 10, source = "web" },
+        { percent = 0.8, chapter_uid = 5, updated_at = 20, source = "gateway" },
+        2
+    )
+    eq(selected.conflict, false, "sub-threshold chapter difference is not a conflict")
 end)
 
 test("missing remote offset falls back to raw percent", function()
