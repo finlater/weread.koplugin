@@ -440,7 +440,11 @@ function ProgressSync:_resolve(local_position, remote, context, options)
         SAME_THRESHOLD_PERCENT
     )
 
-    if comparison == "same" and not remote.conflict then
+    -- Automatic pulls tolerate nearby positions to avoid interrupting chapter
+    -- navigation. Manual sync must still let the reader recover another place.
+    local manual_difference = options.manual == true
+        and not PositionMapper.same_position(local_position, remote)
+    if comparison == "same" and not remote.conflict and not manual_difference then
         self.dirty = false
         self:_mark_verified(
             context.book_id,
@@ -455,7 +459,7 @@ function ProgressSync:_resolve(local_position, remote, context, options)
     end
 
     local ask = self:_config().ask_on_conflict ~= false
-    if remote.conflict or ask then
+    if remote.conflict or ask or manual_difference then
         self.state = "awaiting_choice"
         local choice_generation = self.generation
         local function choice_is_current()

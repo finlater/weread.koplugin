@@ -262,7 +262,11 @@ function PositionMapper.compare(local_position, remote, threshold)
         return "unknown", 0
     end
     threshold = math.max(0, tonumber(threshold) or 2)
-    local local_percent = tonumber(local_position.percent) or 0
+    -- Keep integer percentages for the wire protocol; comparison needs the
+    -- exact whole-book fraction captured from the local document.
+    local local_percent = tonumber(local_position.fraction)
+        and tonumber(local_position.fraction) * 100
+        or tonumber(local_position.percent) or 0
     local remote_percent = tonumber(remote.percent) or 0
     local delta = remote_percent - local_percent
     -- A single-chapter EPUB changes chapter id every time the reader opens
@@ -275,8 +279,11 @@ end
 function PositionMapper.same_position(left, right, tolerance)
     if type(left) ~= "table" or type(right) ~= "table" then return false end
     tolerance = math.max(0, tonumber(tolerance) or 0.5)
-    return math.abs((tonumber(left.percent) or 0) - (tonumber(right.percent) or 0))
-            <= tolerance
+    local left_percent = tonumber(left.fraction) and tonumber(left.fraction) * 100
+        or tonumber(left.percent) or 0
+    local right_percent = tonumber(right.fraction) and tonumber(right.fraction) * 100
+        or tonumber(right.percent) or 0
+    return math.abs(left_percent - right_percent) <= tolerance
         and tostring(left.chapter_uid or "") == tostring(right.chapter_uid or "")
         and math.abs((tonumber(left.chapter_offset) or 0)
             - (tonumber(right.chapter_offset) or 0)) <= 1
