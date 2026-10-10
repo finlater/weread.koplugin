@@ -121,4 +121,10 @@ expect(status_text == "Report book: Auto: Auto Book\nStatus: Running\nReported: 
         .. os.date("%H:%M:%S", report_status.last_time) .. "\nLast error: offline",
     "status gesture preserves the live automatic target, report time, and last error")
 
+config.mode = "manual"
+report_status.target_book_title = "Open Book"
+host:onShowWeReadReportStatus()
+expect(status_text:find("Report book: Open Book", 1, true),
+    "status shows the open book overriding the pinned manual target")
+
 print(("read_report_picker_spec: %d checks"):format(checks))

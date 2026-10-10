@@ -84,6 +84,8 @@ local function fixture(provider)
             end
             return {}
         end,
+        set = function() end,
+        flush = function() end,
         is_cookie_configured = function() return true end,
     }
     local client = {
@@ -156,6 +158,152 @@ test("one reader session enters once and reports live position", function()
     eq(records[2].chapter_offset, 150, "live offset used")
     eq(records[2].elapsed_seconds, 0, "progress-only report has zero time")
     eq(records[3].elapsed_seconds, 30, "time report keeps interval")
+end)
+
+test("open WeRead book wins over a pinned manual target", function()
+    local report = fixture()
+    report.settings = {
+        get = function(_self, key)
+            if key == "read_report" then
+                return {
+                    enabled = true,
+                    mode = "manual",
+                    book_id = "pinned",
+                    book_title = "Pinned",
+                    report_on_open = false,
+                    interval_seconds = 120,
+                }
+            end
+            if key == "books" then
+                return { openbook = { title = "Open" } }
+            end
+            return {}
+        end,
+        is_cookie_configured = function() return true end,
+    }
+    report.detect_book = function() return "openbook" end
+    local id, _title, source = report:resolve_target()
+    eq(id, "openbook", "open book is the report target")
+    eq(source, "current_document", "source follows the open book")
+end)
+
+test("time report enter does not send an rt=0 heartbeat", function()
+    local report, records = fixture()
+    local book = {
+        book_id = "book",
+        chapter_uid = 11,
+        chapter_idx = 1,
+        chapter_offset = 1,
+        progress = 1,
+        psvts = "ps",
+        pclts = "pc",
+        token = "token",
+    }
+    report:_send("book", book, {
+        chapter_uid = 22,
+        chapter_idx = 2,
+        chapter_offset = 150,
+        percent = 25,
+    }, 120, { time_report = true })
+    eq(#records, 1, "enter is the only request")
+    eq(records[1].kind, "enter", "session opens without rt")
+end)
+
+test("restored session credits wall time without entering again", function()
+    local stored = {
+        enabled = true,
+        mode = "auto",
+        interval_seconds = 120,
+        session_book_id = "book",
+        session_started_at = 1000,
+        last_credit_at = 1000,
+    }
+    local records = {}
+    local report = fixture()
+    report.now = function() return 1180 end
+    report.settings = {
+        get = function() return stored end,
+        set = function(_self, _key, value) stored = value end,
+        flush = function() end,
+        is_cookie_configured = function() return true end,
+    }
+    report.client = {
+        report_read = function(_self, payload)
+            records[#records + 1] = payload
+            return { succ = 1 }
+        end,
+    }
+    local elapsed, session_open = report:_reading_credit("book")
+    eq(session_open, true, "session restored inside the ttl")
+    eq(elapsed, 180, "credit is capped at max(interval, 180)")
+    local book = {
+        book_id = "book",
+        chapter_uid = 11,
+        chapter_idx = 1,
+        chapter_offset = 1,
+        progress = 1,
+        psvts = "ps",
+        pclts = "pc",
+        token = "token",
+    }
+    report:_send("book", book, {
+        chapter_uid = 11,
+        chapter_idx = 1,
+        chapter_offset = 400,
+        percent = 1,
+    }, elapsed, { session_open = true, time_report = true })
+    eq(#records, 1, "no second enter")
+    eq(records[1].kind, "report", "duration report")
+    eq(records[1].elapsed_seconds, 180, "capped elapsed is sent")
+    eq(records[1].chapter_offset, 400, "live offset is sent")
+end)
+
+test("progress upload sends a request in an already entered session", function()
+    local report, records = fixture()
+    local book = { book_id="book", chapter_uid=5, chapter_idx=5,
+        chapter_offset=3555, progress=1, psvts="ps", pclts="pc", token="token",
+        read_session_id=report.session_id, read_session_entered_at=100 }
+    report.ensure_context = function() return book end
+    report._persist_context = function() end
+    local accepted = report:upload_position("book", {
+        chapter_uid=6, chapter_idx=6, chapter_offset=25880, percent=4 }, 0)
+    eq(accepted, true, "call claims success")
+    eq(#records, 1, "a real POST must send the new position")
+    if records[1] then eq(records[1].chapter_offset, 25880, "new position sent") end
+end)
+
+test("failed enter must not turn its retry into synthetic success", function()
+    local report, records = fixture()
+    local book = {book_id="book", chapter_uid=5, psvts="ps", pclts="pc", token="token"}
+    report.ensure_context = function() return book end
+    report.client.report_read = function(_, payload)
+        records[#records+1]=payload
+        return {succ=0, errCode=-1}, 403
+    end
+    local outcome=report:_run_pipeline("book", {elapsed_seconds=0, allow_renewal=false})
+    eq(outcome.accepted, false, "rejected enter remains rejected")
+    eq(#records >= 2, true, "retry must make a real request")
+end)
+
+test("progress heartbeat resets credit only after server acceptance", function()
+    local report, records = fixture()
+    local book = { book_id = "book", chapter_uid = 5, psvts = "ps", pclts = "pc",
+        read_session_id = report.session_id, read_session_entered_at = 80 }
+    report.ensure_context = function() return book end
+    report._persist_context = function() end
+    report.server_session_ready = true
+    report.server_session_book_id = "book"
+    report.server_session_ready_at = 80
+    report.last_credit_at = 80
+    local accepted = report:upload_position("book", { chapter_uid = 6, percent = 4 }, 0)
+    eq(accepted, true, "heartbeat accepted")
+    eq(#records, 1, "restored session sends one progress request")
+    eq(report.last_credit_at, 100, "credit starts after accepted heartbeat")
+    report.now = function() return 110 end
+    report.client.report_read = function() return { succ = 0, errCode = -1 }, 403 end
+    accepted = report:upload_position("book", { chapter_uid = 6, percent = 4 }, 0)
+    eq(accepted, false, "rejected progress remains rejected")
+    eq(report.last_credit_at, 100, "rejection does not reset credit")
 end)
 
 test("report context restores SQLite catalog and backfills disk", function()
