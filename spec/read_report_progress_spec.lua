@@ -84,6 +84,8 @@ local function fixture(provider)
             end
             return {}
         end,
+        set = function() end,
+        flush = function() end,
         is_cookie_configured = function() return true end,
     }
     local client = {
@@ -254,6 +256,54 @@ test("restored session credits wall time without entering again", function()
     eq(records[1].kind, "report", "duration report")
     eq(records[1].elapsed_seconds, 180, "capped elapsed is sent")
     eq(records[1].chapter_offset, 400, "live offset is sent")
+end)
+
+test("progress upload sends a request in an already entered session", function()
+    local report, records = fixture()
+    local book = { book_id="book", chapter_uid=5, chapter_idx=5,
+        chapter_offset=3555, progress=1, psvts="ps", pclts="pc", token="token",
+        read_session_id=report.session_id, read_session_entered_at=100 }
+    report.ensure_context = function() return book end
+    report._persist_context = function() end
+    local accepted = report:upload_position("book", {
+        chapter_uid=6, chapter_idx=6, chapter_offset=25880, percent=4 }, 0)
+    eq(accepted, true, "call claims success")
+    eq(#records, 1, "a real POST must send the new position")
+    if records[1] then eq(records[1].chapter_offset, 25880, "new position sent") end
+end)
+
+test("failed enter must not turn its retry into synthetic success", function()
+    local report, records = fixture()
+    local book = {book_id="book", chapter_uid=5, psvts="ps", pclts="pc", token="token"}
+    report.ensure_context = function() return book end
+    report.client.report_read = function(_, payload)
+        records[#records+1]=payload
+        return {succ=0, errCode=-1}, 403
+    end
+    local outcome=report:_run_pipeline("book", {elapsed_seconds=0, allow_renewal=false})
+    eq(outcome.accepted, false, "rejected enter remains rejected")
+    eq(#records >= 2, true, "retry must make a real request")
+end)
+
+test("progress heartbeat resets credit only after server acceptance", function()
+    local report, records = fixture()
+    local book = { book_id = "book", chapter_uid = 5, psvts = "ps", pclts = "pc",
+        read_session_id = report.session_id, read_session_entered_at = 80 }
+    report.ensure_context = function() return book end
+    report._persist_context = function() end
+    report.server_session_ready = true
+    report.server_session_book_id = "book"
+    report.server_session_ready_at = 80
+    report.last_credit_at = 80
+    local accepted = report:upload_position("book", { chapter_uid = 6, percent = 4 }, 0)
+    eq(accepted, true, "heartbeat accepted")
+    eq(#records, 1, "restored session sends one progress request")
+    eq(report.last_credit_at, 100, "credit starts after accepted heartbeat")
+    report.now = function() return 110 end
+    report.client.report_read = function() return { succ = 0, errCode = -1 }, 403 end
+    accepted = report:upload_position("book", { chapter_uid = 6, percent = 4 }, 0)
+    eq(accepted, false, "rejected progress remains rejected")
+    eq(report.last_credit_at, 100, "rejection does not reset credit")
 end)
 
 test("report context restores SQLite catalog and backfills disk", function()

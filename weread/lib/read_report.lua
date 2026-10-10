@@ -943,7 +943,7 @@ function ReadReport:_run_pipeline(book_id, opts)
             return self:_send(
                 book_id, report_book, opts.position, opts.elapsed_seconds, {
                     session_open = opts.session_open,
-                    time_report = true,
+                    time_report = opts.progress_only ~= true,
                 })
         end)
         if send_ok and entered then
@@ -1257,6 +1257,9 @@ function ReadReport:_send(book_id, book, position, elapsed_seconds, opts)
             enter_payload,
             book.reader_url or WeRead.reader_url(book_id)
         )
+        if not response_accepted(enter_result, enter_code) then
+            return enter_result, enter_code, false, 0
+        end
         book.read_session_entered_at = self.now()
         book.read_session_id = self.session_id
         entered = true
@@ -1290,16 +1293,25 @@ function ReadReport:upload_position(book_id, position, elapsed_seconds)
     if self.job then
         return false, { error = "read_report_busy", error_kind = "busy" }
     end
+    local _elapsed, session_open = self:_reading_credit(tostring(book_id))
     local outcome = self:_run_pipeline(tostring(book_id), {
         allow_renewal = self:_renewal_allowed(),
         position = position,
         elapsed_seconds = elapsed_seconds or 0,
+        session_open = session_open,
+        progress_only = true,
     })
     if outcome.renew_attempted then
         self.last_renew_attempt = self.now()
     end
     if outcome.accepted == true then
         self:_remember_session(tostring(book_id), outcome)
+        -- A progress POST also resets the server heartbeat clock. Future
+        -- duration reports must start after this accepted request.
+        if self.server_session_book_id == tostring(book_id) then
+            self.last_credit_at = self.now()
+            self:_persist_session()
+        end
     end
     if type(outcome.book) == "table" then
         local ok, err = pcall(function()
