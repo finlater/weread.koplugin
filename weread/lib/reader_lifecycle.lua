@@ -170,6 +170,7 @@ end
 
 function M:onPageUpdate()
     self.progress_sync:on_page_update()
+    if self.read_report then self.read_report:on_page_update() end
     if self._refreshAnnotationOverlay then self:_refreshAnnotationOverlay() end
 end
 
@@ -178,6 +179,9 @@ function M:onPosUpdate()
 end
 
 function M:onCloseDocument()
+    -- Credit accrued reading time before the rt=0 progress upload. That upload
+    -- refreshes WeChat's clock and would clamp this duration to zero.
+    if self.read_report then self.read_report:_flush_accrued("document_closed") end
     -- Capture the immutable local position while the document is still alive.
     -- The network upload is scheduled; stopping ReadReport below also frees any
     -- in-flight report slot before that scheduled upload begins.
@@ -329,6 +333,7 @@ end
 function M:onSuspend()
     if self._cancelUnifiedAnnotationSync then self:_cancelUnifiedAnnotationSync() end
     self._annotation_pending_prefetch = nil
+    if self.read_report then self.read_report:_flush_accrued("suspend") end
     self.progress_sync:on_suspend()
     self.read_report:on_suspend()
 end

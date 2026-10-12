@@ -218,36 +218,110 @@ function ReadReport:status()
     }
 end
 
+function ReadReport:_target_title(book_id)
+    book_id = tostring(book_id)
+    -- Avoid reloading every book record from disk on each tick just for
+    -- the title; reuse the cached one while the target stays the same.
+    if book_id == self.current_book_id
+        and tostring(self.current_book_title or "") ~= "" then
+        return self.current_book_title
+    end
+    local book = book_record(self.settings:get("books", {}), book_id)
+    if type(book) == "table" and tostring(book.title or "") ~= "" then
+        return book.title
+    end
+    return book_id
+end
+
 function ReadReport:resolve_target()
     local config = self:_config()
     local has_document = self.get_document() ~= nil
+    -- The open WeRead book wins. A pinned manual book keeps a fixed chapter
+    -- offset, and WeChat stores that heartbeat without adding rt to the
+    -- reading-time total. Time has to follow the book whose pages move.
+    if has_document then
+        local detected_id = self.detect_book()
+        if detected_id then
+            detected_id = tostring(detected_id)
+            return detected_id, self:_target_title(detected_id), "current_document"
+        end
+    end
+
     if config.mode == "manual"
         and tostring(config.book_id or "") ~= ""
         and (has_document or config.report_on_open == false) then
-        return tostring(config.book_id),
-            tostring(config.book_title or "") ~= "" and config.book_title or tostring(config.book_id),
-            "manual"
+        local book_id = tostring(config.book_id)
+        local title = tostring(config.book_title or "")
+        return book_id, title ~= "" and title or book_id, "manual"
     end
 
     if not has_document then
         return nil, nil, "no_document"
     end
-
-    local detected_id = self.detect_book()
-    if detected_id then
-        detected_id = tostring(detected_id)
-        -- Avoid reloading every book record from disk on each tick just for
-        -- the title; reuse the cached one while the target stays the same.
-        if detected_id == self.current_book_id
-            and tostring(self.current_book_title or "") ~= "" then
-            return detected_id, self.current_book_title, "current_document"
-        end
-        local book = book_record(self.settings:get("books", {}), detected_id)
-        return detected_id,
-            type(book) == "table" and book.title or detected_id,
-            "current_document"
-    end
     return nil, nil, "document_not_weread"
+end
+
+-- Seconds WeChat can credit for this tick.
+-- The request that opens a server session must send rt=0: claiming a full
+-- interval in the same second as enter is stored as a heartbeat and dropped
+-- from readingTime. Later ticks send the wall time since the last credit.
+function ReadReport:_persist_session()
+    local cfg = self:_config()
+    if self.server_session_ready then
+        cfg.session_book_id = self.server_session_book_id
+        cfg.session_started_at = self.server_session_ready_at
+        cfg.last_credit_at = self.last_credit_at
+    end
+    self.settings:set("read_report", cfg)
+    self.settings:flush()
+end
+
+function ReadReport:_restore_session(book_id)
+    if self.server_session_ready and self.server_session_book_id == book_id then
+        return
+    end
+    local cfg = self:_config()
+    if tostring(cfg.session_book_id or "") ~= book_id then return end
+    local started = tonumber(cfg.session_started_at) or 0
+    -- Past this age the server session token is stale and a new enter is required.
+    if started <= 0 or self.now() - started > CONTEXT_TTL_SECONDS then return end
+    self.server_session_book_id = book_id
+    self.server_session_ready = true
+    self.server_session_ready_at = started
+    self.last_credit_at = tonumber(cfg.last_credit_at) or started
+end
+
+function ReadReport:_reading_credit(book_id)
+    book_id = tostring(book_id or "")
+    self:_restore_session(book_id)
+    if not self.server_session_ready or self.server_session_book_id ~= book_id then
+        return 0, false
+    end
+    local origin = self.last_credit_at or self.server_session_ready_at or self.now()
+    local elapsed = self.now() - origin
+    if elapsed < 0 then elapsed = 0 end
+    local cap = math.max(self:_interval(), 180)
+    if elapsed > cap then elapsed = cap end
+    return math.floor(elapsed), true
+end
+
+function ReadReport:_remember_session(book_id, outcome)
+    if type(outcome) ~= "table" or outcome.accepted ~= true then return end
+    book_id = tostring(book_id or "")
+    if book_id == "" then return end
+    if outcome.entered then
+        self.server_session_book_id = book_id
+        self.server_session_ready = true
+        self.server_session_ready_at = self.now()
+        self.last_credit_at = self.now()
+        self:_persist_session()
+        return
+    end
+    if self.server_session_book_id == book_id
+        and (tonumber(outcome.elapsed_seconds) or 0) > 0 then
+        self.last_credit_at = self.now()
+        self:_persist_session()
+    end
 end
 
 function ReadReport:_set_error(err, kind, prefix)
@@ -339,7 +413,11 @@ function ReadReport:start(reason)
         self:_tick(generation, task)
     end
     self.task = task
-    self.scheduler:scheduleIn(self:_interval(), task)
+    local _elapsed, session_open = self:_reading_credit(book_id)
+    -- Open the server session immediately. The first accepted report credits
+    -- nothing; the following ticks credit time actually spent in the session.
+    local first_delay = session_open and self:_interval() or 1
+    self.scheduler:scheduleIn(first_delay, task)
     log("info", "reading time report started:",
         "reason=", reason or "unknown",
         "book_id=", book_id,
@@ -374,7 +452,41 @@ function ReadReport:on_reader_ready()
     return self:maybe_start("reader_ready")
 end
 
+function ReadReport:on_page_update()
+    if self.suspended or self.job or not self.task or not self.current_book_id then
+        return
+    end
+    local elapsed, session_open = self:_reading_credit(self.current_book_id)
+    -- The 120s timer does not run while the Kindle is asleep between pages.
+    if session_open and elapsed >= 30 then
+        self.scheduler:unschedule(self.task)
+        self.scheduler:scheduleIn(0.2, self.task)
+    end
+end
+
+function ReadReport:_flush_accrued(reason)
+    if self.suspended or self.job then return false end
+    local proceed, book_id, position = self:_precheck()
+    if not proceed then return false end
+    local elapsed, session_open = self:_reading_credit(book_id)
+    if not session_open or elapsed < 15 then return false end
+    local outcome = self:_run_pipeline(book_id, {
+        allow_renewal = false,
+        position = position,
+        elapsed_seconds = elapsed,
+        session_open = true,
+    })
+    local accepted = self:_apply_outcome(outcome, book_id)
+    if accepted then
+        log("info", "read report flushed:",
+            "reason=", reason or "unspecified",
+            "seconds=", elapsed)
+    end
+    return accepted
+end
+
 function ReadReport:on_suspend()
+    self:_flush_accrued("suspend")
     self.suspended = true
     self:stop("suspend")
 end
@@ -385,6 +497,7 @@ function ReadReport:on_resume()
 end
 
 function ReadReport:on_close_document()
+    self:_flush_accrued("document_closed")
     local config = self:_config()
     if config.report_on_open ~= false or config.mode == "auto" then
         self:stop("document_closed")
@@ -401,9 +514,9 @@ end
 -- pipeline to a subprocess (or run it inline as a fallback).
 -- ------------------------------------------------------------------
 
-function ReadReport:_schedule_next(generation, task)
+function ReadReport:_schedule_next(generation, task, delay)
     if self.generation == generation and self.task == task then
-        self.scheduler:scheduleIn(self:_interval(), task)
+        self.scheduler:scheduleIn(delay or self:_interval(), task)
     end
 end
 
@@ -411,7 +524,11 @@ function ReadReport:_tick(generation, task)
     local ok, err = pcall(function()
         local proceed, book_id, position = self:_precheck()
         if not proceed then
-            self:_schedule_next(generation, task)
+            local delay = self:_interval()
+            if self.state == "waiting_for_progress" then
+                delay = math.min(delay, 5)
+            end
+            self:_schedule_next(generation, task, delay)
             return
         end
         if self.job then
@@ -421,8 +538,19 @@ function ReadReport:_tick(generation, task)
             return
         end
         local allow_renewal = self:_renewal_allowed()
+        local elapsed, session_open = self:_reading_credit(book_id)
+        if session_open and elapsed < 15 then
+            -- An rt=0 heartbeat refreshes WeChat's clock and the next real
+            -- duration is clamped to the few seconds since that heartbeat.
+            self:_schedule_next(generation, task, math.max(5, 15 - elapsed))
+            return
+        end
+        local credit = {
+            elapsed_seconds = elapsed,
+            session_open = session_open,
+        }
         local spawned, spawn_err = self:_start_job(
-            book_id, allow_renewal, generation, task, position)
+            book_id, allow_renewal, generation, task, position, credit)
         if spawned then
             return
         end
@@ -434,8 +562,10 @@ function ReadReport:_tick(generation, task)
         local outcome = self:_run_pipeline(book_id, {
             allow_renewal = allow_renewal,
             position = position,
+            elapsed_seconds = credit.elapsed_seconds,
+            session_open = credit.session_open,
         })
-        self:_apply_outcome(outcome)
+        self:_apply_outcome(outcome, book_id)
         self:_schedule_next(generation, task)
     end)
     if not ok then
@@ -526,13 +656,14 @@ end
 -- Subprocess job management (parent side)
 -- ------------------------------------------------------------------
 
-function ReadReport:_start_job(book_id, allow_renewal, generation, task, position)
+function ReadReport:_start_job(book_id, allow_renewal, generation, task, position, credit)
     local runner = self.subprocess
     if not runner then
         return false, "no subprocess support"
     end
+    credit = credit or {}
     local pid, read_fd = runner.run(function(_pid, child_write_fd)
-        local outcome = self:_child_report(book_id, allow_renewal, position)
+        local outcome = self:_child_report(book_id, allow_renewal, position, credit)
         local ok, encoded = pcall(function()
             return self.client:json_encode(outcome)
         end)
@@ -691,10 +822,10 @@ function ReadReport:_apply_job_outcome(job, outcome)
             end
         end
     end
-    return self:_apply_outcome(outcome)
+    return self:_apply_outcome(outcome, book_id)
 end
 
-function ReadReport:_apply_outcome(outcome)
+function ReadReport:_apply_outcome(outcome, book_id)
     if type(outcome) ~= "table" then
         self:_set_error("report job returned no result", "job", "read report job failed:")
         return false
@@ -703,6 +834,7 @@ function ReadReport:_apply_outcome(outcome)
         self.last_renew_attempt = self.now()
     end
     if outcome.accepted then
+        self:_remember_session(book_id or self.current_book_id, outcome)
         self:_record_success({ synckey = outcome.has_synckey and true or nil })
         return true
     end
@@ -751,7 +883,7 @@ end
 -- Child entry point. Neuters settings persistence inside the fork and
 -- captures auth changes (Set-Cookie merges, cookie renewal) so the parent
 -- can persist them from the outcome.
-function ReadReport:_child_report(book_id, allow_renewal, position)
+function ReadReport:_child_report(book_id, allow_renewal, position, credit)
     self._no_persist = true
     self.settings.flush = function() end
     local auth_changed = false
@@ -762,11 +894,14 @@ function ReadReport:_child_report(book_id, allow_renewal, position)
         options.flush = false
         return original_update_auth(settings_obj, credentials, options)
     end
+    credit = credit or {}
 
     local ok, outcome = pcall(function()
         return self:_run_pipeline(book_id, {
             allow_renewal = allow_renewal,
             position = position,
+            elapsed_seconds = credit.elapsed_seconds,
+            session_open = credit.session_open,
         })
     end)
     if not ok then
@@ -795,7 +930,7 @@ function ReadReport:_run_pipeline(book_id, opts)
     local outcome = { accepted = false, renew_attempted = false }
 
     local context_ok, book = pcall(function()
-        return self:ensure_context(book_id, false)
+        return self:ensure_context(book_id, false, opts)
     end)
     if not context_ok then
         outcome.error = tostring(book)
@@ -803,10 +938,27 @@ function ReadReport:_run_pipeline(book_id, opts)
         outcome.error_prefix = "read report context initialization failed:"
         return outcome
     end
-    local ok, result, http_code = pcall(function()
-        return self:_send(
-            book_id, book, opts.position, opts.elapsed_seconds)
-    end)
+    local function send_report(report_book)
+        local send_ok, result, http_code, entered, elapsed_used = pcall(function()
+            return self:_send(
+                book_id, report_book, opts.position, opts.elapsed_seconds, {
+                    session_open = opts.session_open,
+                    time_report = opts.progress_only ~= true,
+                })
+        end)
+        if send_ok and entered then
+            outcome.entered = true
+            -- This pipeline already opened the server session. A retry in the
+            -- same second must not claim the interval on top of enter.
+            opts.session_open = true
+            opts.elapsed_seconds = 0
+        end
+        if send_ok then
+            outcome.elapsed_seconds = elapsed_used
+        end
+        return send_ok, result, http_code
+    end
+    local ok, result, http_code = send_report(book)
     outcome.book = self:_context_snapshot(book)
     local accepted, accepted_body = response_accepted(result, http_code)
     if ok and accepted then
@@ -828,10 +980,7 @@ function ReadReport:_run_pipeline(book_id, opts)
     end)
     if refresh_ok then
         outcome.book = self:_context_snapshot(refreshed)
-        local retry_ok, retry_result, retry_code = pcall(function()
-            return self:_send(
-                book_id, refreshed, opts.position, opts.elapsed_seconds)
-        end)
+        local retry_ok, retry_result, retry_code = send_report(refreshed)
         outcome.book = self:_context_snapshot(refreshed)
         local retry_accepted, retry_body = response_accepted(retry_result, retry_code)
         if retry_ok and retry_accepted then
@@ -877,10 +1026,7 @@ function ReadReport:_run_pipeline(book_id, opts)
         return outcome
     end
     outcome.book = self:_context_snapshot(final_book)
-    local final_ok, final_result, final_code = pcall(function()
-        return self:_send(
-            book_id, final_book, opts.position, opts.elapsed_seconds)
-    end)
+    local final_ok, final_result, final_code = send_report(final_book)
     outcome.book = self:_context_snapshot(final_book)
     local final_accepted, final_body = response_accepted(final_result, final_code)
     if final_ok and final_accepted then
@@ -903,11 +1049,14 @@ function ReadReport:report_once()
     if not proceed then
         return false
     end
+    local elapsed, session_open = self:_reading_credit(book_id)
     local outcome = self:_run_pipeline(book_id, {
         allow_renewal = self:_renewal_allowed(),
         position = position,
+        elapsed_seconds = elapsed,
+        session_open = session_open,
     })
-    return self:_apply_outcome(outcome)
+    return self:_apply_outcome(outcome, book_id)
 end
 
 -- ------------------------------------------------------------------
@@ -933,7 +1082,7 @@ end
 
 -- Build (and refresh when stale) the reader context on the given book
 -- record. Performs network I/O; never persists settings.
-function ReadReport:_build_context(book_id, force, book)
+function ReadReport:_build_context(book_id, force, book, opts)
     book.book_id = book.book_id or book.bookId or book_id
     book.reader_url = WeRead.reader_url(book_id)
 
@@ -963,9 +1112,15 @@ function ReadReport:_build_context(book_id, force, book)
         end
     end
 
+    opts = opts or {}
     local age = self.now() - (tonumber(book.read_context_updated_at) or 0)
-    local ready = tostring(book.psvts or "") ~= ""
-        and book.chapter_uid ~= nil
+    local has_reader = tostring(book.psvts or "") ~= "" and book.chapter_uid ~= nil
+    -- Reusing a session must not mint a new pclts. A fresh token makes WeChat
+    -- treat the following rt as longer than the session and drop it.
+    if not force and opts.session_open and has_reader then
+        return book
+    end
+    local ready = has_reader
         and type(book.chapters) == "table" and #book.chapters > 0
         and book.read_session_id == self.session_id
     if not force and ready and age < CONTEXT_TTL_SECONDS then
@@ -1012,7 +1167,7 @@ function ReadReport:_build_context(book_id, force, book)
     return book
 end
 
-function ReadReport:ensure_context(book_id, force)
+function ReadReport:ensure_context(book_id, force, opts)
     book_id = tostring(book_id or "")
     if book_id == "" then
         error("missing book id")
@@ -1026,7 +1181,7 @@ function ReadReport:ensure_context(book_id, force)
         book_id = book_id,
         title = self.current_book_title or book_id,
     }
-    self:_build_context(book_id, force, book)
+    self:_build_context(book_id, force, book, opts)
     if self._no_persist then
         -- Forked child: the parent persists the context from the outcome.
         return book
@@ -1067,15 +1222,25 @@ function ReadReport:build_payload(book_id, elapsed_seconds, book, position)
     }
 end
 
-function ReadReport:_send(book_id, book, position, elapsed_seconds)
+function ReadReport:_send(book_id, book, position, elapsed_seconds, opts)
+    opts = opts or {}
     apply_position(book, position)
     if book.pclts == nil or book.pclts == "" or tonumber(book.pclts) == 0 then
         book.pclts = WeRead.e(self.now())
     end
-    if book.read_session_id ~= self.session_id then
+    if opts.session_open then
+        -- Parent already opened this server session. Disk write-back of the
+        -- book record is skipped when progress sync touches it during the
+        -- job, so the flag on the parent is the source of truth.
+        book.read_session_id = self.session_id
+        if not book.read_session_entered_at then
+            book.read_session_entered_at = self.now()
+        end
+    elseif book.read_session_id ~= self.session_id then
         book.read_session_id = self.session_id
         book.read_session_entered_at = nil
     end
+    local entered = false
     if not book.read_session_entered_at then
         local enter_payload = WeRead.make_enter_read_payload{
             book_id = book_id,
@@ -1088,33 +1253,65 @@ function ReadReport:_send(book_id, book, position, elapsed_seconds)
             psvts = book.psvts,
             pclts = book.pclts,
         }
-        self.client:report_read(
+        local enter_result, enter_code = self.client:report_read(
             enter_payload,
             book.reader_url or WeRead.reader_url(book_id)
         )
+        if not response_accepted(enter_result, enter_code) then
+            return enter_result, enter_code, false, 0
+        end
         book.read_session_entered_at = self.now()
         book.read_session_id = self.session_id
+        entered = true
+        if opts.time_report then
+            -- The follow-up rt=0 post is itself a heartbeat. WeChat then
+            -- clamps the next real duration to the seconds since that post.
+            return enter_result, enter_code, true, 0
+        end
+    end
+    local elapsed = elapsed_seconds
+    if entered then
+        elapsed = 0
+    elseif elapsed == nil then
+        elapsed = self:_interval()
+    end
+    if opts.time_report and elapsed <= 0 then
+        return { succ = 1 }, 200, false, 0
     end
     local payload = self:build_payload(
         book_id,
-        elapsed_seconds == nil and self:_interval() or elapsed_seconds,
+        elapsed,
         book,
         position
     )
-    return self.client:report_read(payload, book.reader_url or WeRead.reader_url(book_id))
+    local result, http_code = self.client:report_read(
+        payload, book.reader_url or WeRead.reader_url(book_id))
+    return result, http_code, entered, elapsed
 end
 
 function ReadReport:upload_position(book_id, position, elapsed_seconds)
     if self.job then
         return false, { error = "read_report_busy", error_kind = "busy" }
     end
+    local _elapsed, session_open = self:_reading_credit(tostring(book_id))
     local outcome = self:_run_pipeline(tostring(book_id), {
         allow_renewal = self:_renewal_allowed(),
         position = position,
         elapsed_seconds = elapsed_seconds or 0,
+        session_open = session_open,
+        progress_only = true,
     })
     if outcome.renew_attempted then
         self.last_renew_attempt = self.now()
+    end
+    if outcome.accepted == true then
+        self:_remember_session(tostring(book_id), outcome)
+        -- A progress POST also resets the server heartbeat clock. Future
+        -- duration reports must start after this accepted request.
+        if self.server_session_book_id == tostring(book_id) then
+            self.last_credit_at = self.now()
+            self:_persist_session()
+        end
     end
     if type(outcome.book) == "table" then
         local ok, err = pcall(function()
