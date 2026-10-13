@@ -84,7 +84,7 @@ function M:offerMoveBooksToNewDir(old_dir, new_dir)
         return
     end
     local lfs = require("libs/libkoreader-lfs")
-    local books = self.settings:get("books", {})
+    local books = self.settings:get_books()
     local movable = {}
     for book_id, book in pairs(books) do
         local src = Content.book_resolved_dir(self.settings, book_id, book)
@@ -116,7 +116,7 @@ end
 function M:moveBooksToNewDir(movable, new_dir)
     self:showBusy(_("Moving cached books..."))
     UIManager:scheduleIn(0.1, function()
-        local books = self.settings:get("books", {})
+        local books = self.settings:get_books()
         local moved, skipped, failed = 0, 0, 0
         local collection_updates = {}
         for _i, m in ipairs(movable) do
@@ -170,7 +170,11 @@ function M:moveBooksToNewDir(movable, new_dir)
                 ReadCollection:write({ [name] = true })
             end)
         end
-        self.settings:set("books", books)
+        for _i, m in ipairs(movable) do
+            if books[m.book_id] then
+                self.settings:put_book(m.book_id, books[m.book_id])
+            end
+        end
         self.settings:flush()
         self:closeBusy()
         local message
@@ -389,7 +393,12 @@ function M:isBookDownloaded(book, saved_books, downloaded_cache)
     if downloaded_cache and downloaded_cache[book_id] ~= nil then
         return downloaded_cache[book_id]
     end
-    local record = (saved_books or self.settings:get("books", {}))[book_id]
+    local record
+    if saved_books then
+        record = saved_books[book_id]
+    else
+        record = self.settings:get_book(book_id)
+    end
     local is_downloaded = self:bookRecordHasDownload(record)
     if downloaded_cache then
         downloaded_cache[book_id] = is_downloaded
@@ -423,7 +432,7 @@ end
 
 function M:showCacheManagement()
     local lfs = require("libs/libkoreader-lfs")
-    local books = self.settings:get("books", {})
+    local books = self.settings:get_books()
     local items = {}
     local entries = {}
     local seen_dirs = {}
@@ -559,7 +568,7 @@ end
 -- never be registered and later removed by cache cleanup.
 function M:scanLocalCache(root, allowed, dry_run)
     local lfs = require("libs/libkoreader-lfs")
-    local books = self.settings:get("books", {})
+    local books = self.settings:get_books()
     local added, updated = Scan.scan_root({
         root = root,
         fs = lfs,
@@ -570,7 +579,9 @@ function M:scanLocalCache(root, allowed, dry_run)
         now = os.time(),
     })
     if not dry_run then
-        self.settings:set("books", books)
+        for book_id, book in pairs(books) do
+            self.settings:put_book(book_id, book)
+        end
         self.settings:flush()
     end
     return added, updated
@@ -735,15 +746,13 @@ function M:clearBookAnnotationData(book_id, book)
 end
 
 function M:clearBookCache(book_id)
-    local books = self.settings:get("books", {})
-    local book = books[book_id]
+    local book = self.settings:get_book(book_id)
     local path_to_remove = book and (book.cached_full_book or book.cached_file)
     local cache_dir = Content.book_resolved_dir(self.settings, book_id, book)
     self:clearBookAnnotationData(book_id, book)
     os.execute("rm -rf " .. string.format("%q", cache_dir))
     if book then
-        books[book_id] = nil
-        self.settings:set("books", books)
+        self.settings:delete_book(book_id)
         self.settings:flush()
     end
     if path_to_remove then
@@ -763,7 +772,7 @@ function M:clearAllMPCache()
     -- Delete each MP book's real directory (which may sit under an old download
     -- root) rather than scanning only the current cache_dir, and only touch
     -- plugin-owned entries tracked in the books table.
-    local books = self.settings:get("books", {})
+    local books = self.settings:get_books()
     pcall(function()
         local ReadCollection = require("readcollection")
         local name = self.settings.collection_name or "weread"
@@ -783,16 +792,15 @@ function M:clearAllMPCache()
     for book_id, book in pairs(books) do
         if WeRead.is_mp_book(book_id) then
             os.execute("rm -rf " .. string.format("%q", Content.book_resolved_dir(self.settings, book_id, book)))
-            books[book_id] = nil
+            self.settings:delete_book(book_id)
         end
     end
-    self.settings:set("books", books)
     self.settings:flush()
     self:refreshShelfCacheIndicators()
 end
 
 function M:clearAllCache()
-    local books = self.settings:get("books", {})
+    local books = self.settings:get_books()
     pcall(function()
         local ReadCollection = require("readcollection")
         local name = self.settings.collection_name or "weread"
@@ -813,7 +821,9 @@ function M:clearAllCache()
         self:clearBookAnnotationData(book_id, book)
         os.execute("rm -rf " .. string.format("%q", Content.book_resolved_dir(self.settings, book_id, book)))
     end
-    self.settings:set("books", {})
+    for book_id in pairs(books) do
+        self.settings:delete_book(book_id)
+    end
     self.settings:flush()
     self:refreshShelfCacheIndicators()
 end

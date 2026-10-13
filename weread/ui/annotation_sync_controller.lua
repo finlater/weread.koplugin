@@ -46,8 +46,7 @@ function M:_annotationBinding()
     if entry and entry.binding then return entry.binding end
     local book_id = self:detectWeReadBook()
     if not book_id then return nil end
-    local books = self.settings:get("books", {})
-    local book = books[tostring(book_id)] or books[book_id]
+    local book = self.settings:get_book(book_id)
     if not book then return nil end
     return { book_id = tostring(book_id), title = book.title, author = book.author,
         format = book.format, automatic = true }
@@ -58,8 +57,7 @@ function M:_usesUnifiedAnnotations()
     local binding = self:_annotationBinding()
     if not binding then return false end
     if binding.automatic then
-        local books = self.settings:get("books", {})
-        local book = books[binding.book_id] or books[tonumber(binding.book_id)]
+        local book = self.settings:get_book(binding.book_id)
         local descriptor = Chapters.descriptor(book, file(self))
         if descriptor and descriptor.clean then return true end
     end
@@ -84,9 +82,8 @@ function M:_prepareAnnotationContext(online, refresh_catalog)
         return context
     end
     local store = self:_annotationStore()
-    local books = self.settings:get("books", {})
     local book_id = tostring(binding.book_id)
-    local book = books[book_id] or books[tonumber(book_id)]
+    local book = self.settings:get_book(book_id)
     local descriptor = binding.automatic and Chapters.descriptor(book, path)
     local catalog = store:get(book_id, "meta", "catalog") or book and book.chapters
     if online and (not catalog or refresh_catalog) then
