@@ -40,8 +40,7 @@ function M:showEndOfBookDialog(book_id)
     local file_path = self.ui.document and self.ui.document.file
     if not file_path then return false end
 
-    local books = self.settings:get("books", {})
-    local book = book_id and (books[tostring(book_id)] or books[book_id]) or nil
+    local book = book_id and self.settings:get_book(book_id) or nil
     local is_regular_weread_book = book ~= nil and not WeRead.is_mp_book(book_id)
     local chapters = is_regular_weread_book and self:ensureChaptersLoaded(book) or nil
 

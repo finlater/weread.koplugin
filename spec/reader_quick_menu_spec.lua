@@ -74,13 +74,12 @@ local annotations_toggled = false
 local annotation_cache = { show_annotations = true }
 local context_host = {
     ui = { document = { file = "/books/local.epub" } },
-    settings = {
+    settings = require("spec.helpers.book_settings").install({
         get = function(_self, key, default)
-            if key == "books" then return context_books end
             if key == "cache" then return annotation_cache end
             return default
         end,
-    },
+    }, context_books),
     showTransientInfo = function(_self, text, timeout)
         notice = { text = text, timeout = timeout }
     end,

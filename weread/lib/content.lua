@@ -527,8 +527,7 @@ function Content.cleanup_stale_downloads(settings)
     if not ok_lfs then ok_lfs, lfs = pcall(require, "lfs") end
     if not ok_lfs or not lfs then return 0 end
     local dirs = {}
-    for book_id, book in pairs(settings:get("books", {}) or {}) do
-        local dir = Content.book_resolved_dir(settings, book_id, book)
+    for _book_id, dir in pairs(settings:get_book_dirs()) do
         dirs[dir] = true
     end
     local removed = 0

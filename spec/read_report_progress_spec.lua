@@ -70,7 +70,7 @@ end
 
 local function fixture(provider)
     local records = {}
-    local settings = {
+    local settings = require("spec.helpers.book_settings").install({
         get = function(_self, key)
             if key == "read_report" then
                 return {
@@ -79,13 +79,10 @@ local function fixture(provider)
                     interval_seconds = 30,
                 }
             end
-            if key == "books" then
-                return { book = { title = "Book" } }
-            end
             return {}
         end,
         is_cookie_configured = function() return true end,
-    }
+    }, { book = { title = "Book" } })
     local client = {
         report_read = function(_self, payload)
             records[#records + 1] = payload

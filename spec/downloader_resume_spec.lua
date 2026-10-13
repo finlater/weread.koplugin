@@ -148,15 +148,13 @@ end
 
 local Downloader = require("weread.lib.downloader")
 local books = {}
-local settings = {
+local settings = require("spec.helpers.book_settings").install({
     get = function(_self, key, default)
-        if key == "books" then return books end
         if key == "cache" then return { download_book_images = false } end
         return default
     end,
-    set = function(_self, key, value) if key == "books" then books = value end end,
     flush = function() end,
-}
+}, books)
 local downloader = Downloader:new{
     settings = settings,
     client = {},

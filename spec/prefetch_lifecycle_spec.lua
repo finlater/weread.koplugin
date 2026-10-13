@@ -86,12 +86,11 @@ local downloader = {
     end,
 }
 local host = {
-    settings = {
+    settings = require("spec.helpers.book_settings").install({
         get = function(_self, key)
             if key == "cache" then return cache end
-            if key == "books" then return { book = book } end
         end,
-    },
+    }, { book = book }),
     downloader = downloader,
     ui = { document = { file = "/cache/one.epub" } },
     ensureChaptersLoaded = function() return chapters end,
@@ -160,6 +159,24 @@ expect(not host:onWeReadSyncProgress(),
     "standalone sync gesture rejects a local document")
 expect(notices[1] and notices[1][2] == 1,
     "standalone sync gesture explains missing WeRead context")
+
+-- detectWeReadBook: dir prefix first, then cached_file outside its dir.
+do
+    local Book = require("spec.helpers.book_settings")
+    local probe = {
+        settings = Book.install({ cache_dir = "/root" }, {
+            a = { cache_dir = "/lib/a" },
+            b = { cache_dir = "/lib/b", cached_file = "/old/b.epub" },
+        }),
+        ui = { document = { file = "/lib/a/x.epub" } },
+    }
+    expect(Lifecycle.detectWeReadBook(probe) == "a", "book dir prefix matches")
+    probe.ui.document.file = "/old/b.epub"
+    expect(Lifecycle.detectWeReadBook(probe) == "b",
+        "cached_file outside its book dir still matches")
+    probe.ui.document.file = "/elsewhere/c.epub"
+    expect(Lifecycle.detectWeReadBook(probe) == nil, "unrelated file does not match")
+end
 
 print(string.format(
     "prefetch_lifecycle_spec: %d checks, %d failure(s)", checks, failures))

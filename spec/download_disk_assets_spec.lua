@@ -255,12 +255,7 @@ orphan:write("partial")
 orphan:close()
 local recovery_settings = {
     cache_dir = root,
-    get = function(_self, key, default)
-        if key == "books" then
-            return { book = { book_id = "book", cache_dir = root } }
-        end
-        return default
-    end,
+    get_book_dirs = function() return { book = root } end,
 }
 local removed = Content.cleanup_stale_downloads(recovery_settings)
 expect(removed == 3 and io.open(root .. "/orphan.epub.part", "rb") == nil,

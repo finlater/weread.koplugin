@@ -122,15 +122,10 @@ end
 local function make_downloader()
     local live_books = {}
     return Downloader:new{
-        settings = {
-            get = function(_self, key)
-                return key == "books" and live_books or nil
-            end,
-            set = function(_self, key, value)
-                if key == "books" then live_books = value end
-            end,
+        settings = require("spec.helpers.book_settings").install({
+            get = function() return nil end,
             flush = function() end,
-        },
+        }, live_books),
         client = {},
         refresh_shelf = function() end,
         open_file = function() end,
@@ -270,16 +265,10 @@ local Cache = require("weread.ui.cache")
 local function make_cache_host(books)
     local stored = books
     local host = {
-        settings = {
-            get = function(_self, key, default)
-                if key == "books" then return stored end
-                return default
-            end,
-            set = function(_self, key, value)
-                if key == "books" then stored = value end
-            end,
+        settings = require("spec.helpers.book_settings").install({
+            get = function(_self, _key, default) return default end,
             flush = function() end,
-        },
+        }, stored),
         external_annotations_db = {
             clearDocument = function(_self, path)
                 legacy_annotation_clears[#legacy_annotation_clears + 1] = path
