@@ -1,6 +1,7 @@
 -- One database per WeRead book. Source data and download progress are shared;
 -- document-specific XPointers are disposable projections in the same database.
 local LegacyDB = require("weread.lib.external_annotations_db")
+local logger = require("weread.lib.logger")
 local Crypto = require("weread.lib.crypto")
 local ok_json, json = pcall(require, "json")
 if not ok_json then json = require("rapidjson") end
@@ -154,6 +155,19 @@ function Store:clearKinds(book_id, kinds)
     end)
     if stmt then pcall(function() stmt:close() end) end
     if not ok then pcall(function() db:exec("ROLLBACK") end) end
+    if ok then
+        -- DELETE only moves pages to SQLite's freelist; the file keeps its
+        -- size until it is rebuilt. Reclaim the space so clearing annotations
+        -- actually frees storage on small devices. Best effort: the rows are
+        -- already gone, so a failed VACUUM must not fail the cleanup.
+        local compacted, compact_err = pcall(function()
+            db:exec("VACUUM")
+            db:exec("PRAGMA wal_checkpoint(TRUNCATE)")
+        end)
+        if not compacted then
+            logger.warn("annotation database compaction failed:", tostring(compact_err))
+        end
+    end
     db:close()
     if not ok then error(err) end
     return true
