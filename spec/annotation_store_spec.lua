@@ -68,6 +68,30 @@ end
 for _, kind in ipairs({ "meta", "chapter_mapping", "generation", "original", "migration" }) do
     assert(store:get("book", kind, "keep").preserved)
 end
+-- Clearing underlines and thoughts must give the space back, not just leave
+-- freed pages inside the database file (#205).
+local function file_size(path)
+    local handle = assert(io.open(path, "rb"))
+    local size = handle:seek("end")
+    handle:close()
+    return size
+end
+local bulky = { text = string.rep("x", 4096) }
+local bulk_changes = {}
+for index = 1, 300 do
+    bulk_changes[#bulk_changes + 1] = { kind = "thought", key = "bulk-" .. index, uid = "1", value = bulky }
+end
+store:write("vacuum-book", bulk_changes)
+store:put("vacuum-book", "original", "1", { text = "kept" }, "1")
+local vacuum_path = helper.paths["weread-book-vacuum-book"]
+local before_clear = file_size(vacuum_path)
+assert(before_clear > 1000000, "bulk fixture too small to measure compaction")
+assert(store:clearKinds("vacuum-book", { "thought" }))
+local after_clear = file_size(vacuum_path)
+assert(after_clear * 10 < before_clear,
+    "clearKinds left the database at " .. after_clear .. " bytes (was " .. before_clear .. ")")
+assert(not store:get("vacuum-book", "thought", "bulk-1"), "cleared rows survived compaction")
+assert(store:get("vacuum-book", "original", "1").text == "kept", "compaction dropped retained data")
 assert(store:clearBook("book"), "book annotation database cleanup failed")
 assert(not store:get("book", "source", "1"), "book annotation database survived cleanup")
 helper.cleanup()
