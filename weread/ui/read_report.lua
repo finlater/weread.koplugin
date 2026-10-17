@@ -67,6 +67,16 @@ function M:getReadReportMenuItems()
         },
         {
             text_func = function()
+                local interval = tonumber(self.settings:get("read_report").interval_seconds) or 30
+                return T(_("Report interval: %1 s"), interval)
+            end,
+            keep_menu_open = true,
+            sub_item_table_func = function()
+                return self:getReportIntervalMenuItems()
+            end,
+        },
+        {
+            text_func = function()
                 local current = self.settings:get("read_report")
                 if current.mode == "manual" and current.book_title ~= "" then
                     return _("Select target book") .. " · " .. current.book_title
@@ -86,6 +96,39 @@ function M:getReadReportMenuItems()
             end),
         },
     }
+end
+
+-- Preset reporting intervals. A longer interval means fewer network wake-ups,
+-- which matters on battery-powered e-ink devices.
+function M:getReportIntervalMenuItems()
+    local items = {}
+    for _i, seconds in ipairs({ 30, 60 }) do
+        local label = T(_("%1 seconds"), seconds)
+        items[#items + 1] = {
+            text = label,
+            keep_menu_open = true,
+            check_callback_updates_menu = true,
+            checked_func = function()
+                local current = tonumber(self.settings:get("read_report").interval_seconds) or 30
+                return current == seconds
+            end,
+            callback = self:safeCallback(label, function(touchmenu_instance)
+                local cur = self.settings:get("read_report")
+                cur.interval_seconds = seconds
+                self.settings:set("read_report", cur)
+                self.settings:flush()
+                -- Restart so the new interval applies to the next scheduled tick.
+                self:stopReadReport("interval_changed")
+                if cur.enabled then
+                    self:maybeStartReadReport()
+                end
+                if touchmenu_instance then
+                    touchmenu_instance:updateItems()
+                end
+            end),
+        }
+    end
+    return items
 end
 
 function M:onShowWeReadReportStatus()
