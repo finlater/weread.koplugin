@@ -114,13 +114,17 @@ function M:getReportIntervalMenuItems()
             end,
             callback = self:safeCallback(label, function(touchmenu_instance)
                 local cur = self.settings:get("read_report")
+                if (tonumber(cur.interval_seconds) or 30) == seconds then
+                    return
+                end
                 cur.interval_seconds = seconds
                 self.settings:set("read_report", cur)
                 self.settings:flush()
-                -- Restart so the new interval applies to the next scheduled tick.
-                self:stopReadReport("interval_changed")
-                if cur.enabled then
-                    self:maybeStartReadReport()
+                -- Hand the new interval to the running session instead of
+                -- restarting it: a report already in flight is allowed to
+                -- finish and write back its result.
+                if self.read_report then
+                    self.read_report:reschedule("interval_changed")
                 end
                 if touchmenu_instance then
                     touchmenu_instance:updateItems()

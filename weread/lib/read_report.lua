@@ -369,6 +369,23 @@ function ReadReport:stop(reason)
     end
 end
 
+-- Apply an interval change to a running session without interrupting it.
+-- An in-flight job is left alone: the poller reschedules once it finishes, so
+-- its result (including any renewed credentials) is still written back.
+-- Otherwise only the pending tick is re-armed, right away, with the new
+-- interval.
+function ReadReport:reschedule(reason)
+    if not self.task or self.job then
+        return false
+    end
+    self.scheduler:unschedule(self.task)
+    self.scheduler:scheduleIn(self:_interval(), self.task)
+    log("info", "reading time report rescheduled:",
+        "reason=", reason or "unspecified",
+        "interval=", self:_interval())
+    return true
+end
+
 function ReadReport:on_reader_ready()
     self.suspended = false
     return self:maybe_start("reader_ready")
