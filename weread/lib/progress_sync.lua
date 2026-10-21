@@ -609,6 +609,11 @@ function ProgressSync:_pull(options)
             })
             if options.manual then
                 self.notify("pull_failed", { error = tostring(pull_error) })
+            else
+                -- The link check can report online right after wake-up while
+                -- requests still fail; retry like the offline paths so the
+                -- session does not stay unverified until the next reopen.
+                self:_schedule_pull_retry(options, retry_token)
             end
             return
         end
@@ -782,6 +787,14 @@ function ProgressSync:position_for_report(book_id)
         return nil, nil, false
     end
     if not self.verified then
+        -- Without automatic pulls nothing ever verifies the session, so
+        -- gating would drop all reading time. Let the report fall back to
+        -- its remote-derived context position instead, unless a manual sync
+        -- is still waiting on a conflict choice.
+        if self:_config().pull_on_open ~= true
+            and self.state ~= "awaiting_choice" then
+            return nil, nil, false
+        end
         return nil, "progress_unverified", true
     end
     local position, reason = self:capture_local()
