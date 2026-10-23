@@ -628,6 +628,95 @@ test("a fresh automatic pull replaces an older retry chain", function()
     eq(#f.queue, 1, "replacement chain remains active")
 end)
 
+test("reports fall back to context progress when open pulls are disabled", function()
+    local f = fixture({
+        bookId = "book",
+        progress = 75,
+        chapterUid = 33,
+        chapterIdx = 3,
+        chapterOffset = 300,
+        updateTime = 10,
+    })
+    f.values.sync = {}
+    f.sync:on_reader_ready()
+    f.drain()
+    eq(f.sync:status().verified, false, "session stays unverified")
+    local position, reason, applies = f.sync:position_for_report("book")
+    eq(position, nil, "local position withheld")
+    eq(reason, nil, "no gate reason")
+    eq(applies, false, "provider does not block the report")
+end)
+
+test("manual conflict still blocks reports when open pulls are disabled", function()
+    local f = fixture({
+        bookId = "book",
+        progress = 50,
+        chapterUid = 33,
+        chapterIdx = 3,
+        chapterOffset = 100,
+        updateTime = 10,
+    })
+    f.values.sync.pull_on_open = false
+    f.sync:on_reader_ready()
+    f.drain()
+    f.sync:sync_now()
+    f.drain()
+    eq(#f.choices, 1, "conflict dialog requested")
+    local position, reason, applies = f.sync:position_for_report("book")
+    eq(position, nil, "position withheld")
+    eq(reason, "progress_unverified", "gate reason")
+    eq(applies, true, "provider applies")
+end)
+
+test("failed automatic pull schedules a retry that verifies", function()
+    local remote = {
+        bookId = "book",
+        progress = 25,
+        chapterUid = 22,
+        chapterIdx = 2,
+        chapterOffset = 150,
+        updateTime = 10,
+    }
+    local f = fixture(remote)
+    local reachable = false
+    f.sync.client = {
+        get_progress = function()
+            if not reachable then error("Network is unreachable") end
+            return { book = remote }
+        end,
+        get_web_progress = function()
+            if not reachable then error("Network is unreachable") end
+            return remote
+        end,
+    }
+    f.sync:on_reader_ready()
+    f.step()
+    eq(f.sync:status().verified, false, "failed pull leaves the gate closed")
+    eq(#f.queue, 1, "failed pull queues a retry")
+    eq(f.queue[1].delay, PULL_RETRY_DELAY_SECONDS, "retry delay")
+    eq(#f.notifications, 0, "automatic failure stays silent")
+    reachable = true
+    f.drain()
+    eq(f.sync:status().verified, true, "retry verifies the reporting gate")
+    local position, reason = f.sync:position_for_report("book")
+    eq(reason, nil, "no gate reason")
+    eq(position.chapter_uid, 22, "live chapter")
+end)
+
+test("failed manual pull notifies without scheduling a retry", function()
+    local f = fixture({})
+    f.sync.client = {
+        get_progress = function() error("Network is unreachable") end,
+        get_web_progress = function() error("Network is unreachable") end,
+    }
+    f.values.sync.pull_on_open = false
+    f.sync:on_reader_ready()
+    f.drain()
+    f.sync:sync_now()
+    eq(#f.queue, 0, "manual failure does not retry")
+    eq(f.notifications[#f.notifications].code, "pull_failed", "manual failure is reported")
+end)
+
 print(string.format(
     "progress_sync_spec: %d checks, %d failure(s)", checks, failures))
 os.exit(failures == 0 and 0 or 1)
