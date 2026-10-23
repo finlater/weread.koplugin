@@ -7,7 +7,6 @@ local function expect(condition, message)
 end
 
 local encoded_values = {}
-local encoded_index = 0
 local function deepcopy(value)
     if type(value) ~= "table" then return value end
     local copy = {}
@@ -15,11 +14,24 @@ local function deepcopy(value)
     return copy
 end
 
+local function canonical(value)
+    if type(value) ~= "table" then return tostring(value) end
+    local keys = {}
+    for key in pairs(value) do keys[#keys + 1] = tostring(key) end
+    table.sort(keys)
+    local parts = {}
+    for _i, key in ipairs(keys) do
+        local item = value[key]
+        if item == nil then item = value[tonumber(key)] end
+        parts[#parts + 1] = key .. "=" .. canonical(item)
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+end
+
 package.preload["json"] = function()
     return {
         encode = function(value)
-            encoded_index = encoded_index + 1
-            local token = "json-fixture-" .. tostring(encoded_index)
+            local token = "json-fixture-" .. canonical(value)
             encoded_values[token] = deepcopy(value)
             return token
         end,
@@ -78,6 +90,17 @@ expect(loaded.chapters == nil,
     "large chapter catalog should not be stored in the book record")
 expect(loaded.cache_dir == index.cache_dir,
     "resolved cache directory did not round-trip")
+
+local renames = 0
+local real_rename = os.rename
+os.rename = function(...) -- luacheck: ignore 122
+    renames = renames + 1
+    return real_rename(...)
+end
+ok = BookStore.save(settings, "book/42", loaded)
+os.rename = real_rename -- luacheck: ignore 122
+expect(ok == true, "unchanged save failed")
+expect(renames == 0, "unchanged book data was rewritten")
 
 ok, index = BookStore.save(settings, "book/42", {
     book_id = "book/42",
