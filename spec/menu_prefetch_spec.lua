@@ -4,6 +4,7 @@ package.path = "./?.lua;" .. package.path
 
 local registered = {}
 local shown_widget
+local closed_widget
 package.preload["dispatcher"] = function()
     return {
         registerAction = function(_self, name, action)
@@ -18,10 +19,21 @@ for _, name in ipairs({
     "ui/widget/buttondialog",
     "ui/widget/confirmbox",
     "ui/widget/infomessage",
+    "ui/widget/textviewer",
+    "ui/widget/qrmessage",
 }) do
     package.preload[name] = function()
-        return { new = function(_self, options) return options end }
+        return { new = function(_self, options)
+            options.onClose = function(widget) closed_widget = widget end
+            return options
+        end }
     end
+end
+package.preload["device"] = function()
+    return { screen = {
+        getWidth = function() return 600 end,
+        getHeight = function() return 800 end,
+    } }
 end
 package.preload["ui/uimanager"] = function()
     return {
@@ -241,8 +253,8 @@ local last_settings_item = settings_items[#settings_items]
 expect(last_settings_item and last_settings_item.text == "About",
     "about is the last settings menu item")
 local about_items = last_settings_item and last_settings_item.sub_item_table_func()
-expect(about_items and #about_items == 5,
-    "about contains version, author, and three update settings")
+expect(about_items and #about_items == 6,
+    "about contains version, author, WeReader, and three update settings")
 for index, item in ipairs(about_items or {}) do
     expect(item.keep_menu_open == true,
         "about item " .. index .. " keeps the menu open")
@@ -251,19 +263,36 @@ expect(about_items[1] and about_items[1].text == "Version %1",
     "version is the first about item")
 expect(about_items[2] and about_items[2].text == "Author: %1",
     "author is the second about item")
-expect(about_items[3] and about_items[3].text == "Check for updates"
-        and about_items[4].text == "Automatically check once an hour"
-        and about_items[5].text == "Prefer proxy for updates",
-    "update settings follow version and author at the same level")
+expect(about_items[3] and about_items[3].text == "Discover WeReader closed-source edition",
+    "WeReader entry follows the author")
+expect(about_items[4] and about_items[4].text == "Check for updates"
+        and about_items[5].text == "Automatically check once an hour"
+        and about_items[6].text == "Prefer proxy for updates",
+    "update settings follow the WeReader entry at the same level")
 available_version = "0.7.0"
 local update_available_items = last_settings_item.sub_item_table_func()
-expect(#update_available_items == 5
-        and update_available_items[3].text == "Update to v%1",
-    "available update replaces the check item without adding a sixth item")
+expect(#update_available_items == 6
+        and update_available_items[4].text == "Update to v%1",
+    "available update replaces the check item without adding another item")
 available_version = nil
 about_items[1].callback()
 expect(shown_widget and shown_widget.text:find("Disclaimer", 1, true),
     "version item preserves the previous about dialog behavior")
+about_items[3].callback()
+local recommendation = shown_widget
+expect(recommendation.title == "WeReader closed-source edition"
+        and recommendation.text:find("Xiaohongshu/Xianyu nickname", 1, true),
+    "recommendation includes both account names")
+expect(#recommendation.buttons_table == 2
+        and recommendation.buttons_table[1][1].text == "Xiaohongshu QR code",
+    "recommendation offers only Xiaohongshu QR and a return button")
+recommendation.buttons_table[1][1].callback()
+expect(shown_widget.text == "http://xhslink.com/m/8aP668RQREF"
+        and shown_widget.width == 540 and shown_widget.height == 540
+        and shown_widget.timeout == nil and closed_widget == nil,
+    "native QR uses the decoded profile URL without closing the introduction or timing out")
+recommendation.buttons_table[2][1].callback()
+expect(closed_widget == recommendation, "return closes the recommendation")
 local main_items = host:getMainMenuItems()
 expect(main_items[#main_items] and main_items[#main_items].text == "Settings",
     "about is no longer present in the outer menu")
