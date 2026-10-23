@@ -4,6 +4,51 @@
 
 在 KOReader 上阅读微信读书中的书籍、公众号文章的插件。支持同步进度同步，阅读时长同步和统计，查看书评、划线和想法。让Kindle、Kobo等封闭系统设备也能体验微信读书！
 
+## 想要更完整的微信读书体验？试试 WeReader 闭源版
+
+除了本仓库的 **WeRead 开源版**，我也在开发 **WeReader 闭源版**：采用微信读书墨水屏 App 风格的界面，提供书城与推荐、更精确的阅读进度同步、离线阅读上报，以及划线、写想法、评论、点赞等互动功能，适合希望在阅读器上获得更完整微信读书体验的朋友。
+
+**欢迎在小红书观看演示视频，也可以在小红书或闲鱼请作者喝一杯咖啡。** 两个平台的昵称都是 **finlater**，感谢你对个人开发的支持。
+
+| 小红书 · 看演示视频 / 请作者喝咖啡 | 闲鱼 · 请作者喝咖啡 |
+|:---:|:---:|
+| <a href="screenshots/wereader-xiaohongshu.png"><img src="screenshots/wereader-xiaohongshu.png" alt="finlater 的小红书二维码" width="280"></a> | <a href="screenshots/wereader-xianyu.png"><img src="screenshots/wereader-xianyu.png" alt="finlater 的闲鱼主页二维码" width="280"></a> |
+| 小红书昵称：**finlater** | 闲鱼昵称：**finlater** |
+
+<details>
+<summary><strong>开源版与闭源版怎么选？点击展开功能对比</strong></summary>
+
+喜欢 KOReader 的原生阅读体验，需要阅读本地书籍或离线查看已缓存的划线和想法，可以选择本仓库的开源版；希望把书城浏览、离线阅读、云端同步，以及划线、写想法、评论、点赞等互动融入日常阅读，可以了解 WeReader 闭源版。
+
+| 功能 | WeRead 开源版（本项目） | WeReader 闭源版 |
+|:---|:---|:---|
+| 软件界面 | 自制界面，沿用 KOReader 阅读器 | 微信读书墨水屏 App 风格界面 |
+| 书城 / 推荐 | 支持搜索书籍，无独立书城 | 支持书城、分类与推荐 |
+| 书籍缓存 | 支持章节下载、预下载和全书下载 | 支持章节缓存、全书下载与离线阅读 |
+| 阅读进度 | 支持同步，大致进度 | 支持同步，精确进度 |
+| 阅读时长 | 支持自动上报、手动选择上报书籍 | 自动记录并上报，离线记录后联网补报 |
+| 查看划线和想法 | 需预先拉取与匹配，支持离线查看 | 阅读中加载书友划线和想法，互动需联网 |
+| 写划线 / 想法、评论、点赞 | 不支持将 KOReader 本地标注上传到微信读书，也不支持评论、点赞 | 支持创建划线、写想法、评论、点赞并同步云端 |
+| 书评 / 热评 | 支持查看书评 | 支持查看书评、想法及评论互动 |
+| 书签 / 读完状态同步 | 不支持同步到微信读书；可使用 KOReader 本地书签 | 支持同步到云端 |
+| 本地书籍阅读 | 支持；可关联微信读书书目、上报时长、匹配划线和想法 | 以微信读书书架为主，本地文件需先导入微信读书 |
+| 公众号文章 | 支持书架中的公众号书籍 | 支持公众号书籍、微信收藏文章和浮窗文章 |
+| 阅读辅助 | 沿用 KOReader 的词典、手势、排版等功能 | 联网百科、自动翻页、四角长按快捷操作 |
+
+</details>
+
+### WeReader 闭源版截图
+
+| 书架 | 书城 | 我的 |
+|:---:|:---:|:---:|
+| ![WeReader 闭源版书架](screenshots/wereader-bookshelf.png) | ![WeReader 闭源版书城](screenshots/wereader-bookstore.png) | ![WeReader 闭源版我的页面](screenshots/wereader-profile.png) |
+
+| 阅读界面 | 划线与写想法 | 书友想法与评论 |
+|:---:|:---:|:---:|
+| ![WeReader 闭源版阅读界面](screenshots/wereader-reader.png) | ![WeReader 闭源版划线与写想法](screenshots/wereader-highlight.png) | ![WeReader 闭源版书友想法与评论](screenshots/wereader-comments.png) |
+
+WeReader 闭源版不包含微信读书会员或付费书籍；可阅读内容取决于你的微信读书账号权益。**支持 Kindle、Kobo、reMarkable、PocketBook 全机型，运行流畅。**
+
 ## 安装
 
 > ⚠️ 建议使用 **KOReader 2026.03 或更高版本**。旧版本可能无法正常加载或使用插件，例如「工具」菜单中找不到「微信读书」。详见 [#14](https://github.com/finlater/weread.koplugin/issues/14)。
