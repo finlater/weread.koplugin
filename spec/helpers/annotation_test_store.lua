@@ -107,6 +107,7 @@ return {
     connect = connect,
     new = function() return Store:new({}) end,
     legacy_entries = legacy_entries, legacy_checkpoints = legacy_checkpoints,
+    paths = paths,
     cleanup = function()
         for _, path in pairs(paths) do
             os.remove(path); os.remove(path .. "-wal"); os.remove(path .. "-shm")
