@@ -126,14 +126,13 @@ local shelf_settings = { sort_order = "time_desc", paginated = true, view_mode =
 local host = {
     shelf_regular = shelf,
     shelf_mp = {},
-    settings = {
+    settings = require("spec.helpers.book_settings").install({
         set = function() end, flush = function() end,
         get = function(_self, key, default)
-            if key == "books" then return {} end
             if key == "shelf" then return shelf_settings end
             return default
         end,
-    },
+    }, {}),
     bookMatchesFilters = function() return true end,
     isBookDownloaded = function() return false end,
     shelfSortSummary = function() return "Recent" end,

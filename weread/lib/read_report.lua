@@ -66,13 +66,6 @@ local function make_subprocess_runner()
     }
 end
 
-local function book_record(books, book_id)
-    if type(books) ~= "table" then
-        return nil
-    end
-    return books[tostring(book_id)] or books[book_id]
-end
-
 local function response_body(result)
     if type(result) ~= "table" then
         return result
@@ -242,7 +235,7 @@ function ReadReport:resolve_target()
             and tostring(self.current_book_title or "") ~= "" then
             return detected_id, self.current_book_title, "current_document"
         end
-        local book = book_record(self.settings:get("books", {}), detected_id)
+        local book = self.settings:get_book(detected_id)
         return detected_id,
             type(book) == "table" and book.title or detected_id,
             "current_document"
@@ -531,7 +524,7 @@ function ReadReport:_auth_fingerprint()
 end
 
 function ReadReport:_context_fingerprint(book_id)
-    local book = book_record(self.settings:get("books", {}), book_id) or {}
+    local book = self.settings:get_book(book_id) or {}
     local parts = {}
     for _i, field in ipairs(CONTEXT_FIELDS) do
         parts[#parts + 1] = field .. "=" .. tostring(book[field])
@@ -738,8 +731,7 @@ function ReadReport:_context_snapshot(book)
 end
 
 function ReadReport:_persist_context(book_id, snapshot)
-    local books = self.settings:get("books", {})
-    local book = book_record(books, book_id) or { book_id = book_id }
+    local book = self.settings:get_book(book_id) or { book_id = book_id }
     local changed = false
     -- Replace semantics, not merge: a refreshed context may legitimately
     -- clear session fields (notably pclts), and the old wholesale record
@@ -756,8 +748,7 @@ function ReadReport:_persist_context(book_id, snapshot)
         return
     end
     book.book_id = book.book_id or book_id
-    books[book_id] = book
-    self.settings:set("books", books)
+    self.settings:put_book(book_id, book)
     self.settings:flush()
 end
 
@@ -1038,8 +1029,7 @@ function ReadReport:ensure_context(book_id, force)
         error("cookie not configured")
     end
 
-    local books = self.settings:get("books", {})
-    local book = book_record(books, book_id) or {
+    local book = self.settings:get_book(book_id) or {
         book_id = book_id,
         title = self.current_book_title or book_id,
     }
@@ -1048,8 +1038,7 @@ function ReadReport:ensure_context(book_id, force)
         -- Forked child: the parent persists the context from the outcome.
         return book
     end
-    books[book_id] = book
-    self.settings:set("books", books)
+    self.settings:put_book(book_id, book)
     self.settings:flush()
     return book
 end
