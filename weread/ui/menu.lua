@@ -179,6 +179,15 @@ function M:getMainMenuItems()
                     self:showCurrentBookDetails()
                 end),
             }
+            reader_items[#reader_items + 1] = {
+                text = _("Thoughts on this page"),
+                enabled_func = function()
+                    return self.settings:get("cache", {}).show_annotations ~= false
+                end,
+                callback = self:safeCallback(_("Thoughts on this page"), function()
+                    self:showCurrentPageThoughts()
+                end),
+            }
         end
         reader_items[#reader_items + 1] = {
             text = _("Show underlines and thoughts"),
