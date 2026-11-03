@@ -254,6 +254,7 @@ local zh = {
     ["Getting login QR code..."] = "正在获取登录二维码……",
     ["QR login cancelled."] = "扫码登录已取消。",
     ["QR login failed:\n%1"] = "扫码登录失败：\n%1",
+    ["Could not generate a QR code"] = "无法生成二维码",
     ["The QR code has expired. Please try again."] = "二维码已失效，请重新扫码。",
     ["The verification code has expired. Please try again."] = "验证码已失效，请重新扫码。",
     ["Incorrect verification code."] = "验证码不正确。",
