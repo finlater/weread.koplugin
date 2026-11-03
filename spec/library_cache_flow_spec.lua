@@ -64,16 +64,10 @@ local opened_path
 local single_download_options
 local single_download_refreshed = false
 local host = {
-    settings = {
-        get = function(_self, key, default)
-            if key == "books" then return books end
-            return default
-        end,
-        set = function(_self, key, value)
-            if key == "books" then books = value end
-        end,
+    settings = require("spec.helpers.book_settings").install({
+        get = function(_self, _key, default) return default end,
         flush = function() end,
-    },
+    }, books),
     library_db = {
         accountKey = function() return "account-a" end,
         getBook = function() return db_detail end,

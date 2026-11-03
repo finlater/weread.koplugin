@@ -131,13 +131,13 @@ function WeReadPlugin:init()
             return self:detectWeReadBook()
         end,
         get_book = function(book_id)
-            return self.settings:get("books", {})[tostring(book_id)]
+            return self.settings:get_book(book_id)
         end,
         get_chapters = function(book)
             return self:ensureChaptersLoaded(book)
         end,
         refresh_catalog = function(book_id)
-            local book = self.settings:get("books", {})[tostring(book_id)]
+            local book = self.settings:get_book(book_id)
             if type(book) ~= "table" then
                 return nil, "book_not_found"
             end

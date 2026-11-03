@@ -62,12 +62,9 @@ local Library = require("weread.ui.library")
 local books = {}
 local opened
 local host = {
-    settings = {
-        get = function(_self, key, default)
-            if key == "books" then return books end
-            return default
-        end,
-    },
+    settings = require("spec.helpers.book_settings").install({
+        get = function(_self, _key, default) return default end,
+    }, books),
     ui = {
         openFile = function(_self, path) opened = path end,
     },

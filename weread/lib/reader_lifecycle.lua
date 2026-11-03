@@ -76,8 +76,7 @@ function M:handleEndOfBook(status_self)
         return self._orig_onEndOfBook(status_self)
     end
 
-    local books = self.settings:get("books", {})
-    local book = books[book_id]
+    local book = self.settings:get_book(book_id)
     self:ensureChaptersLoaded(book)
     local file = self.ui.document and self.ui.document.file
     local current_idx, current_ch, is_full_book = self:getChapterInfoFromFile(book, file)
@@ -214,8 +213,7 @@ function M:maybePrefetchNextChapter(book_id)
         return false
     end
 
-    local books = self.settings:get("books", {})
-    local book = books[tostring(book_id)] or books[book_id]
+    local book = self.settings:get_book(book_id)
     local chapters = self:ensureChaptersLoaded(book)
     local file = self.ui.document and self.ui.document.file
     if not book or not chapters or not file then
@@ -346,14 +344,17 @@ function M:detectWeReadBook()
     if not file then
         return nil
     end
-    local books = self.settings:get("books", {})
-    for book_id, book in pairs(books) do
-        if type(book) == "table" then
-            local dir = Content.book_resolved_dir(
-                self.settings, book_id, book):gsub("/+$", "") .. "/"
-            if file == book.cached_file or file:sub(1, #dir) == dir then
-                return book_id
-            end
+    for book_id, book_dir in pairs(self.settings:get_book_dirs()) do
+        local dir = book_dir:gsub("/+$", "") .. "/"
+        if file:sub(1, #dir) == dir then
+            return book_id
+        end
+    end
+    -- Rare: a cached_file outside its book dir (e.g. after a cache scan).
+    -- Only non-matching documents pay for loading every record here.
+    for book_id, book in pairs(self.settings:get_books()) do
+        if file == book.cached_file then
+            return book_id
         end
     end
 

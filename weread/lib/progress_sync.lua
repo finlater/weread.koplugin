@@ -89,8 +89,7 @@ end
 function ProgressSync:_persist(book_id, patch)
     book_id = tostring(book_id or "")
     if book_id == "" or type(patch) ~= "table" then return false end
-    local books = self.settings:get("books", {})
-    local book = books[book_id] or { book_id = book_id }
+    local book = self.settings:get_book(book_id) or { book_id = book_id }
     for key, value in pairs(patch) do
         if value == false then
             book[key] = nil
@@ -98,8 +97,7 @@ function ProgressSync:_persist(book_id, patch)
             book[key] = copy(value)
         end
     end
-    books[book_id] = book
-    self.settings:set("books", books)
+    self.settings:put_book(book_id, book)
     self.settings:flush()
     return true
 end

@@ -109,12 +109,9 @@ for key, value in pairs(Library) do
 end
 
 local persisted_books = {}
-host.settings = {
-    get = function(_self, key, default)
-        if key == "books" then return persisted_books end
-        return default
-    end,
-}
+host.settings = require("spec.helpers.book_settings").install({
+    get = function(_self, _key, default) return default end,
+}, persisted_books)
 local book = { bookId = "book-1", title = "Book", cached_chapters = {} }
 host:showChapterList(book)
 expect(catalog_view_data.title == "Book" and #catalog_view_data.chapters == 7,

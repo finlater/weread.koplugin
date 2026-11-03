@@ -51,11 +51,11 @@ local books = {
 }
 local writes = 0
 local settings = {
-    get = function() return books end,
+    get_books = function() return books end,
     has_legacy_book_records = function() return false end,
-    set = function(_self, key, value)
-        expect(key == "books" and value == books,
-            "migration wrote an unexpected settings value")
+    put_book = function(_self, book_id, value)
+        expect(book_id == "123" and value == books["123"],
+            "migration wrote an unexpected book")
         writes = writes + 1
     end,
     flush = function() writes = writes + 1 end,

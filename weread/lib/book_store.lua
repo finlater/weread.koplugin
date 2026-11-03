@@ -121,6 +121,8 @@ local function has_values(value)
     return next(value) ~= nil
 end
 
+BookStore.resolved_dir = resolved_dir
+
 function BookStore.load(settings, book_id, index)
     local book = {}
     merge(book, index)
