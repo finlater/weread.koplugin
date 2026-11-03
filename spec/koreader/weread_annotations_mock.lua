@@ -96,23 +96,26 @@ assert(first.chapter and first.state == 'ready_to_fetch')
 shot('01-matched-default-unchecked')
 -- Native checkbox changes only one chapter, not its siblings.
 picker.layout[2][1].callback()
+pump_until(function() return picker.model.count == 1 end)
 assert(picker.model.count == 1 and picker.model.by_uid['2'].selected)
 picker:edit(first)
 local menu = UIManager._window_stack[#UIManager._window_stack].widget
-assert(menu.item_table and menu.item_table[1].callback, 'native chapter menu')
+assert(menu.choices and menu.on_remove, 'native chapter chooser')
 shot('02-change-chapter-menu')
-menu.item_table[1].callback()
+menu.action_button.callback()
+pump_until(function() return not picker.model.by_uid['1'] end)
 assert(not picker.model.by_uid['1'] and picker.model.count == 1)
 local unmatched = picker.model.nodes[first.index]
 assert(not unmatched.chapter and not unmatched.selectable)
 shot('03-unmatched-keeps-selection')
 picker:edit(unmatched)
 menu = UIManager._window_stack[#UIManager._window_stack].widget
-menu.item_table[1].callback()
+menu.layout[1][1].callback()
+pump_until(function() return picker.model.by_uid['1'] ~= nil end)
 assert(picker.model.by_uid['1'] and picker.model.by_uid['2'].selected and picker.model.count == 1)
 -- Slow real HTTP request, real progress dialog, real Trapper child.
 control { match = '/book/readreviews', delay = 3, times = 0 }
-picker.actions.buttons_layout[1][1].callback()
+picker.action_button.callback()
 pump_until(function()
     local r = plugin._external_annotation_sync
     return r and r.progress and r.progress.dismiss_callback
