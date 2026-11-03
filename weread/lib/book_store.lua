@@ -82,11 +82,17 @@ local function decode(value)
     return json:decode(value)
 end
 
-local function read_json(path)
+local function read_file(path)
     local file = io.open(path, "rb")
     if not file then return nil end
     local content = file:read("*a")
     file:close()
+    return content
+end
+
+local function read_json(path)
+    local content = read_file(path)
+    if not content then return nil end
     local ok, value = pcall(decode, content)
     return ok and type(value) == "table" and value or nil
 end
@@ -94,6 +100,8 @@ end
 local function write_json(path, value)
     local ok, content = pcall(encode, value)
     if not ok then return false, content end
+    -- ponytail: byte compare; encoder key order can vary, which only costs an extra write
+    if read_file(path) == content then return true end
     local tmp_path = path .. ".tmp"
     local file, err = io.open(tmp_path, "wb")
     if not file then return false, err end
@@ -136,7 +144,6 @@ end
 function BookStore.save(settings, book_id, book)
     book = type(book) == "table" and book or {}
     local dir = resolved_dir(settings, book_id, book)
-    os.execute("mkdir -p " .. string.format("%q", dir))
 
     local metadata = { book_id = book.book_id or book.bookId or tostring(book_id) }
     local reading_state = {}
@@ -151,7 +158,13 @@ function BookStore.save(settings, book_id, book)
         end
     end
 
+    -- Spawning a shell per book is slow on e-readers; only mkdir when the
+    -- directory is actually missing (the first write fails).
     local ok, err = write_json(dir .. "/metadata.json", metadata)
+    if not ok then
+        os.execute("mkdir -p " .. string.format("%q", dir))
+        ok, err = write_json(dir .. "/metadata.json", metadata)
+    end
     if not ok then return false, err end
     if has_values(reading_state) then
         ok, err = write_json(dir .. "/reading_state.json", reading_state)
