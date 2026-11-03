@@ -151,6 +151,66 @@ local function fixture(remote, options)
     }
 end
 
+local Mapper = require("weread.lib.position_mapper")
+local actual = require("spec.helpers.yan_word_counts")
+local function position(uid, fraction)
+    return assert(Mapper.local_to_remote(actual, fraction, {current_chapter_uid=uid}))
+end
+local function remote(uid, offset)
+    return assert(Mapper.normalize_remote({progress=0, chapterUid=uid, chapterOffset=offset}, "book", "web", actual))
+end
+test("saved next chapter opening tolerates the previous chapter boundary", function()
+    eq(Mapper.compare(position(6, 1/60), remote(5, 3555), 2), "same",
+        "actual saved opening does not prompt")
+end)
+
+test("compare uses unrounded local progress at the two percent boundary", function()
+    local local_position = position(6, 1/60)
+    local remote_position = remote(6, 14515)
+    local exact_gap = remote_position.percent - local_position.fraction*100
+    eq(exact_gap < 2, true, "actual difference is within policy")
+    eq(Mapper.compare(local_position, remote_position, 2), "same", "no false conflict caused by flooring")
+end)
+
+test("a different nearby chapter remains available to manual sync", function()
+    local f = fixture(nil)
+    f.sync.get_chapters = function() return actual end
+    local a=position(3,1); a.book_id="book"
+    local b=remote(5,3555)
+    f.sync:_resolve(a,b,{book_id="book",book=f.values.books.book,chapters=actual},{manual=true})
+    eq(#f.choices, 1, "manual sync can choose a genuinely different chapter")
+    local opened
+    f.sync.open_chapter = function(_book, chapter)
+        opened = chapter.chapterUid
+        return true
+    end
+    f.choices[1].use_remote()
+    eq(opened, 5, "cloud choice opens the correct chapter")
+    eq(f.sync.pending_jump.fraction, 1, "cloud choice preserves chapter end")
+end)
+
+test("manual sync offers a choice even when automatic conflict prompts are disabled", function()
+    local f = fixture(nil)
+    f.values.sync.ask_on_conflict = false
+    local a = position(3, 1)
+    a.book_id = "book"
+    f.sync:_resolve(a, remote(5, 3555), {
+        book_id = "book", book = f.values.books.book, chapters = actual,
+    }, { manual = true })
+    eq(#f.choices, 1, "manual action still offers position recovery")
+end)
+
+test("exact matching manual progress needs no choice despite integer percent", function()
+    local f = fixture(nil)
+    local a = position(6, 1/60)
+    a.book_id = "book"
+    f.sync:_resolve(a, remote(6, a.chapter_offset), {
+        book_id = "book", book = f.values.books.book, chapters = actual,
+    }, { manual = true })
+    eq(#f.choices, 0, "exact position does not prompt")
+    eq(f.notifications[1].code, "already_synced", "exact match is acknowledged")
+end)
+
 test("page turns reuse word counts and document changes rebuild them", function()
     local word_reads = 0
     local function chapter(uid, words)
