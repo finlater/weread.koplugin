@@ -141,6 +141,42 @@ function ProgressSync:_local_fraction()
     return nil
 end
 
+-- Chapter length in WeRead's chapterOffset space: the rune
+-- length of the chapter's source HTML, taken from the annotation span index
+-- that the downloader already writes to disk. Returns nil when the chapter was
+-- never downloaded; callers then fall back to wordCount, which keeps the old
+-- behaviour instead of making it worse.
+function ProgressSync:_read_chapter_html_len(book_id, uid)
+    if not self.settings then return nil end
+    local ok, spans = pcall(function()
+        local Store = require("weread.lib.annotation_store")
+        self.annotation_store = self.annotation_store
+            or Store:new(self.settings)
+        return self.annotation_store:get(
+            tostring(book_id), "original", tostring(uid))
+    end)
+    if not ok or type(spans) ~= "table" or #spans == 0 then return nil end
+    local last = spans[#spans]
+    local value = type(last) == "table" and tonumber(last[2]) or nil
+    if value and value > 0 then return value end
+    return nil
+end
+
+-- One resolver per open document, memoised per chapter: capture_local runs on
+-- every page update and must not touch the database again for a known chapter.
+function ProgressSync:_chapter_len_resolver(book_id)
+    local cache = {}
+    local function resolve(uid)
+        local key = tostring(uid)
+        local hit = cache[key]
+        if hit ~= nil then return hit or nil end
+        local value = self:_read_chapter_html_len(book_id, key)
+        cache[key] = value or false
+        return value
+    end
+    return resolve
+end
+
 function ProgressSync:capture_local()
     local book_id = self.detect_book()
     if not book_id or is_mp_book(book_id) then
@@ -175,25 +211,28 @@ function ProgressSync:capture_local()
             book = book,
             chapters = chapters,
             position_catalog = PositionMapper.catalog(chapters),
+            chapter_len = self:_chapter_len_resolver(book_id),
             current_chapter = current_chapter,
             is_full_book = is_full_book == true,
             path = path,
         }
         cached = self.document_context
     end
+    if not cached.chapter_len then
+        cached.chapter_len = self:_chapter_len_resolver(book_id)
+    end
     local fraction = self:_local_fraction()
     if fraction == nil then return nil, "position_unavailable" end
+    local mapper_options = {
+        catalog = cached.position_catalog,
+        is_full_book = is_full_book == true,
+        current_chapter_uid = current_chapter
+            and (current_chapter.chapterUid or current_chapter.chapterId),
+        chapter_len = cached.chapter_len,
+        summary = book.summary or book.title or "",
+    }
     local position, reason = PositionMapper.local_to_remote(
-        chapters,
-        fraction,
-        {
-            catalog = cached.position_catalog,
-            is_full_book = is_full_book == true,
-            current_chapter_uid = current_chapter
-                and (current_chapter.chapterUid or current_chapter.chapterId),
-            summary = book.summary or book.title or "",
-        }
-    )
+        chapters, fraction, mapper_options)
     if not position then return nil, reason end
     position.book_id = book_id
     position.captured_at = self.now()
@@ -204,6 +243,7 @@ function ProgressSync:capture_local()
         book_id = book_id,
         book = book,
         chapters = chapters,
+        chapter_len = cached.chapter_len,
         current_chapter = current_chapter,
         is_full_book = is_full_book == true,
         path = path,
@@ -244,16 +284,17 @@ function ProgressSync:_clear_verified(reason)
     end
 end
 
-function ProgressSync:_fetch_remote(book_id, chapters)
+function ProgressSync:_fetch_remote(book_id, chapters, chapter_len)
     local gateway
     local web
     local gateway_error
     local web_error
+    local options = { chapter_len = chapter_len }
     if self.settings:is_api_configured() then
         local ok, result = pcall(self.client.get_progress, self.client, book_id)
         if ok then
             gateway, gateway_error = PositionMapper.normalize_remote(
-                result, book_id, "gateway", chapters)
+                result, book_id, "gateway", chapters, options)
         else
             gateway_error = tostring(result)
         end
@@ -263,7 +304,7 @@ function ProgressSync:_fetch_remote(book_id, chapters)
             self.client.get_web_progress, self.client, book_id)
         if ok then
             web, web_error = PositionMapper.normalize_remote(
-                result, book_id, "web", chapters)
+                result, book_id, "web", chapters, options)
         else
             web_error = tostring(result)
         end
@@ -286,6 +327,7 @@ function ProgressSync:_apply_remote(remote, context, options)
         remote,
         {
             is_full_book = context.is_full_book,
+            chapter_len = context.chapter_len,
             current_chapter_uid = context.current_chapter
                 and (context.current_chapter.chapterUid
                     or context.current_chapter.chapterId),
@@ -594,7 +636,8 @@ function ProgressSync:_pull(options)
         end
         local remote, pull_error = self:_fetch_remote(
             context.book_id,
-            context.chapters
+            context.chapters,
+            context.chapter_len
         )
         self.pulling = false
         if generation ~= self.generation

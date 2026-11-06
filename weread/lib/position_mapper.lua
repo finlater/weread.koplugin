@@ -78,11 +78,27 @@ local function raw_field(value, ...)
     return nil
 end
 
+-- WeRead's chapterOffset is an offset into the chapter's
+-- source HTML (htmlPos), not a word count -- the official client converts with
+-- ChapterIndex.txt2html before reporting. Chapter length must therefore come
+-- from the cached span index when available; wordCount remains the fallback for
+-- chapters that were never downloaded.
+local function effective_len(item, options)
+    if not item then return 0, false end
+    local resolve = options and options.chapter_len
+    if type(resolve) == "function" and item.uid ~= nil then
+        local ok, value = pcall(resolve, item.uid)
+        value = ok and tonumber(value) or nil
+        if value and value > 0 then return value, true end
+    end
+    return item.words, false
+end
+
 function PositionMapper.catalog(chapters)
     return catalog(chapters)
 end
 
-function PositionMapper.normalize_remote(value, book_id, source, chapters)
+function PositionMapper.normalize_remote(value, book_id, source, chapters, options)
     local node = find_progress_node(value, book_id)
     if not node then return nil, "progress_not_found" end
     local percent = tonumber(raw_field(
@@ -116,15 +132,21 @@ function PositionMapper.normalize_remote(value, book_id, source, chapters)
     local map = catalog(chapters)
     local item = remote.chapter_uid ~= nil
         and map.by_uid[tostring(remote.chapter_uid)] or nil
+    local len, is_html = effective_len(item, options)
     if item and remote.has_chapter_offset
-        and item.words > 0 and map.total_words > 0 then
-        local offset = clamp(remote.chapter_offset, 0, item.words)
+        and len > 0 and item.words > 0 and map.total_words > 0 then
+        -- chapterOffset is an htmlPos offset; turn it into a chapter fraction
+        -- first so the book percentage stays in word units.
+        local fraction = clamp(remote.chapter_offset, 0, len) / len
         remote.percent = clamp(
-            (item.before + offset) / map.total_words * 100,
+            (item.before + fraction * item.words) / map.total_words * 100,
             0,
             100
         )
-        remote.position_basis = "chapter_offset"
+        -- The word fallback behaves exactly like the old code, so it keeps
+        -- the old basis name; only the html path is new.
+        remote.position_basis = is_html and "chapter_html_offset"
+            or "chapter_offset"
     else
         remote.position_basis = "raw_percent"
     end
@@ -157,6 +179,28 @@ function PositionMapper.choose_remote(web, gateway, threshold)
     return result
 end
 
+-- One place builds the position record, so the upload path and the pull path
+-- cannot disagree about where a position is.
+local function make_position(selected, chapter_fraction, overall_fraction,
+    options, map)
+    local len = effective_len(selected, options)
+    if len <= 0 then len = selected.words end
+    local offset = clamp(math.floor(chapter_fraction * len), 0, len)
+
+    return {
+        -- Percent stays a float: the payload floors it once on the way out, and
+        -- the caller needs the continuous value for comparison and for the jump.
+        percent = clamp(overall_fraction, 0, 1) * 100,
+        fraction = clamp(overall_fraction, 0, 1),
+        chapter_uid = selected.uid,
+        chapter_idx = selected.chapter_idx,
+        chapter_offset = offset,
+        summary = tostring(options.summary or ""),
+        safe = true,
+        is_full_book = options.is_full_book == true,
+    }
+end
+
 function PositionMapper.local_to_remote(chapters, fraction, options)
     options = options or {}
     local map = options.catalog or catalog(chapters)
@@ -164,7 +208,7 @@ function PositionMapper.local_to_remote(chapters, fraction, options)
     fraction = clamp(fraction, 0, 1)
 
     local selected
-    local offset
+    local chapter_fraction
     local overall_fraction
     if options.is_full_book then
         local target = fraction * map.total_words
@@ -186,7 +230,9 @@ function PositionMapper.local_to_remote(chapters, fraction, options)
             end
         end
         if not selected then return nil, "catalog_empty" end
-        offset = clamp(math.floor(target - selected.before), 0, selected.words)
+        chapter_fraction = selected.words > 0
+            and clamp((target - selected.before) / selected.words, 0, 1)
+            or 0
         overall_fraction = fraction
     else
         local uid = options.current_chapter_uid
@@ -194,21 +240,13 @@ function PositionMapper.local_to_remote(chapters, fraction, options)
         if not selected or selected.words <= 0 then
             return nil, "current_chapter_not_found"
         end
-        offset = clamp(math.floor(fraction * selected.words), 0, selected.words)
-        overall_fraction = (selected.before + offset) / map.total_words
+        chapter_fraction = clamp(fraction, 0, 1)
+        overall_fraction = (selected.before
+            + chapter_fraction * selected.words) / map.total_words
     end
 
-    return {
-        percent = math.floor(clamp(overall_fraction, 0, 1) * 100),
-        fraction = clamp(overall_fraction, 0, 1),
-        chapter_uid = selected.uid,
-        chapter_idx = selected.chapter_idx,
-        chapter_offset = math.floor(offset),
-        chapter_fraction = selected.words > 0 and offset / selected.words or 0,
-        summary = tostring(options.summary or ""),
-        safe = true,
-        is_full_book = options.is_full_book == true,
-    }
+    return make_position(selected, chapter_fraction, overall_fraction,
+        options, map)
 end
 
 function PositionMapper.remote_to_local(chapters, remote, options)
@@ -223,11 +261,14 @@ function PositionMapper.remote_to_local(chapters, remote, options)
 
     local has_offset = remote.has_chapter_offset ~= false
         and remote.chapter_offset ~= nil
-    if target and has_offset and target.words > 0 then
-        local offset = clamp(remote.chapter_offset, 0, target.words)
-        chapter_fraction = offset / target.words
+    -- Each side must be divided by the length of its own coordinate space.
+    -- Dividing an htmlPos offset by wordCount is what made the jump overshoot.
+    local len = effective_len(target, options)
+    if target and has_offset and len > 0 and target.words > 0 then
+        chapter_fraction = clamp(remote.chapter_offset, 0, len) / len
         if map.total_words > 0 then
-            overall_fraction = (target.before + offset) / map.total_words
+            overall_fraction = (target.before
+                + chapter_fraction * target.words) / map.total_words
         end
     end
 

@@ -14,6 +14,14 @@ Pass ``--round-trip-write`` to reproduce the Web Reader's two-stage session
 flow (enter-read handshake, then a report with ``rt=0``), upload the exact
 position just pulled from the Gateway, and pull it again. If the response has
 no acknowledgement, the script uses a reversible one-character offset probe.
+
+Pass ``--chapter-offset-space`` for a purely offline check that ``chapterOffset``
+is an offset into the chapter's source HTML rather than a word count. It reads
+no credentials and prints only counts: for each sample it reports
+``r = html_len / word_count``, ``co / html_len`` and ``co / word_count``, and
+fails when an offset does not fit inside the html length. Samples default to
+recorded pairs; add your own with ``--chapter-sample HTML:WORDS:CO`` or
+``--chapter-samples-json PATH``.
 """
 
 from __future__ import annotations
@@ -23,6 +31,7 @@ import copy
 import json
 import math
 import re
+import statistics
 import sys
 import time
 import urllib.error
@@ -468,6 +477,118 @@ def wait_for_position(
     return False, current
 
 
+# Chapter geometry recorded from real syncs: (html_len, word_count, chapter_offset).
+# Counts only - no book text, no account data. A position cannot exceed the
+# length of the space it lives in, which is what tells the two hypotheses apart:
+# co/word_count goes past 1.0 in this data, co/html_len never does.
+DEFAULT_CHAPTER_SAMPLES = (
+    (9645, 5448, 5244),
+    (15645, 11320, 4916),
+    (3559, 2696, 1619),
+    (1035, 527, 801),
+)
+
+
+def _parse_chapter_sample(value: str) -> tuple[int, int, int]:
+    parts = value.replace(" ", "").split(":")
+    if len(parts) != 3:
+        raise ValidationError(
+            f"chapter sample must be HTML:WORDS:CO, got {value!r}"
+        )
+    try:
+        html_len, word_count, offset = (int(part) for part in parts)
+    except ValueError as exc:
+        raise ValidationError(f"chapter sample is not numeric: {value!r}") from exc
+    if html_len <= 0 or word_count <= 0 or offset < 0:
+        raise ValidationError(
+            f"chapter sample out of range (html>0, words>0, co>=0): {value!r}"
+        )
+    return html_len, word_count, offset
+
+
+def _load_chapter_samples(args: argparse.Namespace) -> list[tuple[int, int, int]]:
+    samples = [
+        _parse_chapter_sample(value) for value in getattr(args, "chapter_sample", [])
+    ]
+    path = getattr(args, "chapter_samples_json", None)
+    if path is not None:
+        if str(path) == "-":
+            payload = json.load(sys.stdin)
+        else:
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(payload, list):
+            raise ValidationError("chapter samples JSON must be a list")
+        for item in payload:
+            if isinstance(item, dict):
+                samples.append((
+                    int(item["html_len"]),
+                    int(item["word_count"]),
+                    int(item["chapter_offset"]),
+                ))
+            elif isinstance(item, (list, tuple)) and len(item) == 3:
+                samples.append((int(item[0]), int(item[1]), int(item[2])))
+            else:
+                raise ValidationError(f"unsupported chapter sample: {item!r}")
+    return samples or list(DEFAULT_CHAPTER_SAMPLES)
+
+
+def chapter_offset_space(samples: list[tuple[int, int, int]]) -> int:
+    """Offline check that chapterOffset lives in the chapter's html space."""
+
+    rows = []
+    overflow_words = 0
+    overflow_html = []
+    for index, (html_len, word_count, offset) in enumerate(samples, start=1):
+        if html_len <= 0 or word_count <= 0 or offset < 0:
+            raise ValidationError(
+                f"sample {index}: html>0, words>0 and co>=0 are required"
+            )
+        ratio = html_len / word_count
+        in_html = offset <= html_len
+        in_words = offset <= word_count
+        if not in_words:
+            overflow_words += 1
+        if not in_html:
+            overflow_html.append(index)
+        rows.append((index, html_len, word_count, offset, ratio,
+                     offset / html_len, offset / word_count, in_html, in_words))
+
+    print("chapterOffset space check (offline, counts only)")
+    print()
+    header = ("#", "html", "words", "co", "r=html/words", "co/html", "co/words",
+              "fits html", "fits words")
+    widths = (3, 7, 7, 7, 13, 8, 9, 10, 11)
+    print("".join(str(cell).rjust(width) if i else str(cell).ljust(width)
+                  for i, (cell, width) in enumerate(zip(header, widths))))
+    for row in rows:
+        cells = (
+            row[0], row[1], row[2], row[3], f"{row[4]:.3f}", f"{row[5]:.3f}",
+            f"{row[6]:.3f}", "yes" if row[7] else "NO", "yes" if row[8] else "NO",
+        )
+        print("".join(str(cell).rjust(width) if i else str(cell).ljust(width)
+                      for i, (cell, width) in enumerate(zip(cells, widths))))
+
+    ratios = [row[4] for row in rows]
+    print()
+    print(f"samples={len(rows)}  median r={statistics.median(ratios):.3f}  "
+          f"min={min(ratios):.3f}  max={max(ratios):.3f}")
+    print(f"offsets past the word count: {overflow_words}/{len(rows)} "
+          f"(a word-space reading would be out of range)")
+    if overflow_html:
+        joined = ", ".join(str(index) for index in overflow_html)
+        raise ValidationError(
+            f"offsets past the html length in sample(s) {joined}: "
+            "the html-space hypothesis does not hold for this data"
+        )
+    print("offsets past the html length: 0/"
+          f"{len(rows)} (html-space reading always in range)")
+    drift = statistics.median(row[6] - row[5] for row in rows)
+    print()
+    print("Reading co as a word offset puts the reader "
+          f"{drift * 100:.1f} chapter-percent too far forward (median).")
+    return 0
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -506,11 +627,36 @@ def parse_args() -> argparse.Namespace:
             "(default: 1)"
         ),
     )
+    parser.add_argument(
+        "--chapter-offset-space",
+        action="store_true",
+        help=(
+            "offline: check that chapterOffset fits the chapter's html length "
+            "rather than its word count (no credentials, no network)"
+        ),
+    )
+    parser.add_argument(
+        "--chapter-sample",
+        action="append",
+        default=[],
+        metavar="HTML:WORDS:CO",
+        help="extra chapter geometry for --chapter-offset-space; repeatable",
+    )
+    parser.add_argument(
+        "--chapter-samples-json",
+        type=Path,
+        help=(
+            "JSON list of chapter geometry for --chapter-offset-space: "
+            'objects with html_len/word_count/chapter_offset, or [html,words,co]'
+        ),
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    if args.chapter_offset_space:
+        return chapter_offset_space(_load_chapter_samples(args))
     settings = load_settings(args.settings)
     book_id = str(args.book_id or settings["default_book_id"] or "")
     if not book_id:
