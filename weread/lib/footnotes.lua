@@ -73,6 +73,17 @@ local function clean_note_text(value)
             break
         end
     end
+    -- WeRead separates the marker from the note text with a
+    -- full-width space (U+2003) or a NBSP; Lua's %s only matches ASCII space,
+    -- so the generated note would otherwise start with a stray wide space.
+    -- One whole sequence at a time: a byte class here would also match the
+    -- 0xE3 lead byte of U+3000-U+3FFF and cut the first byte off kana or CJK
+    -- punctuation, leaving invalid UTF-8.
+    while true do
+        local trimmed = text:gsub("^\194\160", ""):gsub("^\227\128\128", "")
+        if trimmed == text then break end
+        text = trimmed
+    end
     return text:match("^%s*(.-)%s*$") or ""
 end
 
@@ -228,9 +239,52 @@ local function looks_like_ref(attrs, href, inner)
     return marker and (file == "" or file_hint or anchor_hint) and true or false
 end
 
+-- Is this marker link drawn as a superscript? WeRead writes a
+-- citation as `<a href="#note" id="ref"><span class="text-sup">[8]</span></a>`
+-- (or `<span class="super"><a …>[8]</a></span>`, i.e. the styling sits on the
+-- parent) and the matching note as `<a href="#ref" id="note"><span>[8]</span></a>`.
+-- Both ends carry a numeric marker and an intra-document href, so
+-- `looks_like_ref` accepts both; the superscript styling is what tells the
+-- citation end from the note end. `context` is the raw markup right before the
+-- link, used to catch the "styling on the parent" variant.
+local function ref_is_superscript(attrs, inner, context)
+    inner = tostring(inner or "")
+    if inner:find("<[sS][uU][pP]%s*[>/]") then return true end
+    for raw_tag in inner:gmatch("<[%a][^>]*>") do
+        if (get_attr(raw_tag, "class") or ""):lower():find("sup", 1, true) then
+            return true
+        end
+        if (get_attr(raw_tag, "style") or ""):lower():gsub("%s+", "")
+            :find("vertical%-align:super") then
+            return true
+        end
+    end
+    local style = (get_attr(attrs, "style") or ""):lower():gsub("%s+", "")
+    if style:find("vertical%-align:super", 1) then return true end
+    local open_tag = tostring(context or ""):match("<[%a][^>]*>%s*$")
+    if open_tag then
+        local tag = open_tag:match("^<([%a]+)")
+        if tag and tag:lower() == "sup" then return true end
+        if (get_attr(open_tag, "class") or ""):lower():find("sup", 1, true) then
+            return true
+        end
+        if (get_attr(open_tag, "style") or ""):lower():gsub("%s+", "")
+            :find("vertical%-align:super") then
+            return true
+        end
+    end
+    return false
+end
+
 local function collect_refs(html)
+    html = tostring(html or "")
     local refs = {}
-    for attrs, inner in tostring(html or ""):gmatch("<[aA]([^>]*)>(.-)</[aA]%s*>") do
+    local init = 1
+    while true do
+        -- find() instead of gmatch() so the markup before the link is available
+        local s, e, attrs, inner = html:find("<[aA]([^>]*)>(.-)</[aA]%s*>", init)
+        if not s then break end
+        init = e + 1
         local href = get_attr(attrs, "href")
         if href and looks_like_ref(attrs, href, inner) then
             local file, anchor = split_href(href)
@@ -241,6 +295,8 @@ local function collect_refs(html)
                 key = ref_key(file, anchor),
                 ref_id = get_attr(attrs, "id"),
                 display = ref_display(inner),
+                sup = ref_is_superscript(attrs, inner,
+                    html:sub(math.max(1, s - 240), s - 1)),
             }
         end
     end
@@ -367,10 +423,29 @@ end
 
 function Footnotes.scan_chapter(html, chapter)
     local refs = collect_refs(html)
-    local forward_ref_ids = {}
+    -- Tell the two ends of a reciprocal footnote pair apart.
+    -- `note_targets` holds the anchors cited by superscript marker links (the
+    -- real footnotes). A marker link that is itself pointed at by one of them,
+    -- and that is not superscripted, is the note end: its own id is what the
+    -- citation links to. Keeping those ids out of `forward_ref_ids` is the
+    -- whole fix -- otherwise every citation target is also "the id of some
+    -- reference", every citation is classified as a backlink, and the chapter
+    -- is left with its original (footnote-hint-free) markup.
+    local note_targets = {}
+    for _i, ref in ipairs(refs) do
+        if ref.sup and ref.anchor and ref.anchor ~= "" then
+            note_targets[ref.anchor] = true
+        end
+    end
+    local forward_ref_ids, note_end_ids = {}, {}
     for _i, ref in ipairs(refs) do
         if ref.ref_id and ref.ref_id ~= "" then
-            forward_ref_ids[ref.ref_id] = true
+            if not ref.sup and note_targets[ref.ref_id] then
+                note_end_ids[ref.ref_id] = true
+                ref.note_end = true
+            else
+                forward_ref_ids[ref.ref_id] = true
+            end
         end
     end
     return {
@@ -381,6 +456,7 @@ function Footnotes.scan_chapter(html, chapter)
         definition_backlinks = collect_definition_backlinks(html),
         refs = refs,
         forward_ref_ids = forward_ref_ids,
+        note_end_ids = note_end_ids,
     }
 end
 
@@ -497,19 +573,38 @@ local function strip_consumed_note_blocks(html, converted_anchors)
     html = html:gsub("<[pP]([^>]*)>(.-)</[pP]%s*>", function(attrs, inner)
         local class = get_attr(attrs, "class") or ""
         local lower = class:lower()
-        if not has_token(class, "note") and not lower:find("fncontent", 1, true) then
+        -- A note paragraph may itself cite another note; after
+        -- the rewrite above that inner citation is a `.wr-fn-ref` anchor whose
+        -- id is the backlink target of its own note. Removing the paragraph
+        -- would delete that anchor and leave a dangling backlink, so such
+        -- paragraphs are always kept (their note text stays visible in place).
+        if inner:find('class="wr%-fn%-ref"') then
             return "<p" .. attrs .. ">" .. inner .. "</p>"
         end
         local consumed = false
         local own_anchor = get_attr(attrs, "id") or get_attr(attrs, "name")
         if own_anchor and converted_anchors[own_anchor] then consumed = true end
-        if not consumed then
+        if not consumed
+            and (has_token(class, "note") or lower:find("fncontent", 1, true)) then
             for raw_tag in inner:gmatch("<[%a][^>]*>") do
                 local anchor = get_attr(raw_tag, "id") or get_attr(raw_tag, "name")
                 if anchor and converted_anchors[anchor] then
                     consumed = true
                     break
                 end
+            end
+        end
+        -- WeRead keeps the note text in an ordinary paragraph
+        -- (`<p class="content"><a href="#ref" id="note">[8]</a> text</p>`) with
+        -- no note-ish class. Recognize it by the fact that the paragraph
+        -- *starts* with an anchor whose text was consumed as a note; without
+        -- this the note would stay in the chapter flow and be shown twice
+        -- (once in place, once in the generated note section).
+        if not consumed then
+            local lead_attrs = inner:match("^%s*<[aA]([^>]*)>")
+            if lead_attrs then
+                local anchor = get_attr(lead_attrs, "id") or get_attr(lead_attrs, "name")
+                if anchor and converted_anchors[anchor] then consumed = true end
             end
         end
         if consumed then
@@ -562,6 +657,14 @@ function Footnotes.transform_chapter(html, scan, index)
         end
         stats.candidates = stats.candidates + 1
         local file, anchor = split_href(href)
+        -- The note-side marker of a reciprocal pair is not a
+        -- citation: leave its downstream markup untouched and let the note
+        -- paragraph be removed together with the generated note section.
+        local own_id = get_attr(attrs, "id")
+        if own_id and scan.note_end_ids and scan.note_end_ids[own_id] then
+            stats.backlinks = stats.backlinks + 1
+            return "<a" .. attrs .. ">" .. inner .. "</a>"
+        end
         if (scan.definition_backlinks and scan.definition_backlinks[anchor])
             or (scan.forward_ref_ids and scan.forward_ref_ids[anchor])
             or (scan.anchors and scan.anchors[anchor]
