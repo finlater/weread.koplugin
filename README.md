@@ -8,12 +8,12 @@
 
 除了本仓库的 **WeRead 开源版**，我也在开发 **WeReader 闭源版**：采用微信读书墨水屏 App 风格的界面，提供书城与推荐、更精确的阅读进度同步、离线阅读上报，以及划线、写想法、评论、点赞等互动功能，适合希望在阅读器上获得更完整微信读书体验的朋友。
 
-**欢迎在小红书观看演示视频，也可以在小红书或闲鱼请作者喝一杯咖啡。** 两个平台的昵称都是 **finlater**，感谢你对个人开发的支持。
+**欢迎在哔哩哔哩或小红书观看演示视频，也可以在闲鱼或小红书请作者喝一杯咖啡。** 闲鱼和小红书的昵称都是 **finlater**，感谢你对个人开发的支持。
 
-| 小红书 · 看演示视频 / 请作者喝咖啡 | 闲鱼 · 请作者喝咖啡 |
-|:---:|:---:|
-| <a href="screenshots/wereader-xiaohongshu.png"><img src="screenshots/wereader-xiaohongshu.png" alt="finlater 的小红书二维码" width="280"></a> | <a href="screenshots/wereader-xianyu.png"><img src="screenshots/wereader-xianyu.png" alt="finlater 的闲鱼主页二维码" width="280"></a> |
-| 小红书昵称：**finlater** | 闲鱼昵称：**finlater** |
+| 哔哩哔哩 · 看演示视频 | 闲鱼 · 请作者喝咖啡 | 小红书 · 看演示视频 / 请作者喝咖啡 |
+|:---:|:---:|:---:|
+| <a href="screenshots/wereader-bilibili.png"><img src="screenshots/wereader-bilibili.png" alt="WeReader 闭源版哔哩哔哩演示视频二维码" width="280"></a> | <a href="screenshots/wereader-xianyu.png"><img src="screenshots/wereader-xianyu.png" alt="finlater 的闲鱼主页二维码" width="280"></a> | <a href="screenshots/wereader-xiaohongshu.png"><img src="screenshots/wereader-xiaohongshu.png" alt="finlater 的小红书二维码" width="280"></a> |
+| [打开演示视频](https://www.bilibili.com/video/BV1C9xY6vEV1/) | 闲鱼昵称：**finlater** | 小红书昵称：**finlater** |
 
 <details>
 <summary><strong>开源版与闭源版怎么选？点击展开功能对比</strong></summary>
