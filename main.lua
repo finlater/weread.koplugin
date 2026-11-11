@@ -175,9 +175,12 @@ function WeReadPlugin:init()
                 book_id, position, elapsed_seconds)
         end,
         goto_fraction = function(fraction)
-            local percent = math.floor(
-                math.max(0, math.min(1, tonumber(fraction) or 0))
-                    * 100 + 0.5)
+            -- Keep the float: ReaderRolling:onGotoPercent
+            -- accepts it and lands on a page itself. Rounding to a whole
+            -- percent here discarded up to half a percent of the book, which is
+            -- five-plus pages in a long one.
+            local percent = math.max(0, math.min(1, tonumber(fraction) or 0))
+                * 100
             return pcall(function()
                 if self.ui and self.ui.rolling
                     and self.ui.rolling.onGotoPercent then
