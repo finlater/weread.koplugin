@@ -21,7 +21,7 @@ package.preload["weread.lib.logger"] = function()
         end,
     }
 end
-package.preload["ui/widget/qrmessage"] = function() return {} end
+package.preload["weread.ui.qr_dialog"] = function() return {} end
 package.preload["ffi/util"] = function()
     return { template = function(text) return text end }
 end
@@ -114,5 +114,43 @@ end
 
 expect(run_login("1234567890") ~= run_login("2345678901"),
     "separate device fingerprints must reach the server independently")
+
+local shown, qr_opts, show_args
+package.loaded["weread.lib.qr_login"] = nil
+package.loaded["weread.ui.qr_dialog"] = nil
+package.loaded["ui/uimanager"] = nil
+package.preload["weread.ui.qr_dialog"] = function()
+    return { new = function(_self, opts) qr_opts = opts; return opts end }
+end
+package.preload["ui/uimanager"] = function()
+    return {
+        scheduleIn = function(_self, delay, callback)
+            if delay == 0.2 then callback() end
+        end,
+        show = function(_self, widget, mode) shown, show_args = widget, mode end,
+        close = function() end,
+    }
+end
+local ShowLogin = require("weread.lib.qr_login")
+local show_login = ShowLogin:new({}, client, {})
+show_login:_show_qr("uid", show_login.generation)
+expect(qr_opts.width == nil and qr_opts.height == nil and qr_opts.scale_factor == nil,
+    "QRDialog owns the QR sizing; the caller must not override it")
+expect(shown == qr_opts and show_args == "full",
+    "QR dialog must be shown with a full e-ink refresh")
+
+local infos = {}
+local poll_login = ShowLogin:new({
+    showInfo = function(_self, text) infos[#infos + 1] = text end,
+    showTransientInfo = function() end,
+}, client, {})
+poll_login.qr_dialog = {}
+poll_login.started_at = os.time()
+poll_login._poll_protocol = function() error("getLoginInfo failed: HTTP 401") end
+for _ = 1, 3 do poll_login:_poll("uid", poll_login.generation) end
+expect(#infos == 0 and poll_login.poll_unauthorized == 3,
+    "transient getLoginInfo 401 must be retried, not reported")
+poll_login:_poll("uid", poll_login.generation)
+expect(#infos == 1, "persistent getLoginInfo 401 must still be reported")
 
 print("qr_login_spec: " .. checks .. " checks passed")
