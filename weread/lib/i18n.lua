@@ -345,6 +345,7 @@ local zh = {
     ["Full-book download stopped: %1 of %2 chapters failed.\n\nNo incomplete EPUB was saved. Please retry the download."] = "整本下载已停止：共 %2 章，其中 %1 章失败。\n\n未保存残缺的 EPUB，请重试下载。",
     ["Full-book download paused: %1 of %2 chapters failed.\n\nCompleted chapters were kept. Choose Download full book again to continue."] = "整本下载已暂停：共 %2 章，其中 %1 章失败。\n\n已完成章节已保留，再次选择“下载全书”即可继续。",
     ["Resuming downloaded chapter %1/%2"] = "跳过已下载章节 %1/%2",
+    ["Retrying failed chapters %1/%2"] = "正在重试失败章节 %1/%2",
     ["Verifying downloaded chapters %1/%2"] = "正在校验已下载章节 %1/%2",
     ["No readable chapter found"] = "没有可阅读的章节。",
     ["Read now"] = "立即阅读",
