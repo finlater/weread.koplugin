@@ -35,12 +35,12 @@ for _, size in ipairs({ { 600, 800 }, { 800, 600 }, { 1072, 1448 } }) do
         "recommendation buttons extend beyond the screen")
     viewer.buttons_table[1][1].callback()
     local qr = top()
-    assert(qr ~= viewer and qr.text == "http://xhslink.com/m/8aP668RQREF")
+    assert(qr ~= viewer and qr.file:match("icons/xiaohongshu%.jpeg$"))
     draw("xiaohongshu-qr-" .. width .. "x" .. height)
-    local frame = qr[1][1].dimen
+    local frame = qr.dimen
     assert(frame.x >= 0 and frame.y >= 0
         and frame.x + frame.w <= width and frame.y + frame.h <= height)
-    qr:onTapClose()
+    qr:onClose()
     fastforward_ui_events()
     assert(top() == viewer, "QR dismissal should return to the introduction")
     viewer.buttons_table[2][1].callback()
@@ -48,4 +48,4 @@ for _, size in ipairs({ { 600, 800 }, { 800, 600 }, { 1072, 1448 } }) do
     assert(#UIManager._window_stack == 0, "return should close the introduction")
 end
 UIManager:quit()
-print("PASS: native recommendation, QR generation, return flow and three screen sizes")
+print("PASS: native recommendation, QR image, return flow and three screen sizes")

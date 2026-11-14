@@ -12,8 +12,8 @@
 
 | 哔哩哔哩 · 看演示视频 | 闲鱼 · 请作者喝咖啡 | 小红书 · 看演示视频 / 请作者喝咖啡 |
 |:---:|:---:|:---:|
-| <a href="screenshots/wereader-bilibili.png"><img src="screenshots/wereader-bilibili.png" alt="WeReader 闭源版哔哩哔哩演示视频二维码" width="280"></a> | <a href="screenshots/wereader-xianyu.png"><img src="screenshots/wereader-xianyu.png" alt="finlater 的闲鱼主页二维码" width="280"></a> | <a href="screenshots/wereader-xiaohongshu.png"><img src="screenshots/wereader-xiaohongshu.png" alt="finlater 的小红书二维码" width="280"></a> |
-| [打开演示视频](https://www.bilibili.com/video/BV1C9xY6vEV1/) | 闲鱼昵称：**finlater** | 小红书昵称：**finlater** |
+| <a href="screenshots/wereader-bilibili.png"><img src="screenshots/wereader-bilibili.png" alt="WeReader 闭源版哔哩哔哩演示视频二维码" width="280"></a> | <a href="screenshots/wereader-xianyu.png"><img src="screenshots/wereader-xianyu.png" alt="finlater 的闲鱼主页二维码" width="280"></a> | <a href="icons/xiaohongshu.jpeg"><img src="icons/xiaohongshu.jpeg" alt="finlater 的小红书二维码" width="280"></a> |
+| [打开演示视频](https://www.bilibili.com/video/BV1C9xY6vEV1/) | 闲鱼昵称：**finlater** | 小红书昵称：**finlater**（小红书号：6793499788） |
 
 <details>
 <summary><strong>开源版与闭源版怎么选？点击展开功能对比</strong></summary>

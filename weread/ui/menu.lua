@@ -13,6 +13,8 @@ local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
 local T = PluginUtil.T
 
+local icons_dir = debug.getinfo(1, "S").source:match("^@(.*/)") .. "../../icons/"
+
 local M = {}
 
 -- Set the default once per module load; KOReader applies user menu orders later.
@@ -845,12 +847,11 @@ function M:showWeReaderInfo()
             {{
                 text = _("Xiaohongshu QR code"),
                 callback = function()
-                    local QRMessage = require("ui/widget/qrmessage")
-                    local side = math.floor(math.min(Screen:getWidth(), Screen:getHeight()) * 0.9)
-                    UIManager:show(QRMessage:new{
-                        text = "http://xhslink.com/m/8aP668RQREF",
-                        width = side,
-                        height = side,
+                    local ImageViewer = require("ui/widget/imageviewer")
+                    UIManager:show(ImageViewer:new{
+                        file = icons_dir .. "xiaohongshu.jpeg",
+                        title_text = _("Xiaohongshu QR code"),
+                        fullscreen = true,
                     })
                 end,
             }},

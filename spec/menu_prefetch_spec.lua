@@ -20,7 +20,7 @@ for _, name in ipairs({
     "ui/widget/confirmbox",
     "ui/widget/infomessage",
     "ui/widget/textviewer",
-    "ui/widget/qrmessage",
+    "ui/widget/imageviewer",
 }) do
     package.preload[name] = function()
         return { new = function(_self, options)
@@ -287,10 +287,13 @@ expect(#recommendation.buttons_table == 2
         and recommendation.buttons_table[1][1].text == "Xiaohongshu QR code",
     "recommendation offers only Xiaohongshu QR and a return button")
 recommendation.buttons_table[1][1].callback()
-expect(shown_widget.text == "http://xhslink.com/m/8aP668RQREF"
-        and shown_widget.width == 540 and shown_widget.height == 540
+local qr_file = io.open(shown_widget.file, "rb")
+expect(shown_widget.file:match("icons/xiaohongshu%.jpeg$")
+        and qr_file ~= nil
+        and shown_widget.fullscreen == true
         and shown_widget.timeout == nil and closed_widget == nil,
-    "native QR uses the decoded profile URL without closing the introduction or timing out")
+    "native image viewer uses the supplied account QR image without closing the introduction or timing out")
+if qr_file then qr_file:close() end
 recommendation.buttons_table[2][1].callback()
 expect(closed_widget == recommendation, "return closes the recommendation")
 local main_items = host:getMainMenuItems()
