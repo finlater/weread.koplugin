@@ -1220,6 +1220,57 @@ function Content.download_remote_images(client, xhtml, used_names, progress)
     return body, assets
 end
 
+-- res.weread.qq.com refuses bursts of chapter resource packages with
+-- HTTP 499 (empty JSON body). A full book is hundreds of back-to-back
+-- packages, so one refusal used to fail that chapter and, through it, the
+-- whole full-book download. Retry only the refusals that can clear on their
+-- own; a 403 (no entitlement) or a malformed archive is not retried.
+local RESOURCE_PACKAGE_ATTEMPTS = 4
+local RESOURCE_PACKAGE_BACKOFF_SECONDS = 0.8
+
+local function resource_package_is_transient(err)
+    local text = tostring(err or "")
+    return text:find("HTTP 499", 1, true) ~= nil
+        or text:find("HTTP 429", 1, true) ~= nil
+        or text:find("HTTP 5", 1, true) ~= nil
+        or text:find("timeout", 1, true) ~= nil
+        or text:find("reset by peer", 1, true) ~= nil
+        or text:find("closed", 1, true) ~= nil
+        or text:find("empty body", 1, true) ~= nil
+        or text:find("empty response", 1, true) ~= nil
+end
+
+local function sleep_seconds(seconds)
+    local ok_socket, socket = pcall(require, "socket")
+    if ok_socket and socket.sleep then
+        socket.sleep(seconds)
+        return
+    end
+    local ok_ffiutil, ffiutil = pcall(require, "ffi/util")
+    if ok_ffiutil and ffiutil.sleep then ffiutil.sleep(seconds) end
+end
+
+-- Returns the package, or nil plus the last error after retrying.
+local function with_resource_package_retry(book_id, chapter_uid, fetch)
+    local last_error
+    for attempt = 1, RESOURCE_PACKAGE_ATTEMPTS do
+        local ok, value = pcall(fetch)
+        if ok and value then return value end
+        last_error = ok and "empty response" or value
+        if not resource_package_is_transient(last_error)
+            or attempt == RESOURCE_PACKAGE_ATTEMPTS then
+            break
+        end
+        logger.warn("chapter resource package refused; retrying:",
+            "book_id=", tostring(book_id),
+            "chapter_uid=", tostring(chapter_uid),
+            "attempt=", tostring(attempt),
+            "error=", tostring(last_error))
+        sleep_seconds(RESOURCE_PACKAGE_BACKOFF_SECONDS * attempt)
+    end
+    return nil, last_error
+end
+
 function Content.download_chapter_assets(client, book, chapter, used_names)
     if not chapter or not chapter.tar or chapter.tar == "" then
         return {}, {}
@@ -1233,7 +1284,19 @@ function Content.download_chapter_assets(client, book, chapter, used_names)
     elseif tar_url:match("^/") then
         tar_url = "https://weread.qq.com" .. tar_url
     end
-    local raw = client:get_binary(tar_url, { referer = referer })
+    local raw, raw_error = with_resource_package_retry(
+        book_id, chapter.chapterUid, function()
+            return client:get_binary(tar_url, { referer = referer })
+        end)
+    if not raw then
+        -- The chapter text is already available; images are optional. Keep the
+        -- original remote image URLs rather than failing the chapter.
+        logger.warn("chapter resource package unavailable:",
+            "book_id=", tostring(book_id),
+            "chapter_uid=", tostring(chapter.chapterUid),
+            "error=", tostring(raw_error))
+        return {}, {}
+    end
     local assets = {}
     local src_map = {}
     for entry_index, entry in ipairs(tar_entries(raw)) do
@@ -1392,10 +1455,23 @@ function Content.download_chapter_assets_to_files(client, book, chapter, used_na
     end
     local tar_path = string.format("%s/chapter-%s.tar",
         workspace.incoming_dir, basename_safe(chapter.chapterUid or "unknown"))
-    client:download_to_file(tar_url, tar_path, {
-        referer = referer,
-        max_bytes = MAX_TAR_ENTRY_BYTES,
-    })
+    local downloaded, download_error = with_resource_package_retry(
+        book_id, chapter.chapterUid, function()
+            return client:download_to_file(tar_url, tar_path, {
+                referer = referer,
+                max_bytes = MAX_TAR_ENTRY_BYTES,
+            })
+        end)
+    if not downloaded then
+        -- The chapter source is already on disk; do not fail it (and with it
+        -- the whole-book download) just because its images were refused.
+        pcall(os.remove, tar_path)
+        logger.warn("chapter resource package unavailable:",
+            "book_id=", tostring(book_id),
+            "chapter_uid=", tostring(chapter.chapterUid),
+            "error=", tostring(download_error))
+        return {}, {}
+    end
     local input = assert(io.open(tar_path, "rb"))
     local signature = input:read(4) or ""
     input:close()

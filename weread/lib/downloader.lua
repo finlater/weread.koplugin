@@ -1048,6 +1048,36 @@ function Downloader:_step(dl)
         -- structurally valid but truncated book and replaces any previous good
         -- cache. Explicit single- or multi-chapter jobs remain best-effort.
         if dl.suffix == "full" and #dl.failed > 0 then
+            -- Failed chapters are usually transient CDN rate limiting. Give
+            -- them one more pass after a cooldown before pausing the job, so
+            -- the reader does not have to restart the download by hand.
+            dl.full_retry_round = dl.full_retry_round or 0
+            if dl.full_retry_round < 1 and (dl.completed_count or 0) > 0 then
+                dl.full_retry_round = dl.full_retry_round + 1
+                local retry_index
+                local completed = dl.completed or {}
+                for chapter_index = 1, dl.total do
+                    if not completed[chapter_index] then
+                        retry_index = chapter_index
+                        break
+                    end
+                end
+                if retry_index then
+                    dl.index = retry_index
+                    dl.failed = {}
+                    dl.chapter_source_retries = {}
+                    logger.info("retrying failed chapters after cooldown:",
+                        "round=", tostring(dl.full_retry_round),
+                        "first=", tostring(retry_index),
+                        "total=", tostring(dl.total))
+                    self:_setStage(dl,
+                        T(_("Retrying failed chapters %1/%2"),
+                            tostring(retry_index), tostring(dl.total)),
+                        retry_index - 1)
+                    self:_scheduleGuarded(dl, function() self:_step(dl) end, 5)
+                    return
+                end
+            end
             if dl.progress_dialog then
                 dl.progress_dialog:close()
                 dl.progress_dialog = nil

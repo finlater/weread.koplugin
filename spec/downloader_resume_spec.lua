@@ -263,4 +263,51 @@ expect(batch_dl.index == 26,
 expect(#scheduled == 1,
     "resume batch should schedule one continuation instead of one per chapter")
 
+-- Tail of a full-book download with a failed chapter: retry once after a
+-- cooldown instead of pausing immediately.
+local retry_workspace = {
+    path = "/cache/book/.weread-download-resume-full",
+    text_dir = "/cache/book/.weread-download-resume-full/text",
+    rendered_text_dir = "/cache/book/.weread-download-resume-full/rendered-text",
+    asset_dir = "/cache/book/.weread-download-resume-full/images",
+}
+local cleanup_before_retry = cleanup_count
+local retry_dl = {
+    book = { book_id = "book", title = "Book" },
+    chapters = chapters,
+    selected = { chapters[1] },
+    bodies = {},
+    assets = {},
+    state = { css = "body{}" },
+    suffix = "full",
+    index = 3,
+    total = 2,
+    failed = { "2" },
+    completed = { [1] = true },
+    completed_count = 1,
+    resumable = true,
+    workspace = retry_workspace,
+    workspace_verified = true,
+    footnotes_done = true,
+    annotation_failed_batches = 0,
+    started_at = 1000,
+}
+scheduled = {}
+downloader:_step(retry_dl)
+expect(retry_dl.full_retry_round == 1, "failed chapters did not enter a retry round")
+expect(retry_dl.failed == nil or #retry_dl.failed == 0,
+    "retry round kept the previous failure list")
+expect(retry_dl.index == 2, "retry round did not resume at the failed chapter")
+expect(#scheduled == 1 and cleanup_count == cleanup_before_retry,
+    "retry round should schedule the chapter without cleaning up checkpoints")
+
+-- A second round must pause and keep the checkpoint rather than loop.
+retry_dl.failed = { "2" }
+retry_dl.index = 3
+scheduled = {}
+downloader:_step(retry_dl)
+expect(#scheduled == 0, "failed chapters were retried more than once")
+expect(cleanup_count == cleanup_before_retry,
+    "a paused retry removed resumable checkpoints")
+
 print(("downloader_resume_spec: %d checks"):format(checks))
