@@ -10,6 +10,10 @@ By default it performs read-only checks:
 * pull progress through the cookie-authenticated Web endpoint;
 * load the Web Reader page and verify that upload-signing context is present.
 
+Pass ``--offline-regressions`` to validate production request sequencing with
+LuaJIT and synthetic protocol payloads, without loading credentials or sending
+network requests. This does not verify real-server reading-time credit.
+
 Pass ``--round-trip-write`` to reproduce the Web Reader's two-stage session
 flow (enter-read handshake, then a report with ``rt=0``), upload the exact
 position just pulled from the Gateway, and pull it again. If the response has
@@ -24,6 +28,7 @@ import json
 import math
 import re
 import sys
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -468,8 +473,37 @@ def wait_for_position(
     return False, current
 
 
+def offline_regressions() -> int:
+    """Exercise production Lua request sequencing without credentials or writes."""
+    root = Path(__file__).resolve().parent.parent
+    position = {"chapter_uid": 2, "chapter_idx": 2, "chapter_offset": 10,
+                "progress": 1, "summary": ""}
+    enter = make_enter_read_params(book_id="test", position=position,
+                                   psvts="test", pclts="test")
+    report = make_read_params(book_id="test", chapter_uid=2, chapter_idx=2,
+                             chapter_offset=10, progress=1, summary="",
+                             psvts="test", pclts="test", token="test",
+                             elapsed_seconds=0)
+    if "rt" in enter or report.get("rt") != 0:
+        raise ValidationError("Enter/report payload separation failed")
+    if deep_success({"succ": 0, "errCode": -1}):
+        raise ValidationError("Rejected enter was accepted")
+    print("[offline protocol] enter omits rt; progress report preserves rt=0", flush=True)
+    try:
+        result = subprocess.run(["luajit", "spec/read_report_progress_spec.lua"],
+                                cwd=root, check=False)
+    except FileNotFoundError as exc:
+        raise ValidationError("Install LuaJIT to run offline regressions") from exc
+    if result.returncode:
+        raise ValidationError("Production request-sequencing regressions failed")
+    print("[offline sequencing] real progress POST and rejected-enter retries passed")
+    return 0
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--offline-regressions", action="store_true",
+                        help="Validate payloads and production sequencing without credentials")
     parser.add_argument(
         "--settings",
         type=Path,
@@ -511,6 +545,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.offline_regressions:
+        return offline_regressions()
     settings = load_settings(args.settings)
     book_id = str(args.book_id or settings["default_book_id"] or "")
     if not book_id:
@@ -591,6 +627,8 @@ def main() -> int:
         referer=referer,
     )
     print("[enter-read handshake] HTTP response:", response_shape(enter_result))
+    if not deep_success(enter_result):
+        raise ValidationError("Enter was not acknowledged; do not claim an open session")
 
     def upload(
         position: dict[str, Any],
@@ -611,7 +649,8 @@ def main() -> int:
         return client.post_json(WEB_READ_URL, payload, referer=referer)
 
     if elapsed_seconds:
-        time.sleep(min(elapsed_seconds, 2))
+        # Credit only time actually elapsed after the accepted enter.
+        time.sleep(elapsed_seconds)
     result = upload(upload_position, elapsed_seconds)
     acknowledged = deep_success(result)
     print(
@@ -644,6 +683,8 @@ def main() -> int:
                 "[post-renewal enter-read handshake] HTTP response:",
                 response_shape(enter_result),
             )
+            if not deep_success(enter_result):
+                raise ValidationError("Renewed enter was not acknowledged")
             result = upload(upload_position)
             acknowledged = deep_success(result)
             print("[post-renewal upload] HTTP response:", response_shape(result))
