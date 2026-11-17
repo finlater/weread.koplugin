@@ -58,7 +58,7 @@ local function fixture(remote, options)
         },
         books = { book = book },
     }
-    local settings = {
+    local settings = require("spec.helpers.book_settings").install({
         get = function(_self, key, default)
             return values[key] or default
         end,
@@ -68,7 +68,7 @@ local function fixture(remote, options)
         flush = function() end,
         is_api_configured = function() return true end,
         is_cookie_configured = function() return true end,
-    }
+    }, values.books)
     local queue = {}
     local scheduler = {
         scheduleIn = function(_self, delay, callback)

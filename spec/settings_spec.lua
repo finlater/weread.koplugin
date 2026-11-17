@@ -65,9 +65,12 @@ end
 
 local saved_books = {}
 local minimal_index_checked = false
+local loaded_ids, saved_ids = {}, {}
 package.preload["weread.lib.book_store"] = function()
     return {
+        resolved_dir = function(_settings, _book_id, index) return index.cache_dir end,
         load = function(_settings, book_id, index)
+            loaded_ids[#loaded_ids + 1] = book_id
             return {
                 book_id = book_id,
                 cache_dir = index.cache_dir,
@@ -76,6 +79,7 @@ package.preload["weread.lib.book_store"] = function()
         end,
         save = function(_settings, book_id, book)
             saved_books[book_id] = book
+            saved_ids[#saved_ids + 1] = book_id
             return true, { cache_dir = "/saved/" .. book_id }
         end,
         is_minimal_index = function(books)
@@ -129,16 +133,42 @@ expect(values.cache.download_book_images == false
 expect(flush_count == 2,
     "cache and authentication migrations should each flush once")
 
-local books = settings:get("books")
+local books = settings:get_books()
 expect(books["42"].loaded and books["42"].book_id == "42",
     "book indexes were not hydrated through BookStore")
-settings:set("books", {
-    ["7"] = { title = "Seven" },
-})
-expect(saved_books["7"].title == "Seven",
-    "book was not persisted through BookStore")
-expect(values.books["7"].cache_dir == "/saved/7",
-    "settings did not store the minimal book index")
+expect(not pcall(settings.get, settings, "books") and not pcall(settings.set, settings, "books", {}),
+    "get/set of the books key must raise")
+expect(select(2, pcall(settings.get, settings, "books")):find("get_book", 1, true),
+    "books key error should point at the per-book methods")
+
+settings:put_book("7", { title = "Seven" })
+expect(saved_books["7"].title == "Seven" and #saved_ids == 1 and saved_ids[1] == "7",
+    "put_book must persist only the requested book through BookStore")
+expect(values.books["7"].cache_dir == "/saved/7" and values.books["42"].cache_dir == "/cache/42",
+    "put_book must update only its own index entry")
+
+loaded_ids = {}
+local seven = settings:get_book("7")
+expect(seven.loaded and #loaded_ids == 1 and loaded_ids[1] == "7",
+    "get_book must load only the requested book")
+expect(settings:get_book(7).book_id == "7", "numeric id lookup must be tolerated")
+expect(settings:get_book("missing") == nil and settings:get_book(nil) == nil,
+    "unknown book ids return nil")
+values.books[99] = { cache_dir = "/cache/99" }
+expect(settings:get_book("99").cache_dir == "/cache/99",
+    "numeric index keys must be found by string id")
+values.books[99] = nil
+
+local loads_before_dirs = #loaded_ids
+local dirs = settings:get_book_dirs()
+expect(dirs["42"] == "/cache/42" and dirs["7"] == "/saved/7",
+    "get_book_dirs must resolve directories from the index")
+expect(#loaded_ids == loads_before_dirs, "get_book_dirs must not load book files")
+
+settings:delete_book(7)
+expect(values.books["7"] == nil and values.books["42"] ~= nil,
+    "delete_book must remove only its own index entry")
+expect(#saved_ids == 1, "delete_book must not write book files")
 values.large_runtime_data = { "temporary" }
 settings:delete("large_runtime_data")
 expect(values.large_runtime_data == nil,

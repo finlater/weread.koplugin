@@ -7,7 +7,7 @@ local log_error = PluginUtil.log_error
 local Migrations = {}
 
 function Migrations.run(settings, client)
-    local books = settings:get("books", {})
+    local books = settings:get_books()
     local found, migrated, failed = false, 0, 0
     for _book_id, book in pairs(books) do
         if type(book) == "table" and book.chapters ~= nil then
@@ -29,7 +29,9 @@ function Migrations.run(settings, client)
     end
 
     local ok, err = pcall(function()
-        settings:set("books", books)
+        for book_id, book in pairs(books) do
+            settings:put_book(book_id, book)
+        end
         settings:flush()
     end)
     if ok then

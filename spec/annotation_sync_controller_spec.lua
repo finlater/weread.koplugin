@@ -50,7 +50,7 @@ local host = {
         get_chapter_reviews_batch = function()
             return true, { reviews = {} }
         end },
-    settings = { get = function() return cache end, set = function() end, flush = function() end },
+    settings = require("spec.helpers.book_settings").install({ get = function() return cache end, set = function() end, flush = function() end }, {}),
     _xpointer_overlay = { setRecords = function(self, records) self.records = records end,
         setEnabled = function() end },
     showInfo = function(_self, message) notices[#notices + 1] = message end,
@@ -229,10 +229,10 @@ do
     }
     local automatic = setmetatable({
         _reader_session_gen = 1,
-        settings = {
+        settings = require("spec.helpers.book_settings").install({
             get = function(_self, key, default) return key == "cache" and preferences or default end,
             set = function() end, flush = function() end,
-        },
+        }, {}),
         ui = { document = { file = "automatic",
             findAllText = function() error("automatic position matching") end } },
         client = {
@@ -416,7 +416,7 @@ do
         _prepareAnnotationContext = Controller._prepareAnnotationContext,
         _annotationBinding = function() return { book_id = "manual", title = "Manual" } end,
         isNetworkConnected = function() return false end,
-        settings = { get = function() return {} end },
+        settings = require("spec.helpers.book_settings").install({ get = function() return {} end }, {}),
         _xpointer_overlay = { records = {}, setRecords = function(self, records) self.records = records end },
     }, { __index = host })
     local menu_items, menu_options, updated_model, closed_menu

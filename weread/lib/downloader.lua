@@ -387,8 +387,7 @@ function Downloader:_applyPrefetchResult(dl, result)
     local chapter = dl.chapters[1] or {}
     local uid = tostring(value.chapter_uid or chapter.chapterUid
         or chapter.chapterId or "1")
-    local books = self.settings:get("books", {})
-    local record = books[book_id] or books[tonumber(book_id)] or {}
+    local record = self.settings:get_book(book_id) or {}
     local function apply(target)
         target.cached_chapters = target.cached_chapters or {}
         target.cached_chapters[uid] = value.path
@@ -402,8 +401,7 @@ function Downloader:_applyPrefetchResult(dl, result)
     apply(dl.book)
     if record ~= dl.book then apply(record) end
     record.book_id = record.book_id or dl.book.book_id or dl.book.bookId
-    books[book_id] = record
-    self.settings:set("books", books)
+    self.settings:put_book(book_id, record)
     self.settings:flush()
     self.refresh_shelf()
     logger.info("prefetch worker completed:", "book_id=", book_id,
@@ -1166,10 +1164,9 @@ function Downloader:_step(dl)
             dl.progress_dialog = nil
         end
         self:_releaseStandby(dl)
-        local books = self.settings:get("books", {})
         local book_id = dl.book.book_id or dl.book.bookId
         if book_id then
-            local record = books[book_id]
+            local record = self.settings:get_book(book_id)
             if not record then
                 record = {}
                 for key, value in pairs(dl.book) do record[key] = value end
@@ -1208,8 +1205,7 @@ function Downloader:_step(dl)
             record.reader_url = record.reader_url
                 or dl.book.reader_url or WeRead.reader_url(book_id)
             dl.book.reader_url = dl.book.reader_url or record.reader_url
-            books[book_id] = record
-            self.settings:set("books", books)
+            self.settings:put_book(book_id, record)
             self.settings:flush()
         end
         self.refresh_shelf()

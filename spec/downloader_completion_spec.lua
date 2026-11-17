@@ -78,7 +78,6 @@ local function eq(got, want, label)
     end
 end
 
-local stored_books
 local live_books = {
     book = {
         book_id = "book",
@@ -91,18 +90,11 @@ local info_messages = {}
 local completion_count = 0
 local completion_ok
 local completion_path
-local settings = {
-    get = function(_self, key)
-        return key == "books" and live_books or nil
-    end,
-    set = function(_self, key, value)
-        if key == "books" then
-            stored_books = value
-            live_books = value
-        end
-    end,
+local settings = require("spec.helpers.book_settings").install({
+    get = function() return nil end,
     flush = function() end,
-}
+}, live_books)
+local stored_books = live_books
 local downloader = Downloader:new{
     settings = settings,
     client = {},

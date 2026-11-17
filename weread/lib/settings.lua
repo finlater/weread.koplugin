@@ -21,7 +21,6 @@ local defaults = {
         login_method = "",
         login_time = 0,
     },
-    books = {},
     downloads = {},
     sync = {
         pull_on_open = false,
@@ -242,34 +241,77 @@ function Settings:new()
     return setmetatable(obj, self)
 end
 
+local function reject_books_key(key)
+    if key == "books" then
+        error("settings 'books' is index-only; use get_book/get_books/get_book_dirs/put_book/delete_book")
+    end
+end
+
 function Settings:get(key, default)
+    reject_books_key(key)
     if default == nil then
         default = defaults[key]
     end
-    if key ~= "books" then
-        return self.store:readSetting(key, deepcopy(default))
-    end
-    local indexes = self.store:readSetting("books", {})
+    return self.store:readSetting(key, deepcopy(default))
+end
+
+function Settings:set(key, value)
+    reject_books_key(key)
+    self.store:saveSetting(key, value)
+end
+
+function Settings:_book_index()
+    return self.store:readSetting("books", {}) or {}
+end
+
+local function lookup(index, book_id)
+    if book_id == nil then return nil, nil end
+    local key = tostring(book_id)
+    if index[key] ~= nil then return key, index[key] end
+    local num = tonumber(book_id)
+    if num ~= nil and index[num] ~= nil then return num, index[num] end
+    return nil, nil
+end
+
+function Settings:get_book(book_id)
+    local key, entry = lookup(self:_book_index(), book_id)
+    if key == nil then return nil end
+    return BookStore.load(self, key, entry)
+end
+
+function Settings:get_books()
     local books = {}
-    for book_id, index in pairs(indexes or {}) do
-        books[book_id] = BookStore.load(self, book_id, index)
+    for book_id, entry in pairs(self:_book_index()) do
+        books[book_id] = BookStore.load(self, book_id, entry)
     end
     return books
 end
 
-function Settings:set(key, value)
-    if key == "books" and type(value) == "table" then
-        local indexes = {}
-        for book_id, book in pairs(value) do
-            local ok, index_or_err = BookStore.save(self, book_id, book)
-            if not ok then
-                error("Could not save book data: " .. tostring(index_or_err))
-            end
-            indexes[book_id] = index_or_err
-        end
-        value = indexes
+function Settings:get_book_dirs()
+    local dirs = {}
+    for book_id, entry in pairs(self:_book_index()) do
+        dirs[book_id] = BookStore.resolved_dir(self, book_id, entry)
     end
-    self.store:saveSetting(key, value)
+    return dirs
+end
+
+function Settings:put_book(book_id, book)
+    local index = self:_book_index()
+    local key = lookup(index, book_id) or tostring(book_id)
+    local ok, entry_or_err = BookStore.save(self, key, book)
+    if not ok then
+        error("Could not save book data: " .. tostring(entry_or_err))
+    end
+    index[key] = entry_or_err
+    self.store:saveSetting("books", index)
+end
+
+function Settings:delete_book(book_id)
+    local index = self:_book_index()
+    local key = lookup(index, book_id)
+    if key == nil then return end
+    index[key] = nil
+    self.store:saveSetting("books", index)
 end
 
 function Settings:delete(key)
