@@ -1715,14 +1715,32 @@ local function apply_chapter_annotations(_client, _settings, _book, _chapter, xh
     return xhtml, css
 end
 
+-- The book version a chapter's offsets belong to. Recorded
+-- next to the spans so a later `chapterOffset` is never interpreted against a
+-- chapter text that has since been replaced.
+local function source_version(book)
+    if type(book) ~= "table" then return nil end
+    local raw = book.updateTime or book.version or book.bookVersion
+    if raw == nil then return nil end
+    local value = tostring(raw)
+    if value == "" or value == "0" then return nil end
+    return value
+end
+
 function Content.cache_annotation_source(settings, book, chapter, xhtml, raw_text)
     if book._content_format == "txt" and not raw_text then return end
     local ok, err = pcall(function()
         local Source = require("weread.lib.annotation_source")
-        require("weread.lib.annotation_store"):new(settings):put(
-            book.book_id or book.bookId, "original", tostring(chapter.chapterUid or chapter.chapterId),
-            raw_text and Source.plain(xhtml) or Source.index(xhtml),
-            tostring(chapter.chapterUid or chapter.chapterId))
+        local Store = require("weread.lib.annotation_store")
+        local store = Store:new(settings)
+        local book_id = book.book_id or book.bookId
+        local uid = tostring(chapter.chapterUid or chapter.chapterId)
+        store:put(book_id, "original", uid,
+            raw_text and Source.plain(xhtml) or Source.index(xhtml), uid)
+        local version = source_version(book)
+        if version then
+            store:put(book_id, "source_version", uid, { v = version }, uid)
+        end
     end)
     -- A cache failure must not turn a successful text download into a failure.
     if not ok then logger.warn("annotation source cache:", tostring(err)) end

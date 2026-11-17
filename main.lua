@@ -127,6 +127,11 @@ function WeReadPlugin:init()
         get_footer = function()
             return self.ui and self.ui.view and self.ui.view.footer
         end,
+        -- The TOC is the only source that knows the real
+        -- chapter; percent_finished is a page fraction and drifts on omnibuses.
+        get_toc = function()
+            return self.ui and self.ui.toc
+        end,
         detect_book = function()
             return self:detectWeReadBook()
         end,
@@ -175,9 +180,12 @@ function WeReadPlugin:init()
                 book_id, position, elapsed_seconds)
         end,
         goto_fraction = function(fraction)
-            local percent = math.floor(
-                math.max(0, math.min(1, tonumber(fraction) or 0))
-                    * 100 + 0.5)
+            -- Keep the float: ReaderRolling:onGotoPercent
+            -- accepts it and lands on a page itself. Rounding to a whole
+            -- percent here discarded up to half a percent of the book, which is
+            -- five-plus pages in a long one.
+            local percent = math.max(0, math.min(1, tonumber(fraction) or 0))
+                * 100
             return pcall(function()
                 if self.ui and self.ui.rolling
                     and self.ui.rolling.onGotoPercent then
@@ -188,6 +196,64 @@ function WeReadPlugin:init()
                     error("reader unavailable")
                 end
             end)
+        end,
+        -- P4: land on the exact sentence when the anchor
+        -- occurs once in the document. Returning false lets ProgressSync fall
+        -- back to the whole-book percentage, so a failed lookup is never worse
+        -- than the old behaviour.
+        goto_anchor = function(anchor, fallback_fraction)
+            local ui = self.ui
+            local document = ui and ui.document
+            local text = type(anchor) == "table" and tostring(anchor.text or "") or ""
+            if not document or type(document.findAllText) ~= "function"
+                or text == "" then
+                return false
+            end
+            local ok, hits = pcall(document.findAllText, document, text,
+                true, 8, 48, false)
+            if not ok or type(hits) ~= "table" or #hits == 0 then
+                logger.info("[ProgressJump] method=percent reason=anchor_miss",
+                    "runes=", tostring(anchor.runes or #text))
+                return false
+            end
+            if #hits ~= 1 then
+                -- Two identical 32-rune windows in one book is real (repeated
+                -- headings); guessing would be worse than the percentage.
+                logger.info("[ProgressJump] method=percent reason=anchor_ambiguous",
+                    "hits=", tostring(#hits), "runes=", tostring(anchor.runes or #text))
+                return false
+            end
+            local xpointer = type(hits[1]) == "table"
+                and (hits[1].start or hits[1][1]) or nil
+            if type(xpointer) ~= "string" or xpointer == "" then
+                logger.info("[ProgressJump] method=percent reason=anchor_xpointer_missing")
+                return false
+            end
+            local jumped = pcall(function()
+                ui:handleEvent(Event:new("GotoXPointer", xpointer, xpointer))
+            end)
+            -- `ok=true` 只说明事件没抛异常，不代表画面真的到了
+            -- 目标句。2026-11-17 首轮验收就卡在这里：日志说 ok，但落盘里跳转前后的
+            -- 位置一模一样，无法判断是不是空转。这里取当前页的渲染文本再确认一次；
+            -- 两边都把空白压掉再比，因为排版会在词间断行（锚点本身不含空白，但断行
+            -- 会在页文本里插一个换行）。
+            local landed
+            if jumped then
+                local ok_page, page_text = pcall(function()
+                    local page = document:getCurrentPage()
+                    if not page then return nil end
+                    return document:getPageText(page)
+                end)
+                if ok_page and type(page_text) == "string" and page_text ~= "" then
+                    local function squash(value)
+                        return (tostring(value):gsub("%s+", ""))
+                    end
+                    landed = squash(page_text):find(squash(text), 1, true) ~= nil
+                end
+            end
+            logger.info("[ProgressJump] method=text_anchor ok=", tostring(jumped),
+                "landed=", tostring(landed), "runes=", tostring(anchor.runes or #text))
+            return jumped == true
         end,
         open_chapter = function(book, chapter)
             return self:openProgressTargetChapter(book, chapter)
