@@ -116,9 +116,9 @@ expect(parent_stats.converted == 1 and parent_stats.removed_note_blocks == 1,
     "parent-superscript layout should convert like the inline variant")
 expect(Footnotes.validate(parent_out) == true, "parent-superscript output must validate")
 
--- A note may cite another note. Removing such a paragraph would delete the
--- backlink target, so it has to stay; the visible duplicate is the accepted
--- trade-off and must not turn into a dangling anchor.
+-- A note may cite another note. The paragraph must not survive next to the
+-- generated aside, or the note text shows up twice; its content moves into the
+-- generated block and the nested citation stays converted there.
 local NESTED = [[
 <p class="content">正文<a href="#n4" id="r4"><span class="text-sup">[4]</span></a>，续。</p>
 <p class="content"><a href="#r4" id="n4"><span>[4]</span></a>　注文四，另见<a href="#n5" id="r5"><span class="text-sup">[5]</span></a>。</p>
@@ -126,25 +126,33 @@ local NESTED = [[
 ]]
 local nested_scan, nested_out, nested_stats = transform(NESTED)
 expect(nested_stats.converted == 2, "nested citation should convert")
-expect(nested_stats.removed_note_blocks == 1,
-    "only the note paragraph without a nested citation may be removed")
-expect(nested_out:find('id="n4"', 1, true) ~= nil,
-    "a note paragraph holding a converted citation must be kept")
+expect(nested_stats.removed_note_blocks == 2,
+    "both note paragraphs are consumed, the nested one included")
+expect(nested_out:find('id="n4"', 1, true) == nil,
+    "the original note paragraph must not survive next to the generated aside")
+expect(count_occurrences(nested_out, "注文四") == 1,
+    "note text must appear exactly once after being re-homed")
+expect(nested_out:find('class="wr-fn-ref"', 1, true) ~= nil,
+    "the nested citation stays converted in its new home")
 expect(Footnotes.validate(nested_out) == true, "nested output must validate")
 expect(nested_scan.note_end_ids["n4"] ~= nil and nested_scan.note_end_ids["n5"] ~= nil,
     "both note ends should be recognised in the nested case")
 
--- Known limitation: without any superscript styling the two ends are
--- indistinguishable. Keep the previous behaviour (leave the chapter untouched)
--- instead of guessing; if this ever changes, update the test on purpose.
+-- Block position, not styling, separates the two ends: WeRead opens the note
+-- paragraph with its marker while the citation sits inline in running prose.
+-- A book whose superscript lives in its CSS has no `sup` on the tag, so a
+-- styling-only rule leaves it at zero conversions; this fixture pins that case.
 local NO_STYLE = [[
 <p class="content">正文<a href="#n6" id="r6"><span>[6]</span></a>，续。</p>
 <p class="content"><a href="#r6" id="n6"><span>[6]</span></a>　注文六。</p>
 ]]
 local plain_scan, plain_out, plain_stats = transform(NO_STYLE)
-expect(plain_stats.converted == 0, "no-styling pairs stay unconverted by design")
-expect(plain_out == NO_STYLE, "no-styling chapter must be returned untouched")
-expect(Footnotes.validate(plain_out) == true, "untouched chapter must still validate")
-expect(plain_scan.note_end_ids["n6"] == nil, "no note end can be guessed without styling")
+expect(plain_stats.converted == 1, "block position alone should identify the pair")
+expect(plain_stats.removed_note_blocks == 1, "the note paragraph is consumed")
+expect(count_occurrences(plain_out, "注文六") == 1, "note text appears exactly once")
+expect(plain_out:find('epub:type="noteref"', 1, true) ~= nil, "citation is converted")
+expect(Footnotes.validate(plain_out) == true, "no-styling output must validate")
+expect(plain_scan.note_end_ids["n6"] ~= nil,
+    "the block-leading anchor is the note end even without styling")
 
 print(("footnotes_reciprocal_spec: %d checks"):format(checks))

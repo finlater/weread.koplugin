@@ -372,6 +372,23 @@ local function collect_anchor_presence(html)
     return anchors
 end
 
+-- A note-end marker always opens its block: WeRead writes
+-- `<p class="content"><a href="#ref" id="note">[8]</a> text`, while the citation
+-- sits inline in running prose. Position therefore separates the two ends
+-- without consulting styling at all -- which is what a book needs when the
+-- superscript lives in the book's CSS (nothing on the tag says "sup") or when
+-- both ends are superscripted.
+local function collect_leading_ids(html)
+    local leading = {}
+    for _i, tag in ipairs(BLOCK_TAGS) do
+        for attrs in tostring(html or ""):gmatch("<" .. tag .. "[^>]*>%s*<[aA]([^>]*)>") do
+            local id = get_attr(attrs, "id")
+            if id and id ~= "" then leading[id] = true end
+        end
+    end
+    return leading
+end
+
 local function collect_definition_backlinks(html)
     local backlinks = {}
     for attrs, inner in tostring(html or ""):gmatch("<[pP]([^>]*)>(.-)</[pP]%s*>") do
@@ -437,10 +454,26 @@ function Footnotes.scan_chapter(html, chapter)
             note_targets[ref.anchor] = true
         end
     end
+    local leading = collect_leading_ids(html)
+    -- A note end is either the non-superscript marker that a
+    -- superscript citation points at, or a block-leading anchor cited by a link
+    -- that is itself inline. Both halves matter: block position alone would also
+    -- swallow a citation that happens to open its paragraph, so the second
+    -- condition insists on a citation from inside the text. When both ends open
+    -- their block, neither condition holds and nothing is converted -- the old
+    -- behaviour, not a guess.
+    local mid_cited = {}
+    for _i, ref in ipairs(refs) do
+        if ref.anchor and ref.anchor ~= "" and ref.ref_id
+            and not leading[ref.ref_id] then
+            mid_cited[ref.anchor] = true
+        end
+    end
     local forward_ref_ids, note_end_ids = {}, {}
     for _i, ref in ipairs(refs) do
         if ref.ref_id and ref.ref_id ~= "" then
-            if not ref.sup and note_targets[ref.ref_id] then
+            if (not ref.sup and note_targets[ref.ref_id])
+                or (leading[ref.ref_id] and mid_cited[ref.ref_id]) then
                 note_end_ids[ref.ref_id] = true
                 ref.note_end = true
             else
@@ -544,13 +577,20 @@ local function append_before_body_close(html, fragment)
     return html .. fragment
 end
 
-local function build_section(notes)
+local function build_section(notes, alive_ids)
     if #notes == 0 then return "" end
     local out = { '\n<div class="wr-footnotes">\n<hr/>\n' }
     for _i, note in ipairs(notes) do
+        -- This citation's paragraph may have been removed
+        -- together with its note (a note citing another note). A backlink to a
+        -- marker that no longer exists is worse than a plain number: degrade it.
+        local backlink = alive_ids and not alive_ids[note.ref_id]
+            and ('<span class="wr-fn-num">%s</span>'):format(xml_escape(note.display))
+            or string.format('<a href="#%s" class="wr-fn-num">%s</a>',
+                note.ref_id, xml_escape(note.display))
         out[#out + 1] = string.format(
-            '<aside epub:type="footnote" id="%s" class="wr-book-footnote"><p><a href="#%s" class="wr-fn-num">%s</a> %s</p></aside>\n',
-            note.target_id, note.ref_id, xml_escape(note.display), xml_escape(note.text))
+            '<aside epub:type="footnote" role="doc-footnote" id="%s" class="wr-book-footnote"><p>%s %s</p></aside>\n',
+            note.target_id, backlink, xml_escape(note.text))
     end
     out[#out + 1] = "</div>\n"
     return table.concat(out)
@@ -569,6 +609,10 @@ local function replace_href(attrs, href)
 end
 
 local function strip_consumed_note_blocks(html, converted_anchors)
+    -- A note paragraph is removed even when it cites another
+    -- note. Keeping such a paragraph (an earlier attempt) duplicated its text:
+    -- once in place, once in the generated section. The now-dangling backlink is
+    -- dealt with in build_section, which knows which ids survived.
     local removed = 0
     html = html:gsub("<[pP]([^>]*)>(.-)</[pP]%s*>", function(attrs, inner)
         local class = get_attr(attrs, "class") or ""
@@ -578,9 +622,6 @@ local function strip_consumed_note_blocks(html, converted_anchors)
         -- id is the backlink target of its own note. Removing the paragraph
         -- would delete that anchor and leave a dangling backlink, so such
         -- paragraphs are always kept (their note text stays visible in place).
-        if inner:find('class="wr%-fn%-ref"') then
-            return "<p" .. attrs .. ">" .. inner .. "</p>"
-        end
         local consumed = false
         local own_anchor = get_attr(attrs, "id") or get_attr(attrs, "name")
         if own_anchor and converted_anchors[own_anchor] then consumed = true end
@@ -699,7 +740,16 @@ function Footnotes.transform_chapter(html, scan, index)
     end)
 
     html, stats.removed_note_blocks = strip_consumed_note_blocks(html, converted_anchors)
-    return append_before_body_close(html, build_section(notes)), stats
+    -- Which marker ids still exist after the strip decides whether
+    -- a generated note can link back to its citation.
+    local alive = {}
+    for raw in html:gmatch("<[^>]+>") do
+        if not raw:match("^<%s*/") then
+            local id = get_attr(raw, "id")
+            if id and id ~= "" then alive[id] = true end
+        end
+    end
+    return append_before_body_close(html, build_section(notes, alive)), stats
 end
 
 function Footnotes.validate(html)
