@@ -5,6 +5,13 @@ package.path = "./?.lua;" .. package.path
 local registered = {}
 local shown_widget
 local closed_widget
+package.preload["ui/widget/textboxwidget"] = function()
+    return {
+        PTF_HEADER = "\239\191\177",
+        PTF_BOLD_START = "\239\191\178",
+        PTF_BOLD_END = "\239\191\179",
+    }
+end
 package.preload["dispatcher"] = function()
     return {
         registerAction = function(_self, name, action)
@@ -259,12 +266,12 @@ for index, item in ipairs(about_items or {}) do
     expect(item.keep_menu_open == true,
         "about item " .. index .. " keeps the menu open")
 end
-expect(about_items[1] and about_items[1].text == "Version %1",
-    "version is the first about item")
-expect(about_items[2] and about_items[2].text == "Author: %1",
-    "author is the second about item")
-expect(about_items[3] and about_items[3].text == "Discover WeReader closed-source edition",
-    "WeReader entry follows the author")
+expect(about_items[1] and about_items[1].text == "Upgrade to a fuller WeRead experience?",
+    "edition introduction is the first about item")
+expect(about_items[2] and about_items[2].text == "Version %1",
+    "version follows the introduction")
+expect(about_items[3] and about_items[3].text == "Author: %1",
+    "author follows the version")
 expect(about_items[4] and about_items[4].text == "Check for updates"
         and about_items[5].text == "Automatically check once an hour"
         and about_items[6].text == "Prefer proxy for updates",
@@ -275,30 +282,38 @@ expect(#update_available_items == 6
         and update_available_items[4].text == "Update to v%1",
     "available update replaces the check item without adding another item")
 available_version = nil
-about_items[1].callback()
+about_items[2].callback()
 expect(shown_widget and shown_widget.text:find("Disclaimer", 1, true),
     "version item preserves the previous about dialog behavior")
-about_items[3].callback()
+about_items[1].callback()
 local recommendation = shown_widget
-expect(recommendation.title == "WeReader closed-source edition"
-        and recommendation.text:find("Xiaohongshu/Xianyu nickname", 1, true),
-    "recommendation includes both account names")
-expect(#recommendation.buttons_table == 2
-        and recommendation.buttons_table[1][1].text == "Xiaohongshu QR code",
-    "recommendation offers only Xiaohongshu QR and a return button")
-recommendation.buttons_table[1][1].callback()
-local qr_file = io.open(shown_widget.file, "rb")
-expect(shown_widget.file:match("icons/xiaohongshu%.jpeg$")
-        and qr_file ~= nil
-        and shown_widget.fullscreen == true
-        and shown_widget.timeout == nil and closed_widget == nil,
-    "native image viewer uses the supplied account QR image without closing the introduction or timing out")
-if qr_file then qr_file:close() end
-recommendation.buttons_table[2][1].callback()
+expect(recommendation.title == "weread closed-source edition"
+        and recommendation.text:find("contact finlater on Xianyu", 1, true),
+    "recommendation includes the installation contact")
+expect(#recommendation.buttons_table == 3
+        and recommendation.buttons_table[1][1].text == "Watch demo (Bilibili)"
+        and recommendation.buttons_table[1][2].text == "Watch demo (Xiaohongshu)"
+        and recommendation.buttons_table[2][1].text == "Buy the author a coffee and get the package (Xianyu)",
+    "demo channels and the Xianyu support channel have distinct actions")
+for _, channel in ipairs({ {1, 1, "bilibili"}, {1, 2, "xiaohongshu"}, {2, 1, "xianyu"} }) do
+    recommendation.buttons_table[channel[1]][channel[2]].callback()
+    local qr_file = io.open(shown_widget.file, "rb")
+    expect(shown_widget.file:match("icons/" .. channel[3] .. "%.png$")
+            and qr_file ~= nil and shown_widget.fullscreen == true
+            and shown_widget.timeout == nil and closed_widget == nil,
+        "channel QR is bundled and opens without closing the introduction: " .. channel[3])
+    if qr_file then qr_file:close() end
+end
+recommendation.buttons_table[3][1].callback()
 expect(closed_widget == recommendation, "return closes the recommendation")
 local main_items = host:getMainMenuItems()
 expect(main_items[#main_items] and main_items[#main_items].text == "Settings",
     "about is no longer present in the outer menu")
+expect(main_items[1].text == "Upgrade to a fuller WeRead experience?" and main_items[1].keep_menu_open,
+    "introduction is first in the file-manager menu")
+main_items[1].callback()
+expect(shown_widget.title == "weread closed-source edition",
+    "top-level introduction opens without requiring an account")
 for _, item in ipairs(main_items) do
     if item.text == "Search" or item.text == "Reading statistics" then
         expect(item.keep_menu_open == true,
@@ -319,6 +334,12 @@ expect(menu_has(main_items, "WeRead favorites"),
 host.ui.document = { file = "/books/local.epub" }
 host.detectWeReadBook = function() return nil end
 local local_reader_items = host:getMainMenuItems()
+expect(local_reader_items[1].text == "Upgrade to a fuller WeRead experience?",
+    "introduction stays first while reading a local book")
+for _, item in ipairs(local_reader_items) do
+    expect(not (item.text and item.text:find("(closed-source)", 1, true)),
+        "reader menu does not include separate feature promotions")
+end
 expect(not menu_has(local_reader_items, "Sync progress now")
         and not menu_has(local_reader_items, "Book details")
         and menu_has(local_reader_items, "Underlines and thoughts management"),
