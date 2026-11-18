@@ -96,6 +96,11 @@ end
 function M:getMainMenuItems()
     local items = {
         {
+            text = _("Upgrade to a fuller WeRead experience?"),
+            keep_menu_open = true,
+            callback = function() self:showClosedSourceInfo() end,
+        },
+        {
             text_func = function()
                 if self.settings.mock_endpoint then return _("Mock account (no QR login)") end
                 local account = self.settings:get("account", {})
@@ -210,7 +215,7 @@ function M:getMainMenuItems()
             }
         end
         for index = #reader_items, 1, -1 do
-            table.insert(items, 2, reader_items[index])
+            table.insert(items, 3, reader_items[index])
         end
     end
 
@@ -827,17 +832,30 @@ function M:showAbout()
     })
 end
 
-function M:showWeReaderInfo()
+function M:showClosedSourceInfo()
     local Screen = require("device").screen
+    local TextBoxWidget = require("ui/widget/textboxwidget")
     local TextViewer = require("ui/widget/textviewer")
+    local function feature(text)
+        local colon = text:find("：", 1, true) or text:find(":", 1, true)
+        if not colon then return text end
+        return "• " .. TextBoxWidget.PTF_BOLD_START
+            .. text:sub(#"• " + 1, colon - 1) .. TextBoxWidget.PTF_BOLD_END .. text:sub(colon)
+    end
     local viewer
     viewer = TextViewer:new{
-        title = _("WeReader closed-source edition"),
-        text = _("More features, smoother reading") .. "\n\n"
-            .. _("An interface inspired by the WeRead e-ink app, making reading, syncing, and interaction easier.") .. "\n\n"
-            .. _("• Bookstore recommendations and precise reading progress sync\n• Offline reading, with reading time uploaded when back online\n• Highlights, thoughts, comments, and likes") .. "\n\n"
-            .. _("Watch demo videos on Xiaohongshu, or buy the author a coffee to support continued development.") .. "\n\n"
-            .. T(_("Xiaohongshu/Xianyu nickname: %1"), "finlater"),
+        title = _("weread closed-source edition (search finlater on all platforms)"),
+        title_shrink_font_to_fit = true,
+        text = TextBoxWidget.PTF_HEADER
+            .. _("A new version of weread with the familiar WeRead e-ink app style, now featuring:") .. "\n\n"
+            .. feature(_("• Offline reading and time upload: faster, more reliable book downloads, offline reading time recording, and upload when back online.")) .. "\n"
+            .. feature(_("• Highlight and thought sync: view other readers' thoughts, highlight passages, write thoughts, and sync them to WeRead.")) .. "\n"
+            .. feature(_("• Comments and likes: reply to readers, join discussions, and like what you enjoy.")) .. "\n"
+            .. feature(_("• Bookstore and recommendations: browse the bookstore, categories, and recommendations.")) .. "\n"
+            .. feature(_("• AI book Q&A: no API key configuration required. Ask AI about selected passages to help understand what you read.")) .. "\n"
+            .. feature(_("• Weekly reading rewards: claim weekly reading rewards directly on your e-ink device.")) .. "\n"
+            .. feature(_("• Reading state sync: sync reading progress, bookmarks, and finished status.")) .. "\n\n"
+            .. _("The closed-source edition is installed separately and requires activation. Watch demo videos on Xiaohongshu or Bilibili. To buy the author a coffee and get the installation package, contact finlater on Xianyu."),
         width = math.floor(Screen:getWidth() * 0.9),
         height = math.floor(Screen:getHeight() * 0.8),
         text_type = "general",
@@ -845,18 +863,40 @@ function M:showWeReaderInfo()
         add_default_buttons = false,
         buttons_table = {
             {{
-                text = _("Xiaohongshu QR code"),
+                text = _("Watch demo (Bilibili)"),
                 callback = function()
                     local ImageViewer = require("ui/widget/imageviewer")
                     UIManager:show(ImageViewer:new{
-                        file = icons_dir .. "xiaohongshu.jpeg",
+                        file = icons_dir .. "bilibili.png",
+                        title_text = _("Watch demo (Bilibili)"),
+                        -- SimpleUI restores its homepage when a fullscreen view closes.
+                        fullscreen = false,
+                    })
+                end,
+            }, {
+                text = _("Watch demo (Xiaohongshu)"),
+                callback = function()
+                    local ImageViewer = require("ui/widget/imageviewer")
+                    UIManager:show(ImageViewer:new{
+                        file = icons_dir .. "xiaohongshu.png",
                         title_text = _("Xiaohongshu QR code"),
-                        fullscreen = true,
+                        fullscreen = false,
                     })
                 end,
             }},
             {{
-                text = _("Back to About"),
+                text = _("Buy the author a coffee and get the package (Xianyu)"),
+                callback = function()
+                    local ImageViewer = require("ui/widget/imageviewer")
+                    UIManager:show(ImageViewer:new{
+                        file = icons_dir .. "xianyu.png",
+                        title_text = _("Buy the author a coffee and get the package (Xianyu)"),
+                        fullscreen = false,
+                    })
+                end,
+            }},
+            {{
+                text = _("Return"),
                 callback = function() viewer:onClose() end,
             }},
         },
@@ -866,6 +906,11 @@ end
 
 function M:getAboutMenuItems()
     local items = {
+        {
+            text = _("Upgrade to a fuller WeRead experience?"),
+            keep_menu_open = true,
+            callback = function() self:showClosedSourceInfo() end,
+        },
         {
             text = T(_("Version %1"), self.version),
             keep_menu_open = true,
@@ -880,13 +925,6 @@ function M:getAboutMenuItems()
                 UIManager:show(InfoMessage:new{
                     text = "finlater\n\nhttps://github.com/finlater",
                 })
-            end,
-        },
-        {
-            text = _("Discover WeReader closed-source edition"),
-            keep_menu_open = true,
-            callback = function()
-                self:showWeReaderInfo()
             end,
         },
     }
