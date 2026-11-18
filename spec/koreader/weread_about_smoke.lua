@@ -1,5 +1,6 @@
 -- Run from a built KOReader runtime with an isolated KO_HOME:
 -- ./luajit /repo/spec/koreader/weread_about_smoke.lua /repo /evidence
+-- Optional third argument: SimpleUI plugin directory, to exercise its real close hook.
 -- Native layout, fonts, QR encoding and dismissal; no network or accounts.
 -- luacheck: globals fastforward_ui_events
 local repo, evidence = assert(arg[1]), assert(arg[2])
@@ -31,6 +32,18 @@ local host = setmetatable({
 }, { __index = Menu })
 local Report = require("weread.ui.read_report")
 local Annotations = require("weread.ui.annotation_sync_controller")
+local simpleui, filemanager
+local homescreen_returns = 0
+if arg[3] then
+    package.path = arg[3] .. "/?.lua;" .. package.path
+    G_reader_settings:saveSetting("start_with", "homescreen_simpleui")
+    filemanager = require("apps/filemanager/filemanager")
+    -- Only the homepage renderer is a fixture; popup cleanup runs the actual SimpleUI hook.
+    package.loaded["sui_homescreen"] = {
+        show = function() homescreen_returns = homescreen_returns + 1 end,
+    }
+    simpleui = require("sui_patches")
+end
 
 local function top()
     return UIManager._window_stack[#UIManager._window_stack].widget
@@ -65,8 +78,13 @@ for _, size in ipairs({ { 600, 800 }, { 800, 600 }, { 1072, 1448 } }) do
     Screen.bb = BB.new(width, height)
     local background = WidgetContainer:new{
         dimen = Screen:getSize(),
+        covers_fullscreen = true,
         paintTo = function(_self, buffer) buffer:fill(BB.COLOR_WHITE) end,
     }
+    if simpleui then
+        filemanager.instance = background
+        simpleui.patchUIManagerClose({ ui = background, _goalTapCallback = function() end })
+    end
     UIManager:show(background)
     for _, mode in ipairs({ "filemanager", "reader", "about" }) do
         host.ui.document = mode == "reader" and { file = "/fixtures/book.epub" } or nil
@@ -78,11 +96,11 @@ for _, size in ipairs({ { 600, 800 }, { 800, 600 }, { 1072, 1448 } }) do
         assert(items[1].text == "升级到更完整的微信读书？")
         tap(menu.item_group[2])
         local introduction = top()
-        assert(introduction.title == "weread 闭源版")
+        assert(introduction.title == "weread闭源版(全平台搜 finlater)")
         tap(findButton(introduction.button_table, introduction.buttons_table[1][1].text))
         tap(top().title_bar.right_button)
         introduction = top()
-        assert(introduction.title == "weread 闭源版", "QR dismissal should return to the menu's introduction")
+        assert(introduction.title == "weread闭源版(全平台搜 finlater)", "QR dismissal should return to the menu's introduction")
         tap(findButton(introduction.button_table, introduction.buttons_table[3][1].text))
         assert(top() == menu, "introduction should return to its originating menu")
         menu:onClose()
@@ -90,7 +108,7 @@ for _, size in ipairs({ { 600, 800 }, { 800, 600 }, { 1072, 1448 } }) do
     host:showClosedSourceInfo()
     local viewer = top()
     draw("about-" .. width .. "x" .. height)
-    assert(viewer.title == "weread 闭源版")
+    assert(viewer.title == "weread闭源版(全平台搜 finlater)")
     assert(viewer.text:find("AI 问书", 1, true) and viewer.text:find("每周阅读奖励", 1, true))
     assert(viewer.text:find("获取安装包，请到闲鱼联系 finlater。", 1, true))
     local bold_runs, was_bold = 0, false
@@ -110,7 +128,7 @@ for _, size in ipairs({ { 600, 800 }, { 800, 600 }, { 1072, 1448 } }) do
     local return_line = viewer.box_widget.virtual_line_num
     local function returnedIntroduction()
         local returned = top()
-        assert(returned.title == "weread 闭源版", "QR dismissal should return to the introduction")
+        assert(returned.title == "weread闭源版(全平台搜 finlater)", "QR dismissal should return to the introduction")
         assert(returned.box_widget.virtual_line_num == return_line, "QR dismissal should preserve the scroll position")
         assert(#UIManager._window_stack == 2, "QR dismissal should leave only one introduction")
         return returned
@@ -158,6 +176,7 @@ for _, size in ipairs({ { 600, 800 }, { 800, 600 }, { 1072, 1448 } }) do
             "separate feature promotions should be removed")
     end
     assert(top() == background)
+    assert(homescreen_returns == 0, "QR dismissal must not trigger SimpleUI homepage restoration")
     UIManager:close(background)
     assert(#UIManager._window_stack == 0)
 end

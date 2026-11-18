@@ -844,7 +844,8 @@ function M:showClosedSourceInfo()
     end
     local viewer
     viewer = TextViewer:new{
-        title = _("weread closed-source edition"),
+        title = _("weread closed-source edition (search finlater on all platforms)"),
+        title_shrink_font_to_fit = true,
         text = TextBoxWidget.PTF_HEADER
             .. _("A new version of weread with the familiar WeRead e-ink app style, now featuring:") .. "\n\n"
             .. feature(_("• Offline reading and time upload: faster, more reliable book downloads, offline reading time recording, and upload when back online.")) .. "\n"
@@ -868,7 +869,8 @@ function M:showClosedSourceInfo()
                     UIManager:show(ImageViewer:new{
                         file = icons_dir .. "bilibili.png",
                         title_text = _("Watch demo (Bilibili)"),
-                        fullscreen = true,
+                        -- SimpleUI restores its homepage when a fullscreen view closes.
+                        fullscreen = false,
                     })
                 end,
             }, {
@@ -878,7 +880,7 @@ function M:showClosedSourceInfo()
                     UIManager:show(ImageViewer:new{
                         file = icons_dir .. "xiaohongshu.png",
                         title_text = _("Xiaohongshu QR code"),
-                        fullscreen = true,
+                        fullscreen = false,
                     })
                 end,
             }},
@@ -889,7 +891,7 @@ function M:showClosedSourceInfo()
                     UIManager:show(ImageViewer:new{
                         file = icons_dir .. "xianyu.png",
                         title_text = _("Buy the author a coffee and get the package (Xianyu)"),
-                        fullscreen = true,
+                        fullscreen = false,
                     })
                 end,
             }},

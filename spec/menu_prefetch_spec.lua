@@ -287,7 +287,7 @@ expect(shown_widget and shown_widget.text:find("Disclaimer", 1, true),
     "version item preserves the previous about dialog behavior")
 about_items[1].callback()
 local recommendation = shown_widget
-expect(recommendation.title == "weread closed-source edition"
+expect(recommendation.title == "weread closed-source edition (search finlater on all platforms)"
         and recommendation.text:find("contact finlater on Xianyu", 1, true),
     "recommendation includes the installation contact")
 expect(#recommendation.buttons_table == 3
@@ -299,7 +299,7 @@ for _, channel in ipairs({ {1, 1, "bilibili"}, {1, 2, "xiaohongshu"}, {2, 1, "xi
     recommendation.buttons_table[channel[1]][channel[2]].callback()
     local qr_file = io.open(shown_widget.file, "rb")
     expect(shown_widget.file:match("icons/" .. channel[3] .. "%.png$")
-            and qr_file ~= nil and shown_widget.fullscreen == true
+            and qr_file ~= nil and shown_widget.fullscreen == false
             and shown_widget.timeout == nil and closed_widget == nil,
         "channel QR is bundled and opens without closing the introduction: " .. channel[3])
     if qr_file then qr_file:close() end
@@ -312,7 +312,7 @@ expect(main_items[#main_items] and main_items[#main_items].text == "Settings",
 expect(main_items[1].text == "Upgrade to a fuller WeRead experience?" and main_items[1].keep_menu_open,
     "introduction is first in the file-manager menu")
 main_items[1].callback()
-expect(shown_widget.title == "weread closed-source edition",
+expect(shown_widget.title == "weread closed-source edition (search finlater on all platforms)",
     "top-level introduction opens without requiring an account")
 for _, item in ipairs(main_items) do
     if item.text == "Search" or item.text == "Reading statistics" then
