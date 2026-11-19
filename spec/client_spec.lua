@@ -380,4 +380,37 @@ end)
 expect(not ok and io.open(download_path .. ".part", "rb") == nil,
     "oversized file download did not remove its partial output")
 
+-- Total-deadline regression (PR #230): a request with no explicit timeout
+-- must pair the block timeout with a finite total deadline. socketutil resets
+-- the block timeout between chunks, so total = -1 used to allow a slow-drip
+-- connection to hang the synchronous UI thread indefinitely.
+do
+    local before = #timeout_calls
+    responses[#responses + 1] = { body = "ok", code = 200 }
+    client:request({ url = "https://weread.qq.com/web/default-timeout" })
+    local call = timeout_calls[before + 1]
+    expect(call[1] == 15 and call[2] == 30,
+        "default request must use total = block * 2")
+
+    responses[#responses + 1] = { body = "ok", code = 200 }
+    client:request({
+        url = "https://weread.qq.com/web/explicit-timeout",
+        timeout = { 4, 9 },
+    })
+    call = timeout_calls[before + 2]
+    expect(call[1] == 4 and call[2] == 9,
+        "explicit {block, total} must keep its exact semantics")
+
+    -- Numeric timeouts still change only the block timeout, but the paired
+    -- total must remain finite and positive (the old -1 leaked here).
+    responses[#responses + 1] = { body = "ok", code = 200 }
+    client:request({
+        url = "https://weread.qq.com/web/numeric-timeout",
+        timeout = 6,
+    })
+    call = timeout_calls[before + 3]
+    expect(call[1] == 6 and type(call[2]) == "number" and call[2] > 0,
+        "numeric timeout must retain a finite positive total deadline")
+end
+
 print(("client_spec: %d checks"):format(checks))

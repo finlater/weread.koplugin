@@ -245,7 +245,13 @@ function Client:request(opts)
         headers["Content-Length"] = tostring(#body)
     end
     local block_timeout = DEFAULT_TIMEOUT_SECONDS
-    local total_timeout = -1
+    -- Pair a total deadline with the block timeout: socketutil resets the
+    -- block timeout between chunks, so a slow-drip connection could hang a
+    -- synchronous UI-thread request indefinitely (measured 26.9s freeze on
+    -- a Kindle K4 with a throttled connection). 2x block keeps weak-network
+    -- tolerance while capping the worst case; explicit {block, total} tables
+    -- keep their exact semantics.
+    local total_timeout = block_timeout * 2
     if type(opts.timeout) == "table" and opts.timeout[1] then
         block_timeout = opts.timeout[1]
         total_timeout = opts.timeout[2] or block_timeout
