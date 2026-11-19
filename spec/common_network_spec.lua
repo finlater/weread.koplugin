@@ -56,4 +56,17 @@ eq(host:runOnlineTask("manual", function() end), false,
     "regular offline task does not start")
 eq(offline_notices, 1, "regular offline task still shows a notice")
 
+local transient_notices, qr_starts = 0, 0
+local login_host = setmetatable({
+    settings = {
+        is_cookie_configured = function() return false end,
+        is_api_configured = function() return false end,
+    },
+    qr_login = { start = function() qr_starts = qr_starts + 1 end },
+    showTransientInfo = function() transient_notices = transient_notices + 1 end,
+}, { __index = Common })
+eq(login_host:requireLogin(true, false), false, "missing login is reported")
+eq(qr_starts, 1, "automatic login starts QR login")
+eq(transient_notices, 0, "automatic login shows no prompt that repaints over the QR")
+
 print(string.format("common_network_spec: %d checks", checks))

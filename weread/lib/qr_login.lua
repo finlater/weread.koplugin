@@ -1,9 +1,8 @@
 local Cookie = require("weread.lib.cookie")
-local Device = require("device")
 local I18n = require("weread.lib.i18n")
 local InputDialog = require("ui/widget/inputdialog")
 local logger = require("weread.lib.logger").scoped("QRLogin")
-local QRMessage = require("ui/widget/qrmessage")
+local QRDialog = require("weread.ui.qr_dialog")
 local T = require("ffi/util").template
 local UIManager = require("ui/uimanager")
 local WeRead = require("weread.lib.protocol")
@@ -21,6 +20,10 @@ local API_KEY_URL = BASE_URL .. "/api/skills/apikeyGet?only_show=1"
 local LOGIN_SESSION_TIMEOUT_SECONDS = 300
 local POLL_BLOCK_TIMEOUT_SECONDS = 5
 local POLL_TOTAL_TIMEOUT_SECONDS = 8
+-- getLoginInfo can answer 401 transiently (the same way the authenticated
+-- requests after login do), so tolerate a few per login session before
+-- treating it as failure.
+local POLL_MAX_UNAUTHORIZED = 3
 
 local QRLogin = {}
 QRLogin.__index = QRLogin
@@ -88,6 +91,7 @@ function QRLogin:new(host, client, settings)
         qr_dialog = nil,
         programmatic_close = false,
         started_at = nil,
+        poll_unauthorized = 0,
     }, self)
 end
 
@@ -320,6 +324,7 @@ function QRLogin:cancel()
     self.generation = self.generation + 1
     self.login_cookies = nil
     self.started_at = nil
+    self.poll_unauthorized = 0
     self:_close_qr_dialog(true)
 end
 
@@ -351,18 +356,11 @@ function QRLogin:start()
 end
 
 function QRLogin:_show_qr(uid, generation)
-    local screen_width = Device.screen:getWidth()
-    local screen_height = Device.screen:getHeight()
-    local qr_size = math.floor(math.min(screen_width, screen_height) * 0.72)
     local dialog
-    dialog = QRMessage:new{
+    dialog = QRDialog:new{
         text = BASE_URL .. "/web/confirm?uid=" .. WeRead.urlencode(uid),
-        -- QRMessage centers its framed content on the screen. Keeping the frame
-        -- smaller than the viewport makes it a dismissible popup instead of a
-        -- full-screen QR surface; tapping the modal surface (or pressing a key)
-        -- cancels the login flow through dismiss_callback.
-        width = qr_size,
-        height = qr_size,
+        -- Tapping the modal surface (or pressing a key) cancels the login flow
+        -- through dismiss_callback.
         dismiss_callback = function()
             if self.qr_dialog == dialog then
                 self.qr_dialog = nil
@@ -372,26 +370,21 @@ function QRLogin:_show_qr(uid, generation)
                 self.host:showTransientInfo(_("QR login cancelled."), 2)
             end
         end,
-        scale_factor = 0.9,
     }
     self.qr_dialog = dialog
     -- Show the QR dialog after the surrounding UI has finished updating.
     -- Showing it immediately can leave part of the QR code obscured on Kindle.
     UIManager:scheduleIn(0.2, function()
         if generation == self.generation and self.qr_dialog == dialog then
-            UIManager:show(dialog)
+            UIManager:show(dialog, "full")
         end
     end)
 
-    UIManager:scheduleIn(0.5, function()
-        if generation == self.generation and self.qr_dialog == dialog then
-            self:_poll(uid, generation)
-        end
-    end)
+    self:_schedule_poll(uid, generation)
 end
 
-function QRLogin:_schedule_poll(uid, generation)
-    UIManager:scheduleIn(0.5, function()
+function QRLogin:_schedule_poll(uid, generation, delay)
+    UIManager:scheduleIn(delay or 0.5, function()
         if generation == self.generation and self.qr_dialog then
             self:_poll(uid, generation)
         end
@@ -417,9 +410,16 @@ function QRLogin:_poll(uid, generation, otp)
             self:_schedule_poll(uid, generation)
             return
         end
+        if tostring(result):find("HTTP 401", 1, true)
+            and self.poll_unauthorized < POLL_MAX_UNAUTHORIZED then
+            self.poll_unauthorized = self.poll_unauthorized + 1
+            logger.warn("getLoginInfo unauthorized; retrying:", tostring(self.poll_unauthorized))
+            self:_schedule_poll(uid, generation, 1)
+            return
+        end
         self:_close_qr_dialog(true)
         self:cancel()
-            logger.err("login polling failed:", error_text(result))
+        logger.err("login polling failed:", error_text(result))
         self.host:showInfo(T(_("QR login failed:\n%1"), error_text(result)))
         return
     end

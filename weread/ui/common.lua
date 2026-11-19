@@ -185,7 +185,6 @@ function M:requireLogin(require_cookie, require_api_key)
     if not missing_cookie and not missing_api_key then
         return true
     end
-    self:showTransientInfo(_("Please scan the QR code to log in first."), 2)
     UIManager:scheduleIn(0.2, function()
         self.qr_login:start()
     end)
