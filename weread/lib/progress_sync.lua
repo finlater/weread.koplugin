@@ -5,6 +5,45 @@ local logger = require("weread.lib.logger").scoped("ProgressSync")
 local ProgressSync = {}
 ProgressSync.__index = ProgressSync
 
+-- Rune helpers for the text-space conversion (P1/P4).
+-- Lua has no utf8 library on this device, and `#s` counts bytes, so both the
+-- conversion and the anchor extraction need the same counting rule.
+local function rune_len(value)
+    local text = tostring(value or "")
+    local index, count = 1, 0
+    while index <= #text do
+        local byte = text:byte(index)
+        local size = 1
+        if byte and byte >= 0xF0 then size = 4
+        elseif byte and byte >= 0xE0 then size = 3
+        elseif byte and byte >= 0xC0 then size = 2 end
+        index, count = index + size, count + 1
+    end
+    return count
+end
+
+local function rune_sub(text, from, count)
+    text = tostring(text or "")
+    count = tonumber(count) or 0
+    if count <= 0 then return "" end
+    local index, rune, started = 1, 0, nil
+    while index <= #text and count > 0 do
+        local byte = text:byte(index)
+        local size = 1
+        if byte and byte >= 0xF0 then size = 4
+        elseif byte and byte >= 0xE0 then size = 3
+        elseif byte and byte >= 0xC0 then size = 2 end
+        rune = rune + 1
+        if rune >= (tonumber(from) or 1) then
+            started = started or index
+            count = count - 1
+            if count == 0 then return text:sub(started, index + size - 1) end
+        end
+        index = index + size
+    end
+    return started and text:sub(started) or ""
+end
+
 local OPEN_DELAY_SECONDS = 0.6
 local RESUME_RECHECK_SECONDS = 5 * 60
 local PULL_RETRY_DELAY_SECONDS = 15
@@ -50,6 +89,8 @@ function ProgressSync:new(options)
     assert(type(options.run_online) == "function", "run_online callback is required")
     assert(type(options.upload_position) == "function", "upload_position callback is required")
     assert(type(options.goto_fraction) == "function", "goto_fraction callback is required")
+    -- Optional P4 hook: jump to an exact piece of text
+    -- instead of a whole-book percentage. Missing means "percent only".
     assert(type(options.open_chapter) == "function", "open_chapter callback is required")
 
     local object = {
@@ -58,6 +99,7 @@ function ProgressSync:new(options)
         scheduler = options.scheduler,
         get_document = options.get_document,
         get_footer = options.get_footer,
+        get_toc = options.get_toc,
         detect_book = options.detect_book,
         get_book = options.get_book,
         get_chapters = options.get_chapters,
@@ -66,6 +108,7 @@ function ProgressSync:new(options)
         run_online = options.run_online,
         upload_position = options.upload_position,
         goto_fraction = options.goto_fraction,
+        goto_anchor = options.goto_anchor,
         open_chapter = options.open_chapter,
         is_online = options.is_online or function() return true end,
         on_choice = options.on_choice or function(context)
@@ -141,6 +184,372 @@ function ProgressSync:_local_fraction()
     return nil
 end
 
+-- Chapter length in WeRead's chapterOffset space: the rune
+-- length of the chapter's source HTML, taken from the annotation span index
+-- that the downloader already writes to disk. Returns nil when the chapter was
+-- never downloaded; callers then fall back to wordCount, which keeps the old
+-- behaviour instead of making it worse.
+-- Which book version a chapter's cached offsets describe.
+-- WeRead bumps `updateTime` when the publisher replaces the text or its markup;
+-- the cached spans then describe a chapter that no longer exists on the server,
+-- so dividing the cloud's current `co` by their length would silently rescale
+-- the position. Unknown on both sides means "trust the cache" (old behaviour).
+function ProgressSync:_book_version(book_id)
+    local cache = self._book_version_cache
+    if cache and cache.book_id == book_id then return cache.value end
+    local value
+    local ok = pcall(function()
+        local book = self.get_book and self.get_book(book_id) or nil
+        if type(book) ~= "table" then return end
+        local raw = book.updateTime or book.version or book.bookVersion
+        if raw ~= nil and tostring(raw) ~= "" and tostring(raw) ~= "0" then
+            value = tostring(raw)
+        end
+    end)
+    if not ok then value = nil end
+    self._book_version_cache = { book_id = book_id, value = value }
+    return value
+end
+
+function ProgressSync:_chapter_source_version(book_id, uid)
+    if not self.settings then return nil end
+    local ok, entry = pcall(function()
+        local Store = require("weread.lib.annotation_store")
+        self.annotation_store = self.annotation_store or Store:new(self.settings)
+        return self.annotation_store:get(
+            tostring(book_id), "source_version", tostring(uid))
+    end)
+    if not ok or type(entry) ~= "table" then return nil end
+    local value = tostring(entry.v or "")
+    return value ~= "" and value or nil
+end
+
+-- Cached spans for one chapter, version-guarded (P3).
+-- Returns nil when the chapter was never indexed or the cache predates the book
+-- version it would be interpreted against.
+function ProgressSync:_chapter_spans(book_id, uid)
+    if not self.settings then return nil end
+    local ok, spans = pcall(function()
+        local Store = require("weread.lib.annotation_store")
+        self.annotation_store = self.annotation_store
+            or Store:new(self.settings)
+        return self.annotation_store:get(
+            tostring(book_id), "original", tostring(uid))
+    end)
+    if not ok or type(spans) ~= "table" or #spans == 0 then
+        return nil, "source_cache_missing"
+    end
+    -- 单片 spans（纯文本书，Source.plain）也要留着：它的 html 与文本同空间，
+    -- 换算是恒等映射，正好是 txt 书需要的。
+    -- The cached length is only meaningful for the version it
+    -- was measured on. A newer book means a different chapter text, so fall back
+    -- to the estimated length instead of rescaling the cloud's offset.
+    local cached_version = self:_chapter_source_version(book_id, uid)
+    local current_version = self:_book_version(book_id)
+    if cached_version and current_version
+        and cached_version ~= current_version then
+        logger.info("progress source cache is stale:", tostring(book_id),
+            "chapter=", tostring(uid), "cached=", cached_version,
+            "current=", current_version)
+        return nil, "source_version_mismatch"
+    end
+    return spans
+end
+
+function ProgressSync:_read_chapter_html_len(book_id, uid)
+    local space, reason = self:_chapter_space(book_id, uid)
+    if space then return space.html_len end
+    return nil, reason
+end
+
+-- P1: build the "html offset <-> visible text" mapping for
+-- one chapter. Every offset conversion on both the upload and the pull side goes
+-- through it, so the two ends finally share one ruler.
+function ProgressSync:_chapter_space(book_id, uid)
+    -- 键里必须带 book_id：章节 uid 在不同书之间会重复（都是 1、2、3…）。
+    local key = tostring(book_id) .. ":" .. tostring(uid)
+    local cache = self._chapter_space_cache
+    if type(cache) ~= "table" then cache = {}; self._chapter_space_cache = cache end
+    local hit = cache[key]
+    if hit ~= nil then return hit or nil end
+    local spans, reason = self:_chapter_spans(book_id, uid)
+    if not spans then cache[key] = false; return nil, reason end
+
+    -- 只保留「有可见文本」的片段，并让起止/rune 数三者同序，避免跳段后错位。
+    local segments, html_len, text_len = {}, 0, 0
+    for _i, span in ipairs(spans) do
+        if type(span) == "table" then
+            local start, stop = tonumber(span[1]), tonumber(span[2])
+            local piece = type(span[3]) == "string" and span[3] or ""
+            if stop and stop > html_len then html_len = stop end
+            if start and stop and stop > start and piece ~= "" then
+                local length = rune_len(piece)
+                if length > 0 then
+                    segments[#segments + 1] = {
+                        start = start, stop = stop, runes = length, piece = piece,
+                    }
+                    text_len = text_len + length
+                end
+            end
+        end
+    end
+    if html_len <= 0 or text_len <= 0 or #segments == 0 then
+        cache[key] = false
+        return nil
+    end
+    local pieces = {}
+    for index = 1, #segments do pieces[index] = segments[index].piece end
+    local text = table.concat(pieces)
+
+    local function to_text(co)
+        local offset, before = tonumber(co) or 0, 0
+        for index = 1, #segments do
+            local segment = segments[index]
+            if offset <= segment.start then return before end
+            if offset >= segment.stop then
+                before = before + segment.runes
+            else
+                -- A segment can be longer in html than in text
+                -- when it contains entities (&amp; stays raw in the cached span).
+                -- Distribute proportionally so both ends stay exact.
+                local within = offset - segment.start
+                local span = segment.stop - segment.start
+                if span == segment.runes then
+                    return before + within
+                end
+                return before + math.floor(within * segment.runes / span)
+            end
+        end
+        return before
+    end
+
+    local function to_html(text_offset)
+        local offset, before = tonumber(text_offset) or 0, 0
+        -- 章首就是章首：文本 0 之前只有标签，co 应写 0 而不是「第一个可见字的位置」。
+        if offset <= 0 then return 0 end
+        for index = 1, #segments do
+            local segment = segments[index]
+            if offset <= before then return segment.start end
+            if offset <= before + segment.runes then
+                local within = offset - before
+                local span = segment.stop - segment.start
+                if span == segment.runes then
+                    return segment.start + within
+                end
+                return math.min(segment.stop,
+                    segment.start + math.floor(within * span / segment.runes))
+            end
+            before = before + segment.runes
+        end
+        return html_len
+    end
+
+    local space = {
+        html_len = html_len,
+        text_len = text_len,
+        text = text,
+        to_text = to_text,
+        to_html = to_html,
+        text_at = function(offset, count)
+            return rune_sub(text, (tonumber(offset) or 0) + 1, count)
+        end,
+    }
+    -- 一部 1400 章的书不该把所有空间都留在内存里；开书/换书时清一次足够。
+    local count = 0
+    for _k in pairs(cache) do count = count + 1 end
+    if count > 12 then
+        cache = {}
+        self._chapter_space_cache = cache
+    end
+    cache[key] = space
+    return space
+end
+
+function ProgressSync:_chapter_space_resolver(book_id)
+    return function(uid)
+        local ok, space = pcall(self._chapter_space, self, book_id, uid)
+        return ok and space or nil
+    end
+end
+
+-- html-per-word ratio for books whose chapters were never
+-- indexed (downloaded before the span cache existed -- the 39-volume omnibus is
+-- one). Sampled from the indexed chapters around the book, through the same
+-- memoised resolver, so opening such a book costs at most a few small reads.
+local RATIO_SAMPLE_LIMIT = 3
+
+function ProgressSync:_book_html_ratio(book_id, cached)
+    if type(cached) ~= "table" then return nil end
+    if cached.html_ratio ~= nil then return cached.html_ratio or nil end
+    local samples = {}
+    local catalog = cached.position_catalog
+    local resolve = cached.chapter_len
+    local chapters = type(catalog) == "table" and catalog.chapters or nil
+    if type(chapters) == "table" and #chapters > 0
+        and type(resolve) == "function" then
+        local step = math.max(1, math.floor(#chapters / RATIO_SAMPLE_LIMIT))
+        local index = step
+        while index <= #chapters and #samples < RATIO_SAMPLE_LIMIT do
+            local item = chapters[index]
+            local words = tonumber(item and item.words) or 0
+            if words > 0 and item.uid ~= nil then
+                local ok, length = pcall(resolve, item.uid)
+                length = ok and tonumber(length) or nil
+                if length and length > 0 then
+                    samples[#samples + 1] = length / words
+                end
+            end
+            index = index + step
+        end
+    end
+    local ratio
+    if #samples > 0 then
+        table.sort(samples)
+        ratio = samples[math.floor((#samples + 1) / 2)]
+    end
+    cached.html_ratio = ratio or false
+    return ratio
+end
+
+-- One resolver per open document, memoised per chapter: capture_local runs on
+-- every page update and must not touch the database again for a known chapter.
+function ProgressSync:_chapter_len_resolver(book_id)
+    local cache = {}
+    local function resolve(uid)
+        local key = tostring(uid)
+        local hit = cache[key]
+        if hit ~= nil then return hit or nil end
+        local value = self:_read_chapter_html_len(book_id, key)
+        cache[key] = value or false
+        return value
+    end
+    return resolve
+end
+
+-- percent_finished is pageno/pages, i.e. a *page* fraction.
+-- In a book whose pages are not proportional to its text (an omnibus with
+-- per-volume front matter, an image-heavy title) that number drifts away from
+-- the real reading position and drags the uploaded chapter with it. KOReader's
+-- TOC knows the actual chapter, so prefer it whenever it can be resolved.
+local function normalize_title(value)
+    local text = tostring(value or ""):lower()
+    text = text:gsub("%s+", "")
+    text = text:gsub("^[%(%[]?[%d%.、，,%-]+[%)%]]?", "")
+    return text
+end
+
+function ProgressSync:_chapter_title_map(cached)
+    if cached.title_map then return cached.title_map end
+    local map = {}
+    local catalog = cached.position_catalog
+    for _, item in ipairs(catalog and catalog.chapters or {}) do
+        local key = normalize_title(item.source and item.source.title)
+        if key ~= "" then
+            map[key] = map[key] or {}
+            table.insert(map[key], item)
+        end
+    end
+    cached.title_map = map
+    return map
+end
+
+-- Walk a container entry (a volume title in an omnibus) down to the chapter
+-- that holds the given fraction of that container's words.
+local function resolve_block(block, fraction)
+    local total = 0
+    for _, item in ipairs(block) do total = total + item.words end
+    if total <= 0 then return nil end
+    local target = fraction * total
+    local seen = 0
+    for _, item in ipairs(block) do
+        if target < seen + item.words or item == block[#block] then
+            local inside = item.words > 0
+                and math.max(0, math.min(1, (target - seen) / item.words))
+                or 0
+            return item, inside
+        end
+        seen = seen + item.words
+    end
+    return nil
+end
+
+function ProgressSync:_toc_position(chapters, cached, fraction, options)
+    local toc = self.get_toc and self.get_toc()
+    if type(toc) ~= "table" or type(toc.getTocIndexByPage) ~= "function" then
+        return nil
+    end
+    local document = self.get_document()
+    local page
+    if document and type(document.getCurrentPage) == "function" then
+        local ok, value = pcall(document.getCurrentPage, document)
+        if ok then page = tonumber(value) end
+    end
+    if not page then return nil end
+
+    local index_ok, index = pcall(toc.getTocIndexByPage, toc, page)
+    local entries = toc.toc
+    if not index_ok or not index or type(entries) ~= "table" then return nil end
+    local entry = entries[index]
+    if type(entry) ~= "table" or entry.title == nil then return nil end
+
+    local key = normalize_title(entry.title)
+    if key == "" then return nil end
+    local candidates = self:_chapter_title_map(cached)[key]
+    if not candidates then return nil end
+
+    -- Titles repeat across volumes; the percent estimate picks the right one
+    -- unless the two disagree by more than a volume, which is the case this
+    -- whole mechanism exists to fix.
+    local catalog = cached.position_catalog
+    local estimate = (tonumber(fraction) or 0) * catalog.total_words
+    local chosen = candidates[1]
+    if #candidates > 1 then
+        local best
+        for _, item in ipairs(candidates) do
+            local distance = math.abs(item.before - estimate)
+            if not best or distance < best then best, chosen = distance, item end
+        end
+    end
+
+    local page_ok, done = pcall(toc.getChapterPagesDone, toc, page)
+    local total_ok, chapter_pages = pcall(toc.getChapterPageCount, toc, page)
+    if not page_ok or not total_ok then return nil end
+    done, chapter_pages = tonumber(done), tonumber(chapter_pages)
+    if not chapter_pages or chapter_pages <= 0 then return nil end
+    local inside_block = math.max(0,
+        math.min(1, ((done or 0) + 1) / chapter_pages))
+
+    -- A TOC that is far coarser than the catalog lists containers, not
+    -- chapters: spread the page fraction over the container's words.
+    local coarse = #entries * 2 < #catalog.chapters
+    if coarse then
+        local level = tonumber(chosen.source and chosen.source.level) or 1
+        local block = { chosen }
+        local start_index
+        for block_index, item in ipairs(catalog.chapters) do
+            if item == chosen then start_index = block_index; break end
+        end
+        if start_index then
+            for block_index = start_index + 1, #catalog.chapters do
+                local item = catalog.chapters[block_index]
+                local item_level = tonumber(
+                    item.source and item.source.level) or 1
+                if item_level <= level then break end
+                table.insert(block, item)
+            end
+        end
+        if #block > 1 then
+            local item, inside = resolve_block(block, inside_block)
+            if not item then return nil end
+            return PositionMapper.chapter_position(
+                chapters, item.uid, inside, options)
+        end
+    end
+
+    return PositionMapper.chapter_position(
+        chapters, chosen.uid, inside_block, options)
+end
+
 function ProgressSync:capture_local()
     local book_id = self.detect_book()
     if not book_id or is_mp_book(book_id) then
@@ -175,25 +584,47 @@ function ProgressSync:capture_local()
             book = book,
             chapters = chapters,
             position_catalog = PositionMapper.catalog(chapters),
+            chapter_len = self:_chapter_len_resolver(book_id),
+            chapter_space = self:_chapter_space_resolver(book_id),
             current_chapter = current_chapter,
             is_full_book = is_full_book == true,
             path = path,
         }
         cached = self.document_context
     end
+    if not cached.chapter_len then
+        cached.chapter_len = self:_chapter_len_resolver(book_id)
+    end
+    if not cached.chapter_space then
+        cached.chapter_space = self:_chapter_space_resolver(book_id)
+    end
+    if cached.html_ratio == nil then
+        cached.html_ratio = self:_book_html_ratio(book_id, cached) or false
+    end
     local fraction = self:_local_fraction()
     if fraction == nil then return nil, "position_unavailable" end
-    local position, reason = PositionMapper.local_to_remote(
-        chapters,
-        fraction,
-        {
-            catalog = cached.position_catalog,
-            is_full_book = is_full_book == true,
-            current_chapter_uid = current_chapter
-                and (current_chapter.chapterUid or current_chapter.chapterId),
-            summary = book.summary or book.title or "",
-        }
-    )
+    local pages
+    if type(document.getPageCount) == "function" then
+        local ok, value = pcall(document.getPageCount, document)
+        if ok then pages = tonumber(value) end
+    end
+    local mapper_options = {
+        catalog = cached.position_catalog,
+        is_full_book = is_full_book == true,
+        current_chapter_uid = current_chapter
+            and (current_chapter.chapterUid or current_chapter.chapterId),
+        chapter_len = cached.chapter_len,
+        chapter_space = cached.chapter_space,
+        chapter_ratio = cached.html_ratio or nil,
+        document_pages = pages,
+        summary = book.summary or book.title or "",
+    }
+    local position, reason = self:_toc_position(
+        chapters, cached, fraction, mapper_options)
+    if not position then
+        position, reason = PositionMapper.local_to_remote(
+            chapters, fraction, mapper_options)
+    end
     if not position then return nil, reason end
     position.book_id = book_id
     position.captured_at = self.now()
@@ -204,6 +635,9 @@ function ProgressSync:capture_local()
         book_id = book_id,
         book = book,
         chapters = chapters,
+        chapter_len = cached.chapter_len,
+        chapter_space = cached.chapter_space,
+        html_ratio = cached.html_ratio or nil,
         current_chapter = current_chapter,
         is_full_book = is_full_book == true,
         path = path,
@@ -244,16 +678,24 @@ function ProgressSync:_clear_verified(reason)
     end
 end
 
-function ProgressSync:_fetch_remote(book_id, chapters)
+function ProgressSync:_fetch_remote(book_id, chapters, chapter_len, chapter_ratio,
+    chapter_space)
     local gateway
     local web
     local gateway_error
     local web_error
+    local options = {
+        chapter_len = chapter_len,
+        -- Same length basis as the upload side, so a pull
+        -- lands where the upload said it was.
+        chapter_ratio = chapter_ratio,
+        chapter_space = chapter_space,
+    }
     if self.settings:is_api_configured() then
         local ok, result = pcall(self.client.get_progress, self.client, book_id)
         if ok then
             gateway, gateway_error = PositionMapper.normalize_remote(
-                result, book_id, "gateway", chapters)
+                result, book_id, "gateway", chapters, options)
         else
             gateway_error = tostring(result)
         end
@@ -263,7 +705,7 @@ function ProgressSync:_fetch_remote(book_id, chapters)
             self.client.get_web_progress, self.client, book_id)
         if ok then
             web, web_error = PositionMapper.normalize_remote(
-                result, book_id, "web", chapters)
+                result, book_id, "web", chapters, options)
         else
             web_error = tostring(result)
         end
@@ -279,6 +721,86 @@ function ProgressSync:_fetch_remote(book_id, chapters)
     return selected
 end
 
+-- P4: the anchor is 32 runes of the *cloud* chapter text
+-- taken at the target position. It is derived locally from the same spans the
+-- offsets come from, so nothing extra has to be stored in the cloud.
+local ANCHOR_RUNES = 32
+local ANCHOR_MIN_RUNES = 8
+
+-- 空白判定要覆盖三种：ASCII 空白、NBSP(U+00A0)、全角空格(U+3000)。
+local function is_space_rune(value)
+    if value == " " or value == "\t" or value == "\n" or value == "\r" then return true end
+    return value == "\194\160" or value == "\227\128\128"
+end
+
+-- 取一段**不含空白**的锚点。
+-- 排版引擎会把源文里的换行与缩进归一成自己的空白（或直接吞掉），所以带换行的
+-- 查询在 findAllText 里必然搜不到——2026-11-17 首次真机验收就是这样 miss 的
+-- （锚点里带着 `\r\n  `）。改成「从当前位置跳过空白，取到下一个空白为止」，
+-- 长度不足 8 rune 就跳到下一段再试一次。
+local function anchor_segment(space, text_offset)
+    local cursor = tonumber(text_offset) or 0
+    for _attempt = 1, 2 do
+        local raw = space.text_at(cursor, ANCHOR_RUNES + 16)
+        if type(raw) ~= "string" or raw == "" then return nil end
+        local index, start_byte, end_byte, count = 1, nil, nil, 0
+        while index <= #raw do
+            local byte = raw:byte(index)
+            local size = 1
+            if byte and byte >= 0xF0 then size = 4
+            elseif byte and byte >= 0xE0 then size = 3
+            elseif byte and byte >= 0xC0 then size = 2 end
+            local char = raw:sub(index, index + size - 1)
+            if not start_byte then
+                if not is_space_rune(char) then start_byte = index; count = 1 end
+            elseif is_space_rune(char) then
+                break
+            else
+                count = count + 1
+                end_byte = index + size - 1
+                if count >= ANCHOR_RUNES then break end
+            end
+            index = index + size
+        end
+        if start_byte and end_byte then
+            local piece = raw:sub(start_byte, end_byte)
+            if rune_len(piece) >= ANCHOR_MIN_RUNES then return piece end
+            -- 这一段太短（标题、短句）：整段跳过，从下一段开头再取
+            cursor = cursor + rune_len(piece)
+        end
+        cursor = cursor + 1
+    end
+    return nil
+end
+
+function ProgressSync:_anchor_for(book_id, uid, text_offset)
+    if uid == nil or text_offset == nil then return nil end
+    local space = self:_chapter_space(book_id, uid)
+    if not space then return nil end
+    local text = anchor_segment(space, text_offset)
+    if type(text) ~= "string" or text == "" then return nil end
+    -- Entities stay raw in the cached span text but are decoded in the document,
+    -- so an anchor containing one would never match. Let the percent path handle
+    -- those few positions.
+    if text:find("&", 1, true) then return nil end
+    if rune_len(text) < ANCHOR_MIN_RUNES then return nil end
+    local anchor = { text = text, chapter_uid = tostring(uid), text_offset = text_offset }
+    anchor.runes = rune_len(text)
+    return anchor
+end
+
+-- Jump by anchor when possible, otherwise fall back to the book percentage.
+function ProgressSync:_jump_to(target, book_id)
+    if type(target) ~= "table" then return false, "jump_target_missing" end
+    local anchor = self:_anchor_for(book_id, target.chapter_uid,
+        target.chapter_text_offset)
+    if anchor and type(self.goto_anchor) == "function" then
+        local called, jumped = pcall(self.goto_anchor, anchor, target.fraction)
+        if called and jumped == true then return true end
+    end
+    return self.goto_fraction(target.fraction)
+end
+
 function ProgressSync:_apply_remote(remote, context, options)
     options = options or {}
     local target, reason = PositionMapper.remote_to_local(
@@ -286,6 +808,9 @@ function ProgressSync:_apply_remote(remote, context, options)
         remote,
         {
             is_full_book = context.is_full_book,
+            chapter_len = context.chapter_len,
+            chapter_ratio = context.html_ratio,
+            chapter_space = context.chapter_space,
             current_chapter_uid = context.current_chapter
                 and (context.current_chapter.chapterUid
                     or context.current_chapter.chapterId),
@@ -301,6 +826,7 @@ function ProgressSync:_apply_remote(remote, context, options)
             chapter_uid = target.chapter
                 and (target.chapter.chapterUid or target.chapter.chapterId),
             fraction = target.fraction,
+            text_offset = target.chapter_text_offset,
             remote = copy(remote),
             notify = options.manual == true,
         }
@@ -315,7 +841,7 @@ function ProgressSync:_apply_remote(remote, context, options)
         end
         return true
     end
-    local ok, err = self.goto_fraction(target.fraction)
+    local ok, err = self:_jump_to(target, context.book_id)
     if not ok then return false, err or "jump_failed" end
     self.dirty = false
     self:_mark_verified(
@@ -330,6 +856,17 @@ function ProgressSync:_apply_remote(remote, context, options)
     self.scheduler:scheduleIn(0.15, function()
         local position = self:capture_local()
         if position then
+            -- P4 观测点：锚点跳转若落到了别的章，说明那段
+            -- 文本在本书里并非唯一（或目录映射有偏差）。这里只记日志、不改状态：
+            -- 先攒证据，避免把误判变成新的弹窗来源。参考实现的日志里就出现过
+            -- `ProgressJumpVerify matched=false`，所以这个风险是真实存在的。
+            if target.chapter_uid and position.chapter_uid
+                and tostring(position.chapter_uid) ~= tostring(target.chapter_uid) then
+                logger.warn("progress jump landed in another chapter:",
+                    "want=", tostring(target.chapter_uid),
+                    "got=", tostring(position.chapter_uid),
+                    "book=", tostring(context.book_id))
+            end
             self.local_position = position
             self.dirty = false
             self:_persist(context.book_id, {
@@ -594,7 +1131,10 @@ function ProgressSync:_pull(options)
         end
         local remote, pull_error = self:_fetch_remote(
             context.book_id,
-            context.chapters
+            context.chapters,
+            context.chapter_len,
+            context.html_ratio,
+            context.chapter_space
         )
         self.pulling = false
         if generation ~= self.generation
@@ -644,7 +1184,11 @@ function ProgressSync:_apply_pending_jump(book_id)
         return false
     end
     self.pending_jump = nil
-    local ok, err = self.goto_fraction(pending.fraction)
+    local ok, err = self:_jump_to({
+        fraction = pending.fraction,
+        chapter_uid = pending.chapter_uid,
+        chapter_text_offset = pending.text_offset,
+    }, book_id)
     if not ok then
         self.state = "error"
         self.notify("jump_failed", { error = err })
