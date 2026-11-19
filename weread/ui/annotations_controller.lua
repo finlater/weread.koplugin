@@ -11,6 +11,7 @@ local UIManager = require("ui/uimanager")
 
 local PluginUtil = require("weread.lib.plugin_util")
 local _ = PluginUtil.tr
+local T = PluginUtil.T
 local thought_perf = PluginUtil.thought_perf
 
 local M = {}
@@ -154,6 +155,28 @@ local function isThoughtHref(href)
             or href:match("#?thought_.+_%d+_%d+") ~= nil)
 end
 
+-- Truncate a thought preview to a sane length for the "Thoughts on this page"
+-- list, preserving whole multi-byte characters and appending an ellipsis.
+local function previewText(text, max_chars)
+    text = tostring(text or ""):gsub("%s+", " ")
+        :match("^%s*(.-)%s*$") or ""
+    max_chars = tonumber(max_chars) or 48
+    local bytes, chars = 0, 0
+    while bytes < #text and chars < max_chars do
+        local byte = text:byte(bytes + 1)
+        local width = byte < 0x80 and 1
+            or byte < 0xE0 and 2
+            or byte < 0xF0 and 3
+            or 4
+        bytes = bytes + width
+        chars = chars + 1
+    end
+    if bytes < #text then
+        return text:sub(1, bytes) .. "…"
+    end
+    return text
+end
+
 -- Hide our thought anchors from KOReader's link hit-testing when:
 --   1) annotations are hidden, or
 --   2) edge-tap ignore is on and the tap is in the left/right page-turn zone.
@@ -229,13 +252,15 @@ function M:_removeLinkFilter()
 end
 
 function M:_teardownThoughtInterception()
-    if self._thought_interception_setup and self.ui then
+    if self._thought_touch_interception_setup and self.ui then
         self.ui:unRegisterTouchZones({
             { id = "weread_thought_tap", overrides = { "tap_link" } },
         })
-        self._thought_interception_setup = nil
     end
+    self._thought_touch_interception_setup = nil
+    self._thought_interception_setup = nil
     self:_removeLinkFilter()
+    self:_removeThoughtLinkInterceptor()
     -- Document boundary: drop the pooled popup entirely. closeVisible() would
     -- keep the pooled widget and its page/piece/layout caches (~10+ MB of
     -- bitmaps) alive for the whole KOReader session; cleanup() frees them.
@@ -263,25 +288,32 @@ end
 
 function M:_setupThoughtInterception()
     local Device = require("device")
-    if not Device:isTouchDevice() then
-        return
-    end
     if not self.ui or self._thought_interception_setup then
         return
     end
 
-    self.ui:registerTouchZones({
-        {
-            id = "weread_thought_tap",
-            ges = "tap",
-            screen_zone = { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 },
-            overrides = { "tap_link" },
-            handler = function(ges)
-                return self:_onThoughtTap(ges)
-            end,
-        },
-    })
-    self:_installLinkFilter()
+    -- Non-touch devices (e.g. Kindle with a 5-way controller) have no tap
+    -- gesture, but ReaderLink still follows a keyboard/dispatcher "go to
+    -- selected link" through onGotoLink. Intercept that final step so a
+    -- selected WeRead thought anchor opens our popup instead of jumping to a
+    -- non-existent document target — this is the "五向键点想法" path.
+    self:_installThoughtLinkInterceptor()
+
+    if Device:isTouchDevice() then
+        self.ui:registerTouchZones({
+            {
+                id = "weread_thought_tap",
+                ges = "tap",
+                screen_zone = { ratio_x = 0, ratio_y = 0, ratio_w = 1, ratio_h = 1 },
+                overrides = { "tap_link" },
+                handler = function(ges)
+                    return self:_onThoughtTap(ges)
+                end,
+            },
+        })
+        self:_installLinkFilter()
+        self._thought_touch_interception_setup = true
+    end
     self._thought_interception_setup = true
 end
 
@@ -594,6 +626,275 @@ function M:_onThoughtTap(ges)
         return true
     end
     return self:_queueThoughtPopup(pages, link, tap_started)
+end
+
+-- ReaderLink already knows how to select links with keyboard/dispatcher
+-- actions on non-touch devices. Intercept the final follow step so a selected
+-- WeRead thought anchor opens our native popup instead of jumping to the
+-- anchor (which intentionally has no document target). This is the
+-- "五向键点想法" path; touch devices additionally get the tap handler above.
+function M:_installThoughtLinkInterceptor()
+    local reader_link = self.ui and self.ui.link
+    if not reader_link or type(reader_link.onGotoLink) ~= "function" then
+        return false
+    end
+    if self._thought_link_interceptor_target == reader_link then
+        return true
+    end
+    self:_removeThoughtLinkInterceptor()
+
+    local plugin = self
+    local original = reader_link.onGotoLink
+    local wrapper
+    wrapper = function(link_self, link, ...)
+        local href = plugin:_linkHref(link)
+        if isThoughtHref(href) then
+            -- Hidden annotations must stay inert. Consume the synthetic anchor
+            -- instead of letting ReaderLink jump to a non-existent target.
+            if plugin.settings:get("cache", {}).show_annotations == false then
+                return true
+            end
+            return plugin:_openThoughtLink(link, time.now())
+        end
+        return original(link_self, link, ...)
+    end
+
+    self._thought_link_interceptor_target = reader_link
+    self._thought_link_interceptor_original = original
+    self._thought_link_interceptor_wrapper = wrapper
+    reader_link.onGotoLink = wrapper
+    return true
+end
+
+function M:_removeThoughtLinkInterceptor()
+    local reader_link = self._thought_link_interceptor_target
+    local original = self._thought_link_interceptor_original
+    local wrapper = self._thought_link_interceptor_wrapper
+    if reader_link and original and reader_link.onGotoLink == wrapper then
+        reader_link.onGotoLink = original
+    end
+    self._thought_link_interceptor_target = nil
+    self._thought_link_interceptor_original = nil
+    self._thought_link_interceptor_wrapper = nil
+end
+
+-- Collect the thought entries actually available on the current page.
+-- WeRead books come in two layouts and the entry source differs:
+--   * native WeRead cache books — thoughts are injected as #wrthought- HTML
+--     anchors, discovered through getPageLinks();
+--   * matched local books (unified annotations) — underlines are xpointer
+--     overlays with NO HTML anchor; thoughts live in the unified store and are
+--     discovered through the visible overlay records.
+function M:_currentPageThoughtLinks()
+    -- Native-book path first; if it yields anchors we are done.
+    local html_links = self:_currentPageHtmlThoughtLinks()
+    if #html_links > 0 then
+        return html_links
+    end
+    -- Unified/match path: only meaningful when this book uses overlays.
+    if self._usesUnifiedAnnotations and self:_usesUnifiedAnnotations() then
+        return self:_currentPageUnifiedThoughtLinks()
+    end
+    return html_links
+end
+
+-- Native WeRead cache books: thoughts are real HTML anchors injected into the
+-- chapter markup, so they surface through KOReader's document link API.
+function M:_currentPageHtmlThoughtLinks()
+    local document = self.ui and self.ui.document
+    local reader_link = self.ui and self.ui.link
+    if not document or type(document.getPageLinks) ~= "function" then
+        return {}
+    end
+
+    local ok, page_links = pcall(function()
+        return document:getPageLinks(true)
+    end)
+    if not ok or type(page_links) ~= "table" then
+        logger.warn("current-page thought link lookup failed:", page_links)
+        return {}
+    end
+
+    local result, seen = {}, {}
+    for _, page_link in ipairs(page_links) do
+        local href = self:_linkHref(page_link)
+        if isThoughtHref(href) and not seen[href] then
+            seen[href] = true
+            local from_xpointer
+            if page_link.a_xpointer then
+                local coherent = true
+                if reader_link and type(reader_link.isXpointerCoherent) == "function" then
+                    local coherent_ok, value = pcall(function()
+                        return reader_link:isXpointerCoherent(page_link.a_xpointer)
+                    end)
+                    coherent = coherent_ok and value == true
+                end
+                if coherent then
+                    from_xpointer = page_link.a_xpointer
+                end
+            end
+
+            local link_y = page_link.end_y
+            if type(page_link.segments) == "table" and #page_link.segments > 0 then
+                link_y = page_link.segments[#page_link.segments].y1
+            end
+            result[#result + 1] = {
+                href = href,
+                link = {
+                    xpointer = page_link.section or page_link.uri or href,
+                    marker_xpointer = page_link.section,
+                    from_xpointer = from_xpointer,
+                    a_xpointer = page_link.a_xpointer,
+                    link_y = link_y,
+                },
+            }
+        end
+    end
+    return result
+end
+
+-- Matched local books (unified annotations): no HTML anchors exist, underlines
+-- are xpointer overlays. A thought is "on this page" when a visible overlay
+-- record carries (or resolves to) review items in the unified store.
+function M:_currentPageUnifiedThoughtLinks()
+    local overlay = self._xpointer_overlay
+    if not overlay then
+        return {}
+    end
+    -- Prefer a fresh current-page computation; fall back to the last painted set.
+    local ok, visible = pcall(function()
+        return overlay:_computeVisible()
+    end)
+    if not ok or type(visible) ~= "table" then
+        visible = overlay.visible or {}
+    end
+    local context = self._annotation_context
+    local result = {}
+    for _, entry in ipairs(visible) do
+        local record = entry and entry.record
+        if type(record) == "table" then
+            local chapter_uid = record.chapter_uid
+            local range = record.range
+            if chapter_uid and range then
+                local items = record.items
+                if not items and context then
+                    items = context.store:get(context.book_id, "thought",
+                        chapter_uid .. ":" .. range)
+                end
+                if type(items) == "table" and #items > 0 then
+                    local first = items[1] or {}
+                    local preview = first.abstract or first.content or ""
+                    result[#result + 1] = {
+                        unified = true,
+                        record = record,
+                        items = items,
+                        text = record.text or "",
+                        preview = type(preview) == "string" and preview or "",
+                    }
+                end
+            end
+        end
+    end
+    return result
+end
+
+-- Shared entry for the "Thoughts on this page" menu list. Supports both native
+-- cache books (anchor → native pages) and matched local books (overlay record →
+-- resolved review items from the unified store).
+function M:showCurrentPageThoughts()
+    if not self._current_weread_book_id or not self.ui or not self.ui.document then
+        self:showTransientInfo(_("This action requires an open WeRead book."), 1)
+        return false
+    end
+    if self.settings:get("cache", {}).show_annotations == false then
+        self:showTransientInfo(_("Underlines and thoughts are hidden."), 1)
+        return true
+    end
+
+    local links = self:_currentPageThoughtLinks()
+    if #links == 0 then
+        self:showTransientInfo(_("No thoughts on this page."), 1)
+        return true
+    end
+
+    local menu
+    local items = {}
+    for index, entry in ipairs(links) do
+        local selected_entry = entry
+        local label, callback
+        if entry.unified then
+            -- Matched local book: open the resolved review items directly.
+            local preview = previewText(entry.preview or entry.text or "", 48)
+            label = preview ~= "" and preview or T(_("Thought %1"), index)
+            callback = function()
+                if menu then UIManager:close(menu) end
+                require("weread.ui.thought_popup").show(
+                    ThoughtPopupConfig.build(self, entry.items))
+            end
+        else
+            -- Native cache book: resolve the anchor to native pages first.
+            local pages = self:_buildThoughtPagesFromHref(entry.href)
+            local first = type(pages) == "table" and pages[1] or nil
+            local preview = first and previewText(first.abstract, 48) or ""
+            if preview == "" and first then
+                preview = previewText(first.content, 48)
+            end
+            label = preview ~= "" and preview or T(_("Thought %1"), index)
+            callback = function()
+                if menu then UIManager:close(menu) end
+                self:_openThoughtLink(selected_entry.link, time.now())
+            end
+        end
+        items[#items + 1] = { text = label, callback = callback }
+    end
+    menu = self:showList(_("Thoughts on this page"), items,
+        _("No thoughts on this page."))
+    return true
+end
+
+function M:onShowCurrentPageWeReadThoughts()
+    return self:showCurrentPageThoughts()
+end
+
+-- Shared open path for a thought anchor: resolve its native pages from the
+-- SQLite thought DB (or trigger a repair download for legacy links), then
+-- queue the popup. Used by the current-page list, taps, and the keyboard
+-- "go to selected link" interception.
+function M:_openThoughtLink(link, started)
+    started = started or time.now()
+    local href = self:_linkHref(link)
+    if not isThoughtHref(href) then
+        return false
+    end
+
+    self._thought_page_cache = self._thought_page_cache or {}
+    local pages = self._thought_page_cache[href]
+    local was_cached = pages ~= nil
+    local info
+    if pages == nil then
+        pages, info = self:_buildThoughtPagesFromHref(href)
+        if pages then
+            self._thought_page_cache_n = (self._thought_page_cache_n or 0) + 1
+            if self._thought_page_cache_n > THOUGHT_PAGE_CACHE_MAX then
+                self._thought_page_cache = {}
+                self._thought_page_cache_n = 1
+            end
+            self._thought_page_cache[href] = pages
+        end
+    end
+    thought_perf("thought_resolve", started, "cached=", tostring(was_cached),
+        "pages=", tostring(type(pages) == "table" and #pages or 0))
+    if pages == false then
+        return true
+    end
+    if type(pages) ~= "table" or #pages == 0 then
+        info = info or self:_parseThoughtHref(href)
+        if info then
+            return self:_downloadMissingThought()
+        end
+        return true
+    end
+    return self:_queueThoughtPopup(pages, link, started)
 end
 
 return M
