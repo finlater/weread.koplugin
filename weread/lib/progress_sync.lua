@@ -440,7 +440,11 @@ function ProgressSync:_resolve(local_position, remote, context, options)
         SAME_THRESHOLD_PERCENT
     )
 
-    if comparison == "same" and not remote.conflict then
+    -- Automatic pulls tolerate nearby positions to avoid interrupting chapter
+    -- navigation. Manual sync must still let the reader recover another place.
+    local manual_difference = options.manual == true
+        and not PositionMapper.same_position(local_position, remote)
+    if comparison == "same" and not remote.conflict and not manual_difference then
         self.dirty = false
         self:_mark_verified(
             context.book_id,
@@ -455,17 +459,34 @@ function ProgressSync:_resolve(local_position, remote, context, options)
     end
 
     local ask = self:_config().ask_on_conflict ~= false
-    if remote.conflict or ask then
+    if remote.conflict or ask or manual_difference then
         self.state = "awaiting_choice"
         local choice_generation = self.generation
         local function choice_is_current()
             return choice_generation == self.generation
                 and tostring(self.detect_book() or "") == context.book_id
         end
+        local function chapter_title(position)
+            local uid = position and position.chapter_uid
+            if uid ~= nil and type(context.chapters) == "table" then
+                for _, chapter in ipairs(context.chapters) do
+                    if tostring(chapter.chapterUid or chapter.chapterId) == tostring(uid) then
+                        if chapter.title and chapter.title ~= "" then
+                            return chapter.title
+                        end
+                    end
+                end
+            end
+            return position and position.summary or ""
+        end
+        local local_choice = copy(local_position)
+        local remote_choice = copy(remote)
+        local_choice.chapter_title = chapter_title(local_position)
+        remote_choice.chapter_title = chapter_title(remote)
         self.on_choice({
             book_title = context.book.title or context.book_id,
-            local_position = copy(local_position),
-            remote_position = copy(remote),
+            local_position = local_choice,
+            remote_position = remote_choice,
             source_conflict = remote.conflict == true,
             use_remote = function()
                 if not choice_is_current() then return end

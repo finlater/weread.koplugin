@@ -12,26 +12,36 @@ local function _(text)
 end
 
 local function percent(position)
-    return string.format("%.0f", tonumber(position and position.percent) or 0)
+    local fraction = tonumber(position and position.fraction)
+    return string.format("%.1f%%", fraction and fraction * 100
+        or tonumber(position and position.percent) or 0)
+end
+
+-- One decimal, with the percent sign added here. Putting "%" immediately
+-- after %1 in a KOReader template is parsed as part of the placeholder, so
+-- the dialog shows the raw "%1" and "%2".
+local function place(position)
+    local value = percent(position)
+    local chapter = position and position.chapter_title or ""
+    if chapter ~= "" then
+        return value .. "\n" .. chapter
+    end
+    return value
 end
 
 function ProgressSyncDialog.show_choice(context)
+    local title = tostring(context.book_title or "")
     local message
     if context.source_conflict then
-        message = T(_(
-            "WeRead's two progress sources disagree for \"%1\".\n\n"
-            .. "KOReader: %2%\nSelected cloud position: %3%\n\n"
-            .. "Choose which position to keep."
-        ), context.book_title, percent(context.local_position),
-            percent(context.remote_position))
+        message = T(_("WeRead's two progress sources disagree for \"%1\"."), title)
+            .. "\n\n" .. "KOReader\n" .. place(context.local_position)
+            .. "\n\n" .. _("Selected cloud position") .. "\n" .. place(context.remote_position)
     else
-        message = T(_(
-            "Reading progress differs for \"%1\".\n\n"
-            .. "KOReader: %2%\nWeRead: %3%\n\n"
-            .. "Choose which position to keep."
-        ), context.book_title, percent(context.local_position),
-            percent(context.remote_position))
+        message = T(_("Reading progress differs for \"%1\"."), title)
+            .. "\n\n" .. "KOReader\n" .. place(context.local_position)
+            .. "\n\n" .. _("WeRead") .. "\n" .. place(context.remote_position)
     end
+    message = message .. "\n\n" .. _("Choose which position to keep.")
 
     UIManager:show(ConfirmBox:new{
         title = _("Reading progress sync"),
@@ -47,14 +57,14 @@ function ProgressSyncDialog.notify(code, data)
     data = data or {}
     local text
     if code == "upload_success" then
-        text = T(_("Progress uploaded to WeRead: %1%"),
+        text = T(_("Progress uploaded to WeRead: %1"),
             percent(data.position))
     elseif code == "upload_failed" then
         text = T(_("Progress upload failed:\n%1"), tostring(data.error or ""))
     elseif code == "already_synced" then
         text = _("KOReader and WeRead are already at the same position.")
     elseif code == "remote_applied" then
-        text = T(_("Jumped to WeRead progress: %1%"),
+        text = T(_("Jumped to WeRead progress: %1"),
             percent(data.position))
     elseif code == "local_kept" then
         text = _("Kept the current KOReader position.")
