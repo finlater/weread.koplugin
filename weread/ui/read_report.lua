@@ -145,13 +145,29 @@ function M:onShowWeReadReportStatus()
     else
         target = cur.book_title ~= "" and cur.book_title or _("Not configured")
     end
-    local status = report_status.running and _("Running") or _("Stopped")
+    local status
+    if report_status.state == "waiting_for_progress" then
+        status = _("Waiting for progress verification")
+    elseif report_status.running then
+        status = _("Running")
+    else
+        status = _("Stopped")
+    end
     local count = report_status.count
     local last = report_status.last_time
         and os.date("%H:%M:%S", report_status.last_time) or "--"
     local err = report_status.last_error or ""
     local msg = T(_("Report book: %1\nStatus: %2"), target, status)
         .. "\n" .. T(_("Reported: %1 times, last: %2"), tostring(count), last)
+    if report_status.state == "waiting_for_progress" then
+        if report_status.last_skip_reason == "progress_unverified" then
+            msg = msg .. "\n"
+                .. _("Reason: the reading position is not verified yet")
+        else
+            msg = msg .. "\n"
+                .. _("Reason: the reading position is unavailable")
+        end
+    end
     if err ~= "" then
         msg = msg .. "\n" .. T(_("Last error: %1"), err)
     end

@@ -16,6 +16,8 @@ local JOB_POLL_INITIAL_SECONDS = 0.25
 local JOB_POLL_MAX_SECONDS = 2
 local JOB_TIMEOUT_SECONDS = 180
 local JOB_COLLECT_INTERVAL_SECONDS = 2
+-- How long the progress gate may stay closed before the reader is told once.
+local GATE_NOTICE_SECONDS = 2 * 60
 
 -- Context fields that the subprocess sends back for the parent to persist.
 -- Mirrors the scalar reading-state fields stored by BookStore; the chapter
@@ -180,6 +182,7 @@ function ReadReport:new(options)
         detect_book = options.detect_book,
         position_provider = options.position_provider,
         is_online = options.is_online or function() return true end,
+        notify = options.notify or function() end,
         now = options.now or os.time,
         session_id = tostring({}) .. ":" .. tostring((options.now or os.time)()),
         subprocess = options.subprocess or make_subprocess_runner(),
@@ -211,6 +214,7 @@ function ReadReport:status()
         last_time = self.last_time,
         last_error = self.last_error,
         last_error_kind = self.last_error_kind,
+        last_skip_reason = self.last_skip_reason,
         stop_reason = self.stop_reason,
         target_book_id = self.current_book_id,
         target_book_title = self.current_book_title,
@@ -271,6 +275,9 @@ function ReadReport:_record_success(result)
     self.last_error_kind = nil
     self.logged_error = nil
     self.last_skip = nil
+    self.last_skip_reason = nil
+    self.gate_since = nil
+    self.gate_notified = nil
     self.consecutive_failures = 0
     self.state = "active"
     if recovered or self.count == 1 or self.count % 20 == 0 then
@@ -361,6 +368,9 @@ function ReadReport:stop(reason)
     self.state = reason == "suspend" and "suspended"
         or "stopped"
     self.stop_reason = reason
+    self.last_skip_reason = nil
+    self.gate_since = nil
+    self.gate_notified = nil
     if had_task then
         log("info", "reading time report stopped:",
             "reason=", reason,
@@ -502,12 +512,37 @@ function ReadReport:_precheck()
         local provided, reason, applies = self.position_provider(book_id)
         if applies and not provided then
             self.state = "waiting_for_progress"
-            self:_log_skip(reason or "progress_unverified")
+            self.last_skip_reason = reason or "progress_unverified"
+            self.gate_since = self.gate_since or self.now()
+            self:_log_skip(self.last_skip_reason)
+            self:_notify_gate_waiting()
             return false
         end
         position = provided
     end
+    -- The gate reopened; a later stall must be able to warn again.
+    self.last_skip_reason = nil
+    self.gate_since = nil
+    self.gate_notified = nil
     return true, book_id, position
+end
+
+-- Tell the reader once when the progress gate has been closed for a while:
+-- skips are otherwise only visible in the log, so a whole session could be
+-- lost without any hint.
+function ReadReport:_notify_gate_waiting()
+    if self.gate_notified or not self.gate_since then return end
+    if self.now() - self.gate_since < GATE_NOTICE_SECONDS then return end
+    -- Only promise automatic recovery when the plugin is allowed to pull
+    -- progress on its own.
+    if not self:_gate_can_recover() then return end
+    self.gate_notified = true
+    self.notify("gate_waiting")
+end
+
+function ReadReport:_gate_can_recover()
+    local sync = self.settings:get("sync", {})
+    return type(sync) == "table" and sync.pull_on_open == true
 end
 
 function ReadReport:_renewal_allowed()

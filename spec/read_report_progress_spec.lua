@@ -68,7 +68,8 @@ local function test(name, fn)
     fn()
 end
 
-local function fixture(provider)
+local function fixture(provider, options)
+    options = options or {}
     local records = {}
     local settings = {
         get = function(_self, key)
@@ -81,6 +82,9 @@ local function fixture(provider)
             end
             if key == "books" then
                 return { book = { title = "Book" } }
+            end
+            if key == "sync" then
+                return options.sync or { pull_on_open = true }
             end
             return {}
         end,
@@ -103,8 +107,9 @@ local function fixture(provider)
         detect_book = function() return "book" end,
         position_provider = provider,
         is_online = function() return true end,
+        notify = options.notify,
         subprocess = false,
-        now = function() return 100 end,
+        now = options.now or function() return 100 end,
     }
     return report, records
 end
@@ -199,6 +204,98 @@ test("report context backfills SQLite from catalog.json", function()
     }
     report:_build_context("book", false, book)
     eq(written_catalog, disk_catalog, "catalog.json backfills SQLite")
+end)
+
+test("a stalled progress gate is reported to the reader exactly once", function()
+    local now = 100
+    local notices = {}
+    local report = fixture(function()
+        return nil, "progress_unverified", true
+    end, {
+        now = function() return now end,
+        notify = function(code) notices[#notices + 1] = code end,
+    })
+    report:_precheck()
+    eq(#notices, 0, "a brief gate stays silent")
+    now = 100 + 2 * 60
+    report:_precheck()
+    eq(#notices, 1, "a stalled gate hints once")
+    eq(notices[1], "gate_waiting", "the host receives the expected code")
+    eq(report:status().last_skip_reason, "progress_unverified",
+        "skip reason is exposed for diagnosis")
+    now = now + 60
+    report:_precheck()
+    eq(#notices, 1, "the hint is not repeated")
+end)
+
+test("a stall stays silent when automatic recovery is disabled", function()
+    local now = 100
+    local notices = {}
+    local report = fixture(function()
+        return nil, "progress_unverified", true
+    end, {
+        now = function() return now end,
+        sync = { pull_on_open = false },
+        notify = function(code) notices[#notices + 1] = code end,
+    })
+    report:_precheck()
+    now = 100 + 5 * 60
+    report:_precheck()
+    eq(#notices, 0, "no promise that cannot be kept")
+end)
+
+test("a reopened gate that fails to report can warn again", function()
+    local now = 100
+    local notices = {}
+    local blocked = true
+    local report = fixture(function()
+        if blocked then return nil, "progress_unverified", true end
+        return { chapter_uid = 22, chapter_offset = 150, percent = 25 }, nil, true
+    end, {
+        now = function() return now end,
+        notify = function(code) notices[#notices + 1] = code end,
+    })
+    report:_precheck()
+    now = 100 + 2 * 60
+    report:_precheck()
+    eq(#notices, 1, "first stall hints once")
+
+    blocked = false
+    eq(report:_precheck(), true, "gate reopens")
+    -- The report is then rejected by the server, so _record_success never runs.
+    report:_set_error("server rejected", "server", "read report error:")
+
+    blocked = true
+    report:_precheck()
+    now = now + 2 * 60
+    report:_precheck()
+    eq(#notices, 2, "a later stall can still warn")
+end)
+
+test("the gate hint rearms after a successful report", function()
+    local now = 100
+    local notices = {}
+    local blocked = true
+    local report = fixture(function()
+        if blocked then return nil, "progress_unverified", true end
+        return { chapter_uid = 22, chapter_offset = 150, percent = 25 }, nil, true
+    end, {
+        now = function() return now end,
+        notify = function(text) notices[#notices + 1] = text end,
+    })
+    report:_precheck()
+    now = 100 + 2 * 60
+    report:_precheck()
+    eq(#notices, 1, "first stall hints once")
+    blocked = false
+    eq(report:_precheck(), true, "gate reopens")
+    report:_record_success({})
+    eq(report:status().last_skip_reason, nil, "success clears the skip reason")
+    blocked = true
+    report:_precheck()
+    now = now + 3 * 60
+    report:_precheck()
+    eq(#notices, 2, "a new stall hints again")
 end)
 
 print(string.format(

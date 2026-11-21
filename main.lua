@@ -116,6 +116,11 @@ function WeReadPlugin:init()
         is_online = function()
             return self:isNetworkConnected()
         end,
+        notify = function(code)
+            if code == "gate_waiting" then
+                self:showTransientInfo(_("Reading time reporting is paused: the reading position could not be verified yet. It resumes automatically once the check succeeds."), 5)
+            end
+        end,
     }
     self.progress_sync = ProgressSync:new{
         settings = self.settings,
