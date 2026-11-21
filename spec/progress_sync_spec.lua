@@ -513,7 +513,8 @@ test("automatic pull retries stop at the attempt limit", function()
     f.step()
     eq(#f.queue, 1, "third retry queued")
     f.step()
-    eq(#f.queue, 0, "retries stop at the limit")
+    eq(#f.queue, 1, "retries hand over to the slow recheck")
+    eq(f.queue[1].delay, 2 * 60, "recheck uses the slow cadence")
     eq(f.sync:status().verified, false, "exhausted retries stay gated")
 end)
 
@@ -626,6 +627,153 @@ test("a fresh automatic pull replaces an older retry chain", function()
     eq(#f.queue, 1, "stale chain does not schedule another retry")
     f.step()
     eq(#f.queue, 1, "replacement chain remains active")
+end)
+
+test("a failed automatic pull schedules a retry instead of staying unverified", function()
+    local f = fixture(nil, { is_online = function() return true end })
+    f.sync:on_reader_ready()
+    f.step()
+    eq(f.sync:status().state, "error", "failed fetch records an error")
+    eq(f.sync:status().verified, false, "gate stays closed")
+    eq(#f.queue, 1, "one retry is queued")
+    eq(f.queue[1].delay, PULL_RETRY_DELAY_SECONDS, "retry uses the pull delay")
+end)
+
+test("a queued retry restores the gate once progress can be fetched", function()
+    local remote = {}
+    local f = fixture(remote, { is_online = function() return true end })
+    f.sync:on_reader_ready()
+    f.step()
+    eq(f.sync:status().verified, false, "first pull failed")
+    remote.bookId, remote.progress = "book", 25
+    remote.chapterUid, remote.chapterOffset, remote.updateTime = 22, 150, 10
+    f.step()
+    eq(f.sync:status().verified, true, "the retry verified the gate")
+end)
+
+test("exhausted retries fall back to a slow recheck", function()
+    local f = fixture(nil, { is_online = function() return true end })
+    f.sync:on_reader_ready()
+    for _ = 1, 4 do f.step() end
+    eq(#f.queue, 1, "one slow recheck is queued")
+    eq(f.queue[1].delay, 2 * 60, "recheck uses the slow cadence")
+end)
+
+test("the slow recheck verifies and ends the loop", function()
+    local remote = {}
+    local f = fixture(remote, { is_online = function() return true end })
+    f.sync:on_reader_ready()
+    for _ = 1, 4 do f.step() end
+    remote.bookId, remote.progress = "book", 25
+    remote.chapterUid, remote.chapterOffset, remote.updateTime = 22, 150, 10
+    f.step()
+    eq(f.sync:status().verified, true, "recheck recovered the gate")
+    eq(#f.queue, 0, "the loop ended once the position verified")
+end)
+
+test("the slow recheck never jumps or prompts on a differing position", function()
+    local remote = {}
+    local f = fixture(remote, { is_online = function() return true end })
+    f.sync:on_reader_ready()
+    for _ = 1, 4 do f.step() end
+    remote.bookId, remote.progress = "book", 80
+    remote.chapterUid, remote.chapterOffset, remote.updateTime = 33, 500, 10
+    f.step()
+    eq(#f.choices, 0, "no conflict dialog from the background recheck")
+    eq(#f.jumps, 0, "no jump from the background recheck")
+    eq(f.sync:status().verified, false, "a differing position stays unverified")
+    eq(f.sync:status().state, "unverified", "state does not stay on pulling")
+    eq(#f.queue, 0, "the loop stops instead of retrying a conflict")
+end)
+
+test("a slow recheck keeps verify-only across its retries", function()
+    local allow_request = true
+    local remote = {}
+    local f = fixture(remote, {
+        is_online = function() return true end,
+        run_online = function(_kind, callback)
+            if allow_request then
+                callback()
+                return true
+            end
+            return false
+        end,
+    })
+    f.sync:on_reader_ready()
+    for _ = 1, 4 do f.step() end
+    eq(#f.queue, 1, "slow recheck armed")
+
+    allow_request = false
+    f.step()
+    eq(#f.queue, 1, "a retry is queued when the request cannot start")
+
+    allow_request = true
+    remote.bookId, remote.progress = "book", 80
+    remote.chapterUid, remote.chapterOffset, remote.updateTime = 33, 500, 10
+    f.step()
+    eq(#f.choices, 0, "the retry keeps verify-only: no conflict dialog")
+    eq(#f.jumps, 0, "the retry keeps verify-only: no jump")
+end)
+
+test("the slow recheck stops while pull-on-open is disabled", function()
+    local f = fixture(nil, { is_online = function() return true end })
+    f.sync:on_reader_ready()
+    for _ = 1, 4 do f.step() end
+    eq(#f.queue, 1, "recheck armed while the setting is on")
+    f.values.sync.pull_on_open = false
+    f.step()
+    eq(#f.queue, 0, "the setting stops the loop")
+    eq(f.sync:status().state, "error", "no attempt was made")
+end)
+
+test("the slow loop gives up after the attempt limit", function()
+    local f = fixture(nil, { is_online = function() return true end })
+    f.sync:on_reader_ready()
+    for _ = 1, 4 do f.step() end
+    -- Ten rechecks each fail and re-arm; the eleventh stops the loop.
+    for _ = 1, 12 do f.step() end
+    eq(#f.queue, 0, "the loop stopped after the attempt limit")
+    eq(f.sync:status().verified, false, "still gated")
+end)
+
+test("a manual sync failure keeps the recovery loop alive", function()
+    local f = fixture(nil, { is_online = function() return true end })
+    f.sync:on_reader_ready()
+    f.step()
+    eq(#f.queue, 1, "the open failure armed a retry")
+    f.sync:sync_now()
+    eq(#f.notifications, 1, "the manual attempt notifies once")
+    f.step()
+    eq(#f.queue, 1, "a recheck replaces the invalidated retry")
+    eq(f.queue[1] and f.queue[1].delay, 2 * 60, "recheck uses the slow cadence")
+end)
+
+test("resume after a long sleep recovers the gate once the network is up", function()
+    local remote = {
+        bookId = "book", progress = 25,
+        chapterUid = 22, chapterOffset = 150, updateTime = 10,
+    }
+    local now = 0
+    local f = fixture(remote, {
+        is_online = function() return true end,
+        now = function() return now end,
+    })
+    f.sync:on_reader_ready()
+    f.step()
+    eq(f.sync:status().verified, true, "open verifies the gate")
+
+    now = 60
+    f.sync:on_suspend()
+    -- Resume recheck: the link check still says online, the request fails.
+    remote.bookId, remote.progress = nil, nil
+    now = 60 + 6 * 60
+    f.sync:on_resume()
+    eq(f.sync:status().verified, false, "failed resume pull clears the gate")
+    eq(#f.queue, 1, "failed resume pull queues a retry")
+
+    remote.bookId, remote.progress = "book", 25
+    f.step()
+    eq(f.sync:status().verified, true, "the retry reopens the gate")
 end)
 
 print(string.format(

@@ -9,6 +9,13 @@ local OPEN_DELAY_SECONDS = 0.6
 local RESUME_RECHECK_SECONDS = 5 * 60
 local PULL_RETRY_DELAY_SECONDS = 15
 local PULL_MAX_RETRIES = 3
+-- After the short retry chain is exhausted the position may stay unverified
+-- for the rest of the session, which silently blocks progress uploads and
+-- reading-time reports. Keep checking at a slow cadence until it recovers.
+local UNVERIFIED_RECHECK_SECONDS = 2 * 60
+-- Upper bound for the slow loop: a permanent failure (the book has no cloud
+-- progress, the login is gone) must not keep the device requesting forever.
+local RECHECK_MAX_ATTEMPTS = 10
 local BUSY_RETRY_SECONDS = 2
 local BUSY_RETRY_LIMIT = 10
 local SAME_THRESHOLD_PERCENT = 2
@@ -215,6 +222,8 @@ function ProgressSync:_mark_verified(book_id, reason, local_position, remote)
     self.verified = true
     self.verified_at = self.now()
     self.verified_reason = reason
+    self.recheck_attempts = nil
+    self.recheck_logged = nil
     self.local_position = copy(local_position)
     self.remote_position = copy(remote)
     self.state = "verified"
@@ -509,6 +518,7 @@ function ProgressSync:_schedule_pull_retry(options, retry_token)
     if attempt > PULL_MAX_RETRIES then
         log("warn", "pull retries exhausted:",
             "book=", tostring(self.current_book_id))
+        self:_schedule_recheck(self.current_book_id)
         return false
     end
     local generation = self.generation
@@ -521,6 +531,9 @@ function ProgressSync:_schedule_pull_retry(options, retry_token)
             manual = false,
             retry = attempt,
             retry_token = retry_token,
+            -- A background verification must stay verify-only across its
+            -- retries; otherwise a retry could jump the reader or prompt.
+            verify_only = options.verify_only == true,
         })
     end)
     log("info", "pull retry scheduled:",
@@ -530,9 +543,89 @@ function ProgressSync:_schedule_pull_retry(options, retry_token)
     return true
 end
 
+-- Slow recovery loop for an unverified position. It stops when the position
+-- verifies, when the book changes, when a background check finds a different
+-- position (that case belongs to the normal open/resume flow), or after
+-- RECHECK_MAX_ATTEMPTS online attempts. Waiting while offline does not consume
+-- the budget: no request is made, and the session should still recover once
+-- the network returns.
+function ProgressSync:_schedule_recheck(book_id)
+    book_id = tostring(book_id or self.current_book_id or "")
+    if book_id == "" then return false end
+    self.recheck_token = (self.recheck_token or 0) + 1
+    local token = self.recheck_token
+    local generation = self.generation
+    self.scheduler:scheduleIn(UNVERIFIED_RECHECK_SECONDS, function()
+        if token ~= self.recheck_token then return end
+        if generation ~= self.generation then return end
+        if self.verified then return end
+        if tostring(self.current_book_id or "") ~= book_id then return end
+        if not self:_config().pull_on_open then return end
+        if self.pulling or self.uploading then
+            -- A pull or upload is in flight; look again after it settles
+            -- instead of dropping the loop.
+            self:_schedule_recheck(book_id)
+            return
+        end
+        if self.state == "awaiting_choice" or self.state == "switching_chapter" then
+            -- The reader has a dialog open or a jump is pending; the normal
+            -- open/resume path owns those states.
+            return
+        end
+        if not self.is_online() then
+            self:_schedule_recheck(book_id)
+            return
+        end
+        self.recheck_attempts = (self.recheck_attempts or 0) + 1
+        if self.recheck_attempts > RECHECK_MAX_ATTEMPTS then
+            log("warn", "recheck attempts exhausted:",
+                "book=", book_id,
+                "attempts=", tostring(self.recheck_attempts))
+            return
+        end
+        log("info", "unverified recheck:", "book=", book_id,
+            "state=", tostring(self.state),
+            "attempt=", tostring(self.recheck_attempts))
+        self:_pull({ manual = false, verify_only = true })
+    end)
+    if not self.recheck_logged then
+        self.recheck_logged = true
+        log("info", "unverified recheck scheduled:",
+            "book=", book_id,
+            "delay=", tostring(UNVERIFIED_RECHECK_SECONDS))
+    end
+    return true
+end
+
+-- Verify-only pull used by the slow recovery loop: confirm that the local and
+-- cloud positions agree so reporting can resume, but never move the reader or
+-- open a conflict dialog in the middle of a page.
+function ProgressSync:_verify_only(local_position, remote, context)
+    local comparison = PositionMapper.compare(
+        local_position, remote, SAME_THRESHOLD_PERCENT)
+    if comparison == "same" and not remote.conflict then
+        self.dirty = false
+        self:_mark_verified(
+            context.book_id, "recheck_match", local_position, remote)
+        return true
+    end
+    log("info", "recheck found a different position:",
+        "book=", tostring(context.book_id),
+        "local=", tostring(local_position and local_position.percent),
+        "remote=", tostring(remote and remote.percent))
+    -- Leaving the state on "pulling" would misreport the sync status.
+    self.state = "unverified"
+    return false
+end
+
 function ProgressSync:_pull(options)
     options = options or {}
     if self.pulling then return false end
+    if options.verify_only ~= true and options.retry == nil then
+        -- A fresh pull opens a new recovery budget.
+        self.recheck_attempts = nil
+        self.recheck_logged = nil
+    end
     local retry_token = options.retry_token
     if retry_token == nil then
         self.pull_retry_token = self.pull_retry_token + 1
@@ -547,6 +640,9 @@ function ProgressSync:_pull(options)
             and type(self.refresh_catalog) == "function") then
             if options.manual then
                 self.notify("local_unavailable", { error = reason })
+            else
+                -- A catalog hiccup must not end the recovery loop.
+                self:_schedule_recheck(self.current_book_id)
             end
             return false
         end
@@ -607,8 +703,22 @@ function ProgressSync:_pull(options)
                 last_pull_at = self.now(),
                 last_sync_error = tostring(pull_error),
             })
+            log("warn", "pull failed:",
+                "book=", context.book_id,
+                "error=", tostring(pull_error))
             if options.manual then
                 self.notify("pull_failed", { error = tostring(pull_error) })
+                -- A manual attempt supersedes the queued retry chain, so keep
+                -- the slow recheck alive instead of ending here.
+                self:_schedule_recheck(context.book_id)
+            elseif options.verify_only then
+                self:_schedule_recheck(context.book_id)
+            else
+                -- A request that did start can still fail, e.g. WiFi is not
+                -- associated yet right after resume while the link check
+                -- still reports online. Without this the gate stayed closed
+                -- for the whole session.
+                self:_schedule_pull_retry(options, retry_token)
             end
             return
         end
@@ -618,7 +728,11 @@ function ProgressSync:_pull(options)
             last_pull_at = self.now(),
             last_sync_error = false,
         })
-        self:_resolve(local_position, remote, context, options)
+        if options.verify_only then
+            self:_verify_only(local_position, remote, context)
+        else
+            self:_resolve(local_position, remote, context, options)
+        end
     end, { silent_offline = true })
     if not started then
         self.pulling = false
@@ -688,6 +802,8 @@ function ProgressSync:on_reader_ready()
     self.document_context = nil
     self.verified = false
     self.dirty = false
+    self.recheck_attempts = nil
+    self.recheck_logged = nil
     self.state = "waiting"
 
     self.scheduler:scheduleIn(OPEN_DELAY_SECONDS, function()
